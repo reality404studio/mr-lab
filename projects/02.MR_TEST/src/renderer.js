@@ -57,7 +57,7 @@ void main() {
   float light = max(dot(normalize(vWorldNormal), normalize(vec3(${glslVec3(CONFIG.shader.lightDirection)}))), 0.0) * ${glslFloat(CONFIG.shader.lightStrength)} + ${glslFloat(CONFIG.shader.ambientStrength)};
 
   if (uKind == 1) {
-    vec2 faceUv = vLocalNormal.xy * 0.5 + 0.5;
+    vec2 faceUv = vec2(1.0) - (vLocalNormal.xy * 0.5 + 0.5);
     vec4 face = texture2D(uTexture, faceUv);
     float front = smoothstep(${glslFloat(CONFIG.shader.headFrontFadeStart)}, ${glslFloat(CONFIG.shader.headFrontFadeEnd)}, vLocalNormal.z);
     float faceAlpha = face.a * front;
