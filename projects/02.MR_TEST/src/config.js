@@ -29,7 +29,7 @@ export const CONFIG = Object.freeze({
   }),
   head: Object.freeze({
     radius: 0.15,
-    followDistance: 0.3,
+    followDistance: 0.42,
     faceSlerp: 0.1,
     gameOverIdleAmplitude: 0.025,
     gameOverIdleSpeed: 1.8
@@ -39,10 +39,11 @@ export const CONFIG = Object.freeze({
   }),
   orb: Object.freeze({
     radius: 0.04,
-    glowScale: 1.9
+    glowScale: 2.75
   }),
   snake: Object.freeze({
     segmentSpacing: 0.22,
+    historySampleSpacing: 0.04,
     historyLimit: 420
   }),
   grab: Object.freeze({
@@ -50,7 +51,9 @@ export const CONFIG = Object.freeze({
     controllerHoldOffset: Object.freeze([0, 0, -0.03])
   }),
   eat: Object.freeze({
-    threshold: 0.2
+    threshold: 0.18,
+    mouthForwardOffset: 0.14,
+    mouthYOffset: -0.12
   }),
   collision: Object.freeze({
     threshold: 0.1,
@@ -128,7 +131,13 @@ export const CONFIG = Object.freeze({
     ambientStrength: 0.55,
     headFrontFadeStart: 0.04,
     headFrontFadeEnd: 0.22,
-    glowAlpha: 0.32,
+    glowAlpha: 0.72,
+    glowPulseFrequency: 5.2,
+    glowPulseBase: 0.76,
+    glowPulseAmplitude: 0.24,
+    foodPulseFrequency: 4.8,
+    foodPulseBase: 0.86,
+    foodPulseAmplitude: 0.14,
     tailPulseFrequency: 6.0,
     tailPulseBase: 0.42,
     tailPulseAmplitude: 0.34

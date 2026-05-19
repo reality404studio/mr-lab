@@ -48,6 +48,7 @@ data:image/png;base64,...
 - Game Over 후 Trigger: 다시하기
 - Game Over 후 Grip: 다음 학생
 - 개발 미리보기: `WASD`/방향키 이동, `Q/E` 회전, `Space` Grip, `Enter` Trigger
+- 개발 미리보기에서 구체를 잡으면 입 위치로 자동 스냅되어 먹기/꼬리 추가 흐름을 바로 확인할 수 있습니다.
 
 ## 구현 범위
 

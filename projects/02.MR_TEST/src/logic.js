@@ -50,6 +50,7 @@ export class SnakeController {
   constructor(config = CONFIG) {
     this.config = config;
     this.headPosition = [0, 1.55, -config.head.followDistance];
+    this.trailDirection = [0, 0, 1];
     this.segments = [];
     this.history = [];
     this.frozen = false;
@@ -60,6 +61,7 @@ export class SnakeController {
     this.history = [];
     this.frozen = false;
     this.headPosition = this.computeHeadPosition(playerPos, playerForward);
+    this.trailDirection = this.computeTrailDirection(playerForward);
     this.seedHistory();
   }
 
@@ -76,12 +78,17 @@ export class SnakeController {
     return vecScaleAndAdd(playerPos, flatForward, -this.config.head.followDistance);
   }
 
+  computeTrailDirection(playerForward) {
+    return vecScale(flattenForward(playerForward), -1);
+  }
+
   tick(playerPos, playerForward) {
     if (this.frozen) {
       return;
     }
 
     this.headPosition = this.computeHeadPosition(playerPos, playerForward);
+    this.trailDirection = this.computeTrailDirection(playerForward);
     this.history.push([...this.headPosition]);
 
     while (this.history.length > this.config.snake.historyLimit) {
@@ -119,8 +126,14 @@ export class SnakeController {
   }
 
   seedHistory() {
-    while (this.history.length < this.config.snake.historyLimit / 4) {
-      this.history.unshift([...this.headPosition]);
+    if (this.history.length === 0) {
+      this.history.push([...this.headPosition]);
+    }
+
+    const seedLimit = this.config.snake.historyLimit / 4;
+    while (this.history.length < seedLimit) {
+      const distance = this.config.snake.historySampleSpacing * this.history.length;
+      this.history.unshift(vecScaleAndAdd(this.headPosition, this.trailDirection, distance));
     }
   }
 
@@ -143,7 +156,7 @@ export class SnakeController {
       remaining -= segmentDistance;
     }
 
-    return [...this.history[0]];
+    return vecScaleAndAdd(this.history[0], this.trailDirection, remaining);
   }
 }
 

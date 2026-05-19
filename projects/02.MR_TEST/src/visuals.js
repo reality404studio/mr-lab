@@ -106,7 +106,7 @@ export function FoodOrb({ sphereGeometry, color, radius = CONFIG.orb.radius }) {
   const core = new Mesh({
     geometry: sphereGeometry,
     material: {
-      kind: MATERIAL_KIND.SOLID,
+      kind: MATERIAL_KIND.FOOD,
       color: COLORS[color] || COLORS.white
     },
     scale: [radius, radius, radius]

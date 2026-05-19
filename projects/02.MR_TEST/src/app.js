@@ -526,7 +526,9 @@ class MRSnakeApp {
     const previous = this.controllerStates.get(id) || {};
     const gripPressed = this.keys.has("Space");
     const triggerPressed = this.keys.has("Enter");
-    const position = vecScaleAndAdd(pose.position, pose.forward, CONFIG.preview.controllerReach);
+    const position = this.isControllerHolding(id)
+      ? this.getMouthPosition(pose)
+      : vecScaleAndAdd(pose.position, pose.forward, CONFIG.preview.controllerReach);
     const state = {
       id,
       position,
@@ -537,6 +539,10 @@ class MRSnakeApp {
     };
     this.controllerStates.set(id, state);
     return state;
+  }
+
+  isControllerHolding(controllerId) {
+    return this.spawner.getAll().some((orb) => orb.heldBy === controllerId);
   }
 
   readXRControllers(frame) {
@@ -656,7 +662,7 @@ class MRSnakeApp {
         continue;
       }
 
-      if (this.eatDetector.check(orb.position, this.snake.headPosition)) {
+      if (this.eatDetector.check(orb.position, this.getMouthPosition())) {
         const color = orb.color;
         this.spawner.remove(orb.id);
         this.snake.addSegment(color);
@@ -745,6 +751,13 @@ class MRSnakeApp {
     position = vecScaleAndAdd(position, right, offset[0]);
     position = vecScaleAndAdd(position, [0, 1, 0], offset[1]);
     position = vecScaleAndAdd(position, forward, -offset[2]);
+    return position;
+  }
+
+  getMouthPosition(pose = this.currentPose) {
+    const forward = flattenForward(pose.forward);
+    let position = vecScaleAndAdd(pose.position, forward, CONFIG.eat.mouthForwardOffset);
+    position = vecScaleAndAdd(position, [0, 1, 0], CONFIG.eat.mouthYOffset);
     return position;
   }
 

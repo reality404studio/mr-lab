@@ -11,7 +11,8 @@ export const MATERIAL_KIND = Object.freeze({
   TEXT: 2,
   PANEL: 3,
   GLOW: 4,
-  TAIL: 5
+  TAIL: 5,
+  FOOD: 6
 });
 
 const glslFloat = (value) => Number.isInteger(value) ? `${value}.0` : `${value}`;
@@ -70,11 +71,17 @@ void main() {
   } else if (uKind == 3) {
     light = 1.0;
   } else if (uKind == 4) {
-    color.a *= ${glslFloat(CONFIG.shader.glowAlpha)};
+    float glowPulse = ${glslFloat(CONFIG.shader.glowPulseBase)} + ${glslFloat(CONFIG.shader.glowPulseAmplitude)} * sin(uTime * ${glslFloat(CONFIG.shader.glowPulseFrequency)});
+    color.rgb = mix(color.rgb, vec3(1.0), 0.28) * glowPulse;
+    color.a *= ${glslFloat(CONFIG.shader.glowAlpha)} * glowPulse;
     light = 1.0;
   } else if (uKind == 5) {
     float pulse = ${glslFloat(CONFIG.shader.tailPulseBase)} + ${glslFloat(CONFIG.shader.tailPulseAmplitude)} * sin(uTime * ${glslFloat(CONFIG.shader.tailPulseFrequency)});
     color.rgb = mix(color.rgb, vec3(1.0), pulse);
+  } else if (uKind == 6) {
+    float foodPulse = ${glslFloat(CONFIG.shader.foodPulseBase)} + ${glslFloat(CONFIG.shader.foodPulseAmplitude)} * sin(uTime * ${glslFloat(CONFIG.shader.foodPulseFrequency)});
+    color.rgb = mix(color.rgb, vec3(1.0), 0.22) * foodPulse;
+    light = 1.0;
   }
 
   color.rgb *= light;
@@ -303,6 +310,15 @@ export class WebGLSceneRenderer {
     const gl = this.gl;
     const info = this.getBufferInfo(mesh.geometry);
     const material = mesh.material;
+    const isGlow = material.kind === MATERIAL_KIND.GLOW;
+
+    if (isGlow) {
+      gl.depthMask(false);
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
+    } else {
+      gl.depthMask(true);
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    }
 
     gl.bindBuffer(gl.ARRAY_BUFFER, info.position);
     gl.enableVertexAttribArray(this.locations.aPosition);
@@ -324,6 +340,11 @@ export class WebGLSceneRenderer {
     gl.uniform4fv(this.locations.uColor, material.color);
     gl.uniform1i(this.locations.uKind, material.kind);
     gl.drawElements(gl.TRIANGLES, info.count, gl.UNSIGNED_SHORT, 0);
+
+    if (isGlow) {
+      gl.depthMask(true);
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    }
   }
 }
 
