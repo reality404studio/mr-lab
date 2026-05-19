@@ -60,7 +60,7 @@ export class SnakeController {
     this.segments = [];
     this.history = [];
     this.frozen = false;
-    this.headPosition = this.computeHeadPosition(playerPos, playerForward, 0, 0);
+    this.headPosition = this.computeHeadPosition(playerPos, playerForward);
     this.trailDirection = this.computeTrailDirection(playerForward);
     this.seedHistory();
   }
@@ -73,35 +73,7 @@ export class SnakeController {
     this.frozen = false;
   }
 
-  computeHeadPosition(playerPos, playerForward, score = 0, timeSeconds = 0) {
-    const orbitPosition = this.computeOrbitPosition(playerPos, playerForward, timeSeconds);
-    const trailPosition = this.computeTrailPosition(playerPos, playerForward);
-    const { orbitScoreMax, trailScoreFull } = this.config.head;
-
-    if (score <= orbitScoreMax) {
-      return orbitPosition;
-    }
-
-    if (score >= trailScoreFull) {
-      return trailPosition;
-    }
-
-    const t = (score - orbitScoreMax) / (trailScoreFull - orbitScoreMax);
-    return vecLerp(orbitPosition, trailPosition, t);
-  }
-
-  computeOrbitPosition(playerPos, playerForward, timeSeconds) {
-    const flatForward = flattenForward(playerForward);
-    const right = horizontalRightFromForward(flatForward);
-    const orbit = this.config.head;
-    const angle = Math.sin(timeSeconds * orbit.orbitSpeed) * orbit.orbitArcRadians;
-    let position = vecScaleAndAdd(playerPos, [0, 1, 0], orbit.waistYOffset);
-    position = vecScaleAndAdd(position, right, Math.cos(angle) * orbit.orbitRadius);
-    position = vecScaleAndAdd(position, flatForward, Math.sin(angle) * orbit.orbitDepth);
-    return position;
-  }
-
-  computeTrailPosition(playerPos, playerForward) {
+  computeHeadPosition(playerPos, playerForward) {
     const flatForward = flattenForward(playerForward);
     let position = vecScaleAndAdd(playerPos, [0, 1, 0], this.config.head.waistYOffset);
     position = vecScaleAndAdd(position, flatForward, -this.config.head.followDistance);
@@ -112,12 +84,13 @@ export class SnakeController {
     return vecScale(flattenForward(playerForward), -1);
   }
 
-  tick(playerPos, playerForward, score = 0, timeSeconds = 0) {
+  tick(playerPos, playerForward) {
     if (this.frozen) {
       return;
     }
 
-    this.headPosition = this.computeHeadPosition(playerPos, playerForward, score, timeSeconds);
+    const targetPosition = this.computeHeadPosition(playerPos, playerForward);
+    this.headPosition = vecLerp(this.headPosition, targetPosition, this.config.head.followLerp);
     this.trailDirection = this.computeTrailDirection(playerForward);
     this.history.push([...this.headPosition]);
 
@@ -153,6 +126,15 @@ export class SnakeController {
       return null;
     }
     return this.segments[this.segments.length - 1].position;
+  }
+
+  getCollisionPositions() {
+    if (this.segments.length < this.config.collision.minSegments) {
+      return [];
+    }
+    return this.segments
+      .slice(this.config.collision.minSegments - 1)
+      .map((segment) => segment.position);
   }
 
   seedHistory() {

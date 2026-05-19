@@ -17,6 +17,7 @@ import {
   quatSlerp,
   vecAdd,
   vecDistance,
+  vecLerp,
   vecScaleAndAdd
 } from "./math.js";
 import {
@@ -63,6 +64,7 @@ class MRSnakeApp {
     this.visuals = {
       head: null,
       body: [],
+      links: [],
       orbs: new Map(),
       score: null,
       hint: null,
@@ -358,6 +360,7 @@ class MRSnakeApp {
     this.snake.reset(this.currentPose.position, this.currentPose.forward);
     this.spawner.reset(this.currentPose.position, this.currentPose.forward);
     this.visuals.body = [];
+    this.visuals.links = [];
     this.visuals.orbs.clear();
     this.visuals.head = HeadSphere({
       geometry: this.sphereGeometry,
@@ -380,6 +383,7 @@ class MRSnakeApp {
     this.score.reset();
     this.updateScore(0);
     this.visuals.body = [];
+    this.visuals.links = [];
     this.visuals.orbs.clear();
     this.visuals.head = null;
     this.visuals.score = null;
@@ -590,14 +594,17 @@ class MRSnakeApp {
     };
 
     if (this.machine.beat === BEATS.READY || this.machine.beat === BEATS.PLAYING) {
-      this.snake.tick(this.currentPose.position, this.currentPose.forward, this.score.get(), time / 1000);
+      this.snake.tick(this.currentPose.position, this.currentPose.forward);
       this.spawner.ensureSet(this.currentPose.position, this.currentPose.forward);
       this.handleControllers(controllers);
       this.handleEating();
 
       if (this.machine.beat === BEATS.PLAYING) {
-        const tailPos = this.snake.getTailPosition();
-        if (this.collisionDetector.check(this.getSnakeCollisionPosition(), tailPos)) {
+        const collisionPoint = this.getSnakeCollisionPosition();
+        const hitTail = this.snake
+          .getCollisionPositions()
+          .some((position) => this.collisionDetector.check(collisionPoint, position));
+        if (hitTail) {
           this.machine.gameOver(this.score.get());
         }
       }
@@ -686,6 +693,7 @@ class MRSnakeApp {
     }
 
     this.syncBodyVisuals();
+    this.syncLinkVisuals();
     this.syncOrbVisuals();
     this.placeTextVisuals();
   }
@@ -701,13 +709,61 @@ class MRSnakeApp {
 
     this.snake.segments.forEach((segment, index) => {
       const mesh = this.visuals.body[index];
-      const earlyTail = this.score.get() <= CONFIG.head.orbitScoreMax;
       mesh.position = [...segment.position];
       mesh.material.color = this.colorFor(segment.color);
-      mesh.material.kind = earlyTail || index === this.snake.segments.length - 1
+      mesh.material.kind = index === this.snake.segments.length - 1
         ? MATERIAL_KIND.TAIL
         : MATERIAL_KIND.SOLID;
     });
+  }
+
+  syncLinkVisuals() {
+    const chain = [
+      this.getSnakeCollisionPosition(),
+      this.snake.headPosition,
+      ...this.snake.segments.map((segment) => segment.position)
+    ];
+    const points = this.computeLinkPoints(chain);
+
+    while (this.visuals.links.length < points.length) {
+      const bead = BodySegment({
+        geometry: this.sphereGeometry,
+        color: CONFIG.link.color,
+        radius: CONFIG.link.radius
+      });
+      bead.material.kind = MATERIAL_KIND.GLOW;
+      this.visuals.links.push(bead);
+    }
+
+    this.visuals.links.forEach((bead, index) => {
+      if (index >= points.length) {
+        bead.visible = false;
+        return;
+      }
+
+      bead.visible = true;
+      bead.position = points[index];
+      bead.material.color = this.colorFor(CONFIG.link.color);
+      bead.material.kind = MATERIAL_KIND.GLOW;
+    });
+  }
+
+  computeLinkPoints(chain) {
+    const points = [];
+    const maxBeads = CONFIG.link.maxBeads;
+
+    for (let index = 0; index < chain.length - 1 && points.length < maxBeads; index += 1) {
+      const start = chain[index];
+      const end = chain[index + 1];
+      const distance = vecDistance(start, end);
+      const count = Math.max(1, Math.floor(distance / CONFIG.link.beadSpacing));
+
+      for (let beadIndex = 1; beadIndex <= count && points.length < maxBeads; beadIndex += 1) {
+        points.push(vecLerp(start, end, beadIndex / (count + 1)));
+      }
+    }
+
+    return points;
   }
 
   syncOrbVisuals() {
@@ -776,6 +832,7 @@ class MRSnakeApp {
       meshes.push(this.visuals.head);
     }
     meshes.push(...this.visuals.body);
+    meshes.push(...this.visuals.links);
     for (const orb of this.visuals.orbs.values()) {
       meshes.push(...orb.children);
     }

@@ -30,13 +30,8 @@ export const CONFIG = Object.freeze({
   head: Object.freeze({
     radius: 0.15,
     followDistance: 0.42,
+    followLerp: 0.18,
     waistYOffset: -0.55,
-    orbitRadius: 0.46,
-    orbitDepth: 0.18,
-    orbitSpeed: 1.35,
-    orbitArcRadians: 0.72,
-    orbitScoreMax: 3,
-    trailScoreFull: 5,
     faceSlerp: 0.1,
     gameOverIdleAmplitude: 0.025,
     gameOverIdleSpeed: 1.8
@@ -64,7 +59,13 @@ export const CONFIG = Object.freeze({
   }),
   collision: Object.freeze({
     threshold: 0.1,
-    minSegments: 1
+    minSegments: 6
+  }),
+  link: Object.freeze({
+    radius: 0.014,
+    beadSpacing: 0.11,
+    maxBeads: 28,
+    color: "blue"
   }),
   spawn: Object.freeze({
     minDistFromPlayer: 0.8,
