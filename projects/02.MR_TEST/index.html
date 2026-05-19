@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#0b0d10">
+    <title>MR Snake</title>
+    <link rel="icon" href="data:,">
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body>
+    <canvas id="xr-canvas" aria-label="MR Snake WebXR canvas"></canvas>
+
+    <main id="overlay" class="overlay">
+      <section class="panel" id="boot-panel">
+        <div class="kicker">MR Snake</div>
+        <h1>Quest Browser Experience</h1>
+        <p id="status-text">초기화 중</p>
+        <div class="actions">
+          <button id="start-xr" type="button">XR 시작</button>
+          <button id="start-preview" type="button">개발 미리보기</button>
+        </div>
+        <dl class="meta">
+          <div>
+            <dt>텍스처 모드</dt>
+            <dd id="mode-label">preset</dd>
+          </div>
+          <div>
+            <dt>큐</dt>
+            <dd id="queue-label">0</dd>
+          </div>
+        </dl>
+      </section>
+
+      <section class="hud" id="hud" hidden>
+        <div class="score">Score <strong id="score-label">0</strong></div>
+        <div class="beat" id="beat-label">BOOT</div>
+      </section>
+
+      <section class="game-over" id="game-over-panel" hidden>
+        <div class="final">Final <strong id="final-score-label">0</strong></div>
+        <div class="actions">
+          <button id="restart" type="button">다시하기</button>
+          <button id="next-student" type="button">다음 학생</button>
+        </div>
+      </section>
+    </main>
+
+    <script type="module" src="./src/app.js"></script>
+  </body>
+</html>

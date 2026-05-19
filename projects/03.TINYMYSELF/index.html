@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
+    <title>Godeok Storage WebXR Horror Demo</title>
+    <link rel="stylesheet" href="./src/styles.css" />
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
+          "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/",
+          "@sparkjsdev/spark": "https://sparkjs.dev/releases/spark/2.1.0/spark.module.js"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <main id="app">
+      <div id="canvasHost"></div>
+
+      <section id="hud" aria-live="polite">
+        <div class="status">
+          <span id="phase">splat loading</span>
+          <span id="clock">00.0</span>
+        </div>
+        <div class="meter" aria-hidden="true">
+          <span id="meterFill"></span>
+        </div>
+      </section>
+
+      <section id="intro" class="panel">
+        <p class="eyebrow">Meta Quest WebXR demo</p>
+        <h1>고덕동 창고 15cm 시점</h1>
+        <p>
+          30초 자동 진행: 바닥 탐험, 책상 밑 진입, 문소리, 그림자,
+          암전, 눈마주침.
+        </p>
+        <div class="actions">
+          <button id="startDesktop" type="button" disabled>Desktop Preview</button>
+          <div id="vrButtonHost"></div>
+        </div>
+      </section>
+
+      <section id="debugPanel" class="debug" hidden>
+        <div><strong>debug</strong> <span id="debugMode">path</span></div>
+        <div id="debugReadout"></div>
+        <div class="debugActions">
+          <button id="copyPose" type="button">Copy Pose</button>
+          <button id="restart" type="button">Restart</button>
+        </div>
+        <p>
+          Space pause, R restart, M scout, WASD move, QE up/down, arrows scrub.
+        </p>
+      </section>
+    </main>
+    <script type="module" src="./src/main.js"></script>
+  </body>
+</html>

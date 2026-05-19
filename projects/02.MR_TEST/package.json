@@ -1,0 +1,10 @@
+{
+  "name": "mr-snake-quest-browser",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "python3 -m http.server 8080",
+    "check": "node --check src/app.js && node --check src/config.js && node --check src/logic.js && node --check src/math.js && node --check src/renderer.js && node --check src/visuals.js"
+  }
+}

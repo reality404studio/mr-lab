@@ -1,0 +1,1569 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mirror MR Test — Quest 3</title>
+<style>
+  * { margin: 0; box-sizing: border-box; }
+  body { background: #0d0d0d; color: white; font-family: sans-serif; height: 100vh; overflow: hidden; }
+
+  #status {
+    position: fixed; top: 0; left: 0; right: 0;
+    background: rgba(0,0,0,0.75); text-align: center;
+    padding: 10px 16px; font-size: 15px; z-index: 20;
+    letter-spacing: 0.02em;
+  }
+
+  #ui {
+    position: fixed; bottom: 36px; left: 0; right: 0;
+    display: flex; justify-content: center; gap: 14px; z-index: 20;
+  }
+
+  button {
+    padding: 16px 28px; font-size: 17px; font-weight: bold;
+    border: none; border-radius: 12px; cursor: pointer;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+  }
+  #btnStart  { background: #4caf50; color: white; }
+  #btnStart.ending { background: #f44336; }
+  #btnSummon { background: #7b1fa2; color: white; display: none; }
+  #btnSummon.active { background: #e91e63; }
+  #btnFish { background: #ff7043; color: white; display: none; }
+  #btnFish.active { background: #e53935; }
+  #devLink {
+    position: fixed; bottom: 10px; right: 14px;
+    font-size: 11px; color: rgba(255,255,255,0.25);
+    text-decoration: none; z-index: 30;
+    padding: 4px 8px; border-radius: 6px;
+  }
+  #devLink:hover { color: rgba(255,255,255,0.6); background: rgba(255,255,255,0.08); }
+
+  #hint {
+    position: fixed; top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    text-align: center; opacity: 0.35; pointer-events: none;
+  }
+  #hint .icon { font-size: 56px; }
+  #hint .desc { margin-top: 14px; font-size: 14px; line-height: 1.7; }
+</style>
+</head>
+<body>
+
+<div id="status">Quest 3 브라우저에서 열어주세요 (HTTPS 필요)</div>
+
+<div id="hint">
+  <div class="icon">🥽</div>
+  <div class="desc">Quest 3 브라우저에서<br>AR 시작 버튼을 누르세요</div>
+</div>
+
+<div id="ui">
+  <button id="btnStart">AR 시작</button>
+  <button id="btnSummon">구체 소환</button>
+  <button id="btnFish">물고기 소환</button>
+</div>
+
+<a id="devLink" href="mic_test.html">🎤 Mic Test</a>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { clone as cloneSkeleton } from 'three/addons/utils/SkeletonUtils.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+// ────────────────────────────────────────────────────────────────
+//  CONSTANTS
+// ────────────────────────────────────────────────────────────────
+const MIRROR_DIST  = 1.5;
+
+// ── 비쥬얼 문법 토큰 (snapshots/VISUAL_GRAMMAR.md) ────────────
+const LAGOON  = new THREE.Color(0x00B4D8);
+const SHALLOW = new THREE.Color(0x90E0EF);
+
+const SPHERE_RADIUS      = 0.12;
+const SPHERE_MOVE_SPEED  = 0.35;
+const SPHERE_STOP_DIST   = 0.5;
+const SPHERE_HOVER_TIME  = 3.0;
+const SPHERE_RISE_SPEED  = 0.12;
+const SPHERE_FADE_SPEED  = 0.35;
+
+// ── 물고기 파라미터 (조절 변수) ───────────────────────────────
+const FISH_MODEL_URL      = './assets/clown_fish.glb';
+const FISH_MODEL_LENGTH   = 0.15;   // m — 모델 최대 길이 기준 정규화 크기
+const FISH_MODEL_YAW      = Math.PI; // GLB의 +Z 진행 방향을 앱의 -Z 진행 방향으로 보정
+const FISH_APPROACH_SPEED = 0.45;   // m/s — 거울로 다가오는 속도
+const FISH_SPAWN_DIST     = 1.3;    // m — 거울 뒤 생성 거리
+const FISH_CROSS_DUR      = 0.55;   // sec — 거울 통과 연출 시간
+const FISH_DRIFT_Z_MIN    = 0.25;   // m — 거울면 앞 최소 거리
+const FISH_DRIFT_Z_MAX    = 0.35;   // m — 사용자 앞 최소 거리
+const FISH_DRIFT_X_AMP    = 0.38;   // m — 좌우 유영 최대 진폭
+const FISH_DRIFT_Y_AMP    = 0.13;   // m — 상하 유영 최대 진폭
+
+// ── 음성 입력 파라미터 (Phase 1.5a 캘리브레이션 값) ──────────
+const VOICE_THRESH   = 0.02;   // CALL 진입 기준 RMS
+const VOICE_HOLD     = 2.0;    // 상태 유지 시간 (초)
+const VOICE_HYST     = 0.25;   // 탈출 threshold 비율
+const VOICE_ATK      = 0.18;   // 스무딩 상승 속도
+const VOICE_REL      = 0.04;   // 스무딩 하강 속도
+const VOICE_LINGER   = 2.5;    // 침묵 후 물고기 여운 시간 (초)
+
+// ── 물고기 스프링 물리 ────────────────────────────────────────
+const FISH_SPRING_K  = 3.5;    // 스프링 강도 (높을수록 빠른 반응)
+const FISH_SPRING_D  = 0.88;   // 감쇠 (낮을수록 오버슈트 많음)
+const FISH_CALL_DIST = 0.50;   // CALL 상태: 사용자 앞 거리 (m)
+const FISH_ORBIT_R   = 0.40;   // SING 상태: 선회 반지름 (m)
+
+// ── 파티클 스파클 ─────────────────────────────────────────────
+const PART_PER_PINCH = 12;     // 핀치 1회당 파티클 수
+const PART_MAX       = 400;    // 최대 파티클 수
+const PART_GRAVITY   = -1.0;   // m/s² — 약한 중력 (천천히 떨어짐)
+const PART_FLOOR_Y   = 0.015;  // 바닥 높이 (m)
+const PART_REST_TIME = 60;     // 바닥 유지 시간 (초)
+
+// ────────────────────────────────────────────────────────────────
+//  THREE.JS SCENE
+// ────────────────────────────────────────────────────────────────
+const scene    = new THREE.Scene();
+const camera   = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.01, 50);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.xr.enabled = true;
+renderer.setClearColor(0x000000, 0);
+renderer.localClippingEnabled = true;
+document.body.appendChild(renderer.domElement);
+
+// 조명
+scene.add(new THREE.AmbientLight(0xffffff, 2.5));
+const dl = new THREE.DirectionalLight(0xffffff, 2.0);
+dl.position.set(1, 3, 1);
+scene.add(dl);
+
+// PMREM 환경맵 — Fish iridescence/clearcoat 반사용 (텍스처 에셋 불필요)
+const _pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = _pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+_pmrem.dispose();
+
+// ── 바닥 가이드 (1.5m 기준선) ──────────────────────────────────
+const guideGroup = new THREE.Group();
+scene.add(guideGroup);
+guideGroup.visible = false;
+
+const barMat = new THREE.MeshBasicMaterial({ color: 0x00e5ff, side: THREE.DoubleSide });
+
+guideGroup.add(
+  Object.assign(new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.012, 0.04), barMat))
+);
+[-0.58, 0.58].forEach(x => {
+  const post = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.28, 0.04), barMat);
+  post.position.set(x, 0.14, 0);
+  guideGroup.add(post);
+});
+const arrowGeo = new THREE.ConeGeometry(0.06, 0.15, 4);
+arrowGeo.rotateX(Math.PI / 2);
+const arrow = new THREE.Mesh(arrowGeo, barMat);
+arrow.position.set(0, 0.006, -0.12);
+guideGroup.add(arrow);
+
+// ────────────────────────────────────────────────────────────────
+//  구체: 거울을 통과하는 오브젝트
+// ────────────────────────────────────────────────────────────────
+const sphereGeo = new THREE.SphereGeometry(SPHERE_RADIUS, 32, 32);
+
+const grayMat = new THREE.MeshStandardMaterial({
+  color: 0x9e9e9e, roughness: 0.4, metalness: 0.5,
+  transparent: true, opacity: 1
+});
+const graySphere = new THREE.Mesh(sphereGeo, grayMat);
+graySphere.visible = false;
+scene.add(graySphere);
+
+const blueMat = new THREE.MeshStandardMaterial({
+  color: 0x1565c0, roughness: 0.15, metalness: 0.4,
+  transparent: true, opacity: 1,
+  emissive: new THREE.Color(0x0d47a1), emissiveIntensity: 0.35
+});
+const blueSphere = new THREE.Mesh(sphereGeo, blueMat);
+blueSphere.visible = false;
+scene.add(blueSphere);
+
+// ── 거울 통과 이펙트 ──────────────────────────────────────────
+const RIPPLE_COUNT = 3;
+const rippleMeshes = [];
+const rippleMats  = [];
+for (let i = 0; i < RIPPLE_COUNT; i++) {
+  const rMat = new THREE.MeshBasicMaterial({
+    color: 0x4fc3f7, transparent: true, opacity: 0, side: THREE.DoubleSide
+  });
+  const rMesh = new THREE.Mesh(new THREE.TorusGeometry(1, 0.018, 8, 48), rMat);
+  rMesh.visible = false;
+  scene.add(rMesh);
+  rippleMeshes.push(rMesh);
+  rippleMats.push(rMat);
+}
+
+const flashMat = new THREE.MeshBasicMaterial({ color: 0x90caf9, transparent: true, opacity: 0 });
+const flashMesh = new THREE.Mesh(new THREE.SphereGeometry(1, 16, 16), flashMat);
+flashMesh.visible = false;
+scene.add(flashMesh);
+
+const mirrorLight = new THREE.PointLight(0x4fc3f7, 0, 4);
+scene.add(mirrorLight);
+
+// ────────────────────────────────────────────────────────────────
+//  파티클 스파클 시스템 (실제 + 거울)
+// ────────────────────────────────────────────────────────────────
+const _pPos  = new Float32Array(PART_MAX * 3);
+const _pPosM = new Float32Array(PART_MAX * 3);
+const _pSz   = new Float32Array(PART_MAX);
+const _pAlp  = new Float32Array(PART_MAX);
+
+const _partGeo = new THREE.BufferGeometry();
+_partGeo.setAttribute('position', new THREE.BufferAttribute(_pPos,  3));
+_partGeo.setAttribute('pSize',    new THREE.BufferAttribute(_pSz,   1));
+_partGeo.setAttribute('pAlpha',   new THREE.BufferAttribute(_pAlp,  1));
+_partGeo.setDrawRange(0, 0);
+
+const _partGeoM = new THREE.BufferGeometry();
+_partGeoM.setAttribute('position', new THREE.BufferAttribute(_pPosM, 3));
+_partGeoM.setAttribute('pSize',    new THREE.BufferAttribute(_pSz,   1));
+_partGeoM.setAttribute('pAlpha',   new THREE.BufferAttribute(_pAlp,  1));
+_partGeoM.setDrawRange(0, 0);
+
+const _partMat = new THREE.ShaderMaterial({
+  vertexShader: `
+    attribute float pSize;
+    attribute float pAlpha;
+    varying float vAlpha;
+    void main() {
+      vAlpha = pAlpha;
+      vec4 mv = modelViewMatrix * vec4(position, 1.0);
+      gl_PointSize = pSize * (400.0 / -mv.z);
+      gl_Position  = projectionMatrix * mv;
+    }
+  `,
+  fragmentShader: `
+    varying float vAlpha;
+    void main() {
+      vec2 uv = gl_PointCoord - 0.5;
+      float r  = dot(uv, uv) * 4.0;
+      if (r > 1.0) discard;
+      float glow = 1.0 - smoothstep(0.0, 1.0, r);
+      vec3  col  = mix(vec3(1.0, 0.92, 0.55), vec3(1.0), 1.0 - r);
+      gl_FragColor = vec4(col, vAlpha * glow);
+    }
+  `,
+  transparent: true, depthWrite: false, blending: THREE.AdditiveBlending
+});
+
+const partMesh  = new THREE.Points(_partGeo,  _partMat);
+const partMeshM = new THREE.Points(_partGeoM, _partMat);
+partMesh.frustumCulled  = false; partMesh.visible  = false; scene.add(partMesh);
+partMeshM.frustumCulled = false; partMeshM.visible = false; scene.add(partMeshM);
+
+let particles = [];  // { x,y,z, vx,vy,vz, state, age, flyTime, size }
+
+let grayClipPlane = null;
+let blueClipPlane = null;
+
+// ────────────────────────────────────────────────────────────────
+//  물고기 GLB 모델 — 실제 + 거울 쌍
+// ────────────────────────────────────────────────────────────────
+const fishReal = new THREE.Group();
+fishReal.visible = false;
+scene.add(fishReal);
+
+const fishMirrorMesh = new THREE.Group();
+fishMirrorMesh.visible = false;
+scene.add(fishMirrorMesh);
+
+const fishRealMats = [];
+const fishMirrorMats = [];
+const fishAnimationMixers = [];
+
+function setFishOpacity(mats, opacity) {
+  mats.forEach(mat => {
+    mat.transparent = true;
+    mat.opacity = opacity;
+    mat.needsUpdate = true;
+  });
+}
+
+// M4 Fish Spirit 재료 (VISUAL_GRAMMAR.md): GLB 텍스처 위에 청록 정령 광택을 덧입힘
+function upgradeFishMaterial(source) {
+  const mat = new THREE.MeshPhysicalMaterial();
+
+  // 소스(GLB) PBR 속성 승계
+  if (source) {
+    if (source.color)        mat.color.copy(source.color);
+    if (source.map)          mat.map          = source.map;
+    if (source.normalMap)    mat.normalMap    = source.normalMap;
+    if (source.roughnessMap) mat.roughnessMap = source.roughnessMap;
+    if (source.metalnessMap) mat.metalnessMap = source.metalnessMap;
+    if (source.aoMap)        mat.aoMap        = source.aoMap;
+    if (typeof source.roughness === 'number') mat.roughness = source.roughness;
+    if (typeof source.metalness === 'number') mat.metalness = source.metalness;
+  }
+
+  // 정령 광택
+  mat.clearcoat          = 0.6;
+  mat.clearcoatRoughness = 0.2;
+  mat.iridescence        = 0.35;
+  mat.iridescenceIOR     = 1.3;
+  mat.envMapIntensity    = 1.2;
+  mat.emissive           = LAGOON.clone().multiplyScalar(0.15);
+  mat.emissiveIntensity  = 1.0;  // updateFish 에서 호흡/리빌 펄스로 변조
+
+  mat.side       = THREE.DoubleSide;
+  mat.transparent = true;
+  mat.opacity     = 1;
+  mat.depthWrite  = true;
+
+  return mat;
+}
+
+function assignFishMaterials(root, mats, isMirror) {
+  root.traverse(obj => {
+    if (!obj.isMesh) return;
+    obj.frustumCulled = false;
+
+    const sourceMats = Array.isArray(obj.material) ? obj.material : [obj.material];
+    const upgradedMats = sourceMats.map(source => {
+      const mat = upgradeFishMaterial(source);
+      mats.push(mat);
+      return mat;
+    });
+
+    obj.material = Array.isArray(obj.material) ? upgradedMats : upgradedMats[0];
+  });
+}
+
+function createFishModelInstance(source, mats, isMirror) {
+  const model = cloneSkeleton(source);
+  assignFishMaterials(model, mats, isMirror);
+
+  const box = new THREE.Box3().setFromObject(model);
+  const size = box.getSize(new THREE.Vector3());
+  const center = box.getCenter(new THREE.Vector3());
+  const maxDim = Math.max(size.x, size.y, size.z);
+
+  const centerOffset = new THREE.Group();
+  centerOffset.position.copy(center).multiplyScalar(-1);
+  centerOffset.add(model);
+
+  const wrapper = new THREE.Group();
+  wrapper.add(centerOffset);
+  wrapper.scale.setScalar(FISH_MODEL_LENGTH / maxDim);
+  wrapper.rotation.y = FISH_MODEL_YAW;
+
+  return wrapper;
+}
+
+function playFishAnimations(root, clips) {
+  if (!clips?.length) return;
+
+  const mixer = new THREE.AnimationMixer(root);
+  clips.forEach(clip => mixer.clipAction(clip).play());
+  fishAnimationMixers.push(mixer);
+}
+
+new GLTFLoader().load(
+  FISH_MODEL_URL,
+  gltf => {
+    const realModel = createFishModelInstance(gltf.scene, fishRealMats, false);
+    const mirrorModel = createFishModelInstance(gltf.scene, fishMirrorMats, true);
+
+    fishReal.add(realModel);
+    fishMirrorMesh.add(mirrorModel);
+    playFishAnimations(realModel, gltf.animations);
+    playFishAnimations(mirrorModel, gltf.animations);
+    setFishOpacity(fishRealMats, 1);
+    setFishOpacity(fishMirrorMats, 1);
+  },
+  undefined,
+  err => {
+    console.error('Fish GLB load failed:', err);
+    setStatus('⚠ 물고기 모델 로드 실패: assets/clown_fish.glb 확인 필요');
+  }
+);
+
+// ────────────────────────────────────────────────────────────────
+//  HAND TRACKING — XR 손 공간 (조인트 데이터 소스)
+// ────────────────────────────────────────────────────────────────
+const hand1 = renderer.xr.getHand(0);
+scene.add(hand1);
+
+const hand2 = renderer.xr.getHand(1);
+scene.add(hand2);
+
+// ────────────────────────────────────────────────────────────────
+//  핀치 — 파티클 스파클 (구체 대체)
+// ────────────────────────────────────────────────────────────────
+const PINCH_THRESHOLD  = 0.02;   // 핀치 판정 거리 (m)
+
+// 파티클 오디오 연결용 (invisible Object3D)
+const pinchObj1 = new THREE.Object3D(); scene.add(pinchObj1);
+const pinchObj2 = new THREE.Object3D(); scene.add(pinchObj2);
+
+// ────────────────────────────────────────────────────────────────
+//  공간 음향 — PositionalAudio, 핀치 위치에서 방사
+// ────────────────────────────────────────────────────────────────
+const audioListener = new THREE.AudioListener();
+camera.add(audioListener);
+
+let bellBuffer = null;
+new THREE.AudioLoader().load('mixkit-achievement-bell-600.wav', buf => { bellBuffer = buf; });
+
+let alertBuffer = null;
+new THREE.AudioLoader().load('mixkit-alert-bells-echo-765.wav', buf => { alertBuffer = buf; });
+
+function createPinchAudio(obj) {
+  const sound = new THREE.PositionalAudio(audioListener);
+  sound.setRefDistance(0.3);
+  sound.setRolloffFactor(2);
+  sound.setMaxDistance(6);
+  obj.add(sound);
+  return sound;
+}
+
+const pinchAudio1 = createPinchAudio(pinchObj1);
+const pinchAudio2 = createPinchAudio(pinchObj2);
+
+// 핀치 이전 상태 (rising edge 감지용)
+let wasPinching1 = false;
+let wasPinching2 = false;
+
+// ────────────────────────────────────────────────────────────────
+//  포인터 감지 상수
+// ────────────────────────────────────────────────────────────────
+const INDEX_EXTEND_MIN = 0.14;  // 검지 끝~손목 최소 거리 (m) — 이상이면 폄 판정
+const CURL_MAX         = 0.13;  // 중지/약지/소지 끝~손목 최대 거리 (m) — 이하면 굽힘 판정
+const LAZY_LERP        = 0.07;  // 빛점 추종 속도 (낮을수록 느리게 따라옴)
+
+// ────────────────────────────────────────────────────────────────
+//  포인터 빛점 — 실제 2개 + 거울 2개
+// ────────────────────────────────────────────────────────────────
+function createPointerDot() {
+  // 중심 흰 점
+  const coreMat = new THREE.MeshBasicMaterial({
+    color: 0xffffff,
+    transparent: true, opacity: 1.0,
+    blending: THREE.AdditiveBlending, depthWrite: false
+  });
+  const core = new THREE.Mesh(new THREE.SphereGeometry(0.008, 10, 10), coreMat);
+  core.visible = false;
+
+  // 외곽 헤일로 (additive로 빛 번짐 표현)
+  const haloMat = new THREE.MeshBasicMaterial({
+    color: 0x88ccff,
+    transparent: true, opacity: 0.28,
+    blending: THREE.AdditiveBlending, depthWrite: false
+  });
+  const halo = new THREE.Mesh(new THREE.SphereGeometry(0.024, 10, 10), haloMat);
+  core.add(halo);
+
+  scene.add(core);
+  return { mesh: core, lazyPos: new THREE.Vector3() };
+}
+
+const ptrDot1       = createPointerDot();
+const ptrDot2       = createPointerDot();
+const mirrorPtrDot1 = createPointerDot();
+const mirrorPtrDot2 = createPointerDot();
+
+// 포인터 판정용 Vector3 (함수 간 공유)
+const _ptrWrist = new THREE.Vector3();
+const _ptrIndex = new THREE.Vector3();
+const _ptrMid   = new THREE.Vector3();
+const _ptrRing  = new THREE.Vector3();
+const _ptrPinky = new THREE.Vector3();
+
+// ────────────────────────────────────────────────────────────────
+//  궤적(Trail) 시스템 — 포인터 빛점이 지나간 자리에 잔상
+// ────────────────────────────────────────────────────────────────
+const TRAIL_LIFETIME     = 10.0;   // 점 유지 시간 (초)
+const TRAIL_ADD_INTERVAL = 0.033;  // 새 점 추가 간격 (초 ≈ 30fps)
+const TRAIL_MAX_PTS      = 400;
+
+function makeTrailMaterial() {
+  return new THREE.ShaderMaterial({
+    vertexShader: `
+      attribute float age;
+      varying  float vAge;
+      void main() {
+        vAge = age;
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        // 오래될수록 점 크기가 줄어듦
+        gl_PointSize = max(1.5, 9.0 * (1.0 - age / 10.0));
+        gl_Position  = projectionMatrix * mv;
+      }
+    `,
+    fragmentShader: `
+      varying float vAge;
+      void main() {
+        float a = clamp(1.0 - vAge / 10.0, 0.0, 1.0);
+        a = a * a;                          // 이차 감쇠 — 끝부분에서 빠르게 사라짐
+        vec2  uv   = gl_PointCoord - 0.5;
+        float r    = dot(uv, uv) * 4.0;    // 0=중심, 1=가장자리
+        if (r > 1.0) discard;
+        float soft = 1.0 - smoothstep(0.4, 1.0, r);
+        // 최근=흰색, 오래될수록 하늘색으로 변하며 사라짐
+        vec3 col = mix(vec3(0.55, 0.75, 1.0), vec3(1.0), 1.0 - vAge / 10.0);
+        gl_FragColor = vec4(col, a * soft);
+      }
+    `,
+    transparent: true,
+    depthWrite:  false,
+    blending:    THREE.AdditiveBlending
+  });
+}
+
+class HandTrail {
+  constructor() {
+    this.pts     = [];   // { x, y, z, t }
+    this.lastAdd = 0;
+
+    this.rPos = new Float32Array(TRAIL_MAX_PTS * 3);
+    this.mPos = new Float32Array(TRAIL_MAX_PTS * 3);
+    this.ages = new Float32Array(TRAIL_MAX_PTS);
+
+    // 실제 궤적 지오메트리
+    this.rAgeAttr = new THREE.BufferAttribute(this.ages, 1);
+    const rGeo = new THREE.BufferGeometry();
+    rGeo.setAttribute('position', new THREE.BufferAttribute(this.rPos, 3));
+    rGeo.setAttribute('age',      this.rAgeAttr);
+    rGeo.setDrawRange(0, 0);
+    this.rGeo  = rGeo;
+    this.rMesh = new THREE.Points(rGeo, makeTrailMaterial());
+    this.rMesh.frustumCulled = false;
+    this.rMesh.visible = false;
+    scene.add(this.rMesh);
+
+    // 거울 궤적 지오메트리 (Z 반전 위치, age는 같은 배열 공유)
+    this.mAgeAttr = new THREE.BufferAttribute(this.ages, 1);
+    const mGeo = new THREE.BufferGeometry();
+    mGeo.setAttribute('position', new THREE.BufferAttribute(this.mPos, 3));
+    mGeo.setAttribute('age',      this.mAgeAttr);
+    mGeo.setDrawRange(0, 0);
+    this.mGeo  = mGeo;
+    this.mMesh = new THREE.Points(mGeo, makeTrailMaterial());
+    this.mMesh.frustumCulled = false;
+    this.mMesh.visible = false;
+    scene.add(this.mMesh);
+  }
+
+  update(timestamp, isPointing, lazyPos) {
+    const t = timestamp / 1000;
+
+    // 만료 점 제거
+    this.pts = this.pts.filter(p => t - p.t < TRAIL_LIFETIME);
+
+    // 포인팅 중일 때만 새 점 추가
+    if (isPointing && t - this.lastAdd > TRAIL_ADD_INTERVAL) {
+      this.pts.push({ x: lazyPos.x, y: lazyPos.y, z: lazyPos.z, t });
+      this.lastAdd = t;
+    }
+
+    const count = Math.min(this.pts.length, TRAIL_MAX_PTS);
+
+    for (let i = 0; i < count; i++) {
+      const p = this.pts[i];
+      const b = i * 3;
+      this.rPos[b]   = p.x;  this.rPos[b+1] = p.y;  this.rPos[b+2] = p.z;
+      this.ages[i]   = t - p.t;
+      this.mPos[b]   = p.x;  this.mPos[b+1] = p.y;
+      this.mPos[b+2] = spawnPos ? 2 * mirrorZ - p.z : p.z;
+    }
+
+    const vis = count > 0;
+    if (vis) {
+      this.rGeo.attributes.position.needsUpdate = true;
+      this.rAgeAttr.needsUpdate = true;
+      this.mGeo.attributes.position.needsUpdate = true;
+      this.mAgeAttr.needsUpdate = true;
+    }
+    this.rGeo.setDrawRange(0, count);
+    this.mGeo.setDrawRange(0, count);
+    this.rMesh.visible = vis;
+    this.mMesh.visible = vis && !!spawnPos;
+  }
+}
+
+const trail1 = new HandTrail();
+const trail2 = new HandTrail();
+
+// ────────────────────────────────────────────────────────────────
+//  손목 UI 패널 — hand1 손목 위에 10×10cm 플레인, hand2 검지로 터치
+// ────────────────────────────────────────────────────────────────
+const WRIST_PANEL_SIZE   = 0.10;   // 10cm
+const WRIST_PANEL_OFFSET = 0.05;   // 손목 로컬 Y+ 방향으로 5cm
+const WRIST_PRESS_DIST   = 0.025;  // 충돌 판정 수직 거리 (m)
+const WRIST_PRESS_DUR    = 0.3;    // 눌림 색 유지 시간 (초)
+const PANEL_COL_NORMAL   = new THREE.Color(0x888888);
+const PANEL_COL_PRESS    = new THREE.Color(0xff69b4);
+
+function createWristPanel() {
+  const mat = new THREE.MeshStandardMaterial({
+    color: PANEL_COL_NORMAL.clone(),
+    roughness: 0.3,
+    metalness: 0.1,
+    side: THREE.DoubleSide,
+    transparent: true,
+    opacity: 0.82
+  });
+  const mesh = new THREE.Mesh(
+    new THREE.PlaneGeometry(WRIST_PANEL_SIZE, WRIST_PANEL_SIZE),
+    mat
+  );
+  mesh.visible = false;
+
+  const sound = new THREE.PositionalAudio(audioListener);
+  sound.setRefDistance(0.3);
+  sound.setRolloffFactor(2);
+  sound.setMaxDistance(4);
+  mesh.add(sound);
+
+  scene.add(mesh);
+  return { mesh, mat, sound, pressTimer: 0, lastTime: 0 };
+}
+
+const wristPanel      = createWristPanel();  // 실제
+const mirrorWristPanel = createWristPanel(); // 거울 (Z 반전)
+
+// 패널 계산용 벡터
+const _wristOffset = new THREE.Vector3();
+const _panelNormal = new THREE.Vector3();
+const _panelRight  = new THREE.Vector3();
+const _panelUp     = new THREE.Vector3();
+const _tipToPanel  = new THREE.Vector3();
+
+// ────────────────────────────────────────────────────────────────
+//  GLOBAL STATE
+// ────────────────────────────────────────────────────────────────
+let spawnPos       = null;
+let spawnEyeY      = 1.5;
+let mirrorZ        = 0;
+let currentSession = null;
+
+let spherePhase     = 'idle';
+let sphereZ         = 0;
+let sphereY         = 1.5;
+let sphereAlpha     = 1;
+let sphereHoverTime = 0;
+let prevTimestamp   = 0;
+
+let mirrorEffectTimer = -1;
+let mirrorTouched     = false;
+
+// 물고기 상태
+let fishPhase          = 'idle'; // 'idle'|'approach'|'crossing'|'drift'
+let fishX              = 0;
+let fishY              = 0;
+let fishZ              = 0;
+let fishCrossTimer     = 0;
+let fishCrossTriggered = false;
+let fishDriftTime      = 0;
+let fishPhaseX         = 0;
+let fishPhaseY         = 0;
+let fishPhaseZ         = 0;
+let fishDriftEntryX    = 0;  // crossing 종료 시점의 위치 (drift 시작점)
+let fishDriftEntryY    = 0;
+let fishDriftEntryZ    = 0;
+
+// 거울 통과 reveal 펄스 (emissive 증폭, 디즈니 reveal moment)
+let fishRevealPulseTimer = -1;
+
+// 자율 유영 웨이포인트
+let fishWptX = 0, fishWptY = 0, fishWptZ = 0;
+let fishWptTimer = 0;
+
+// 음성 입력
+let micStream   = null;
+let micCtx      = null;
+let micAnalyser = null;
+let micBufTime  = null;
+let micSmoothed = 0;
+
+const VOICE_LEVEL = { silence: 0, whisper: 1, call: 2, sing: 3 };
+let voiceHeld      = 'silence';
+let voiceRaw       = 'silence';
+let voiceHoldTimer = 0;
+
+// 물고기 스프링 물리
+const fishVel = new THREE.Vector3();
+let lingerTimer = 0;
+
+// 현재 헤드 위치 (매 프레임 갱신)
+let currentHeadX = 0;
+let currentHeadY = 1.5;
+let currentHeadZ = 0;
+
+// ────────────────────────────────────────────────────────────────
+//  HELPER
+// ────────────────────────────────────────────────────────────────
+function reflectZ(z) { return 2 * mirrorZ - z; }
+
+// ── 마이크 / 음성 상태 ───────────────────────────────────────────
+async function startMic() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
+    });
+    micCtx      = new AudioContext();
+    micAnalyser = micCtx.createAnalyser();
+    micAnalyser.fftSize               = 2048;
+    micAnalyser.smoothingTimeConstant = 0;
+    micCtx.createMediaStreamSource(stream).connect(micAnalyser);
+    micBufTime = new Float32Array(micAnalyser.fftSize);
+    micStream  = stream;
+  } catch (e) {
+    setStatus('⚠ 마이크 오류: ' + e.message);
+  }
+}
+
+function stopMic() {
+  micStream?.getTracks().forEach(t => t.stop());
+  micCtx?.close();
+  micStream = null; micCtx = null; micAnalyser = null; micBufTime = null;
+  micSmoothed = 0; voiceHeld = 'silence'; voiceRaw = 'silence'; voiceHoldTimer = 0;
+}
+
+function calcVoiceRaw(v) {
+  if (v >= VOICE_THRESH * 0.88) return 'sing';
+  if (v >= VOICE_THRESH * 0.63) return 'call';
+  if (v >= VOICE_THRESH * 0.15) return 'whisper';
+  return 'silence';
+}
+
+function voiceAboveExit(v, held) {
+  const H = VOICE_HYST;
+  if (held === 'sing')    return v >= VOICE_THRESH * 0.88 * H;
+  if (held === 'call')    return v >= VOICE_THRESH * 0.63 * H;
+  if (held === 'whisper') return v >= VOICE_THRESH * 0.15 * H;
+  return false;
+}
+
+function updateVoiceState(dt) {
+  if (!micAnalyser) return;
+  micAnalyser.getFloatTimeDomainData(micBufTime);
+  let s = 0;
+  for (let i = 0; i < micBufTime.length; i++) s += micBufTime[i] * micBufTime[i];
+  const rms = Math.sqrt(s / micBufTime.length);
+
+  const a = rms > micSmoothed ? VOICE_ATK : VOICE_REL;
+  micSmoothed = micSmoothed + (rms - micSmoothed) * a;
+
+  voiceRaw = calcVoiceRaw(micSmoothed);
+  const rawLvl  = VOICE_LEVEL[voiceRaw];
+  const heldLvl = VOICE_LEVEL[voiceHeld];
+
+  if (rawLvl >= heldLvl) {
+    voiceHeld = voiceRaw; voiceHoldTimer = 0;
+  } else if (voiceAboveExit(micSmoothed, voiceHeld)) {
+    voiceHoldTimer = 0;  // 히스테리시스 구간 — 타이머 시작 안 함
+  } else {
+    voiceHoldTimer += dt;
+    if (voiceHoldTimer >= VOICE_HOLD) {
+      voiceHeld = voiceRaw; voiceHoldTimer = 0;
+    }
+  }
+}
+
+// ── 물고기 ───────────────────────────────────────────────────────
+function pickNewWaypoint() {
+  const zMin = mirrorZ + 0.3;
+  const zMax = Math.max(zMin + 0.3, currentHeadZ - 0.4);
+  fishWptX = (spawnPos?.x ?? 0) + (Math.random() - 0.5) * 0.9;
+  fishWptY = spawnEyeY + (Math.random() - 0.5) * 0.28 - 0.1;
+  fishWptZ = zMin + Math.random() * (zMax - zMin);
+  fishWptTimer = 3.0 + Math.random() * 4.0;  // 3~7초마다 새 목적지
+}
+
+function resetFish() {
+  fishPhase = 'idle';
+  fishReal.visible = false;
+  fishMirrorMesh.visible = false;
+  fishVel.set(0, 0, 0);
+  lingerTimer = 0;
+}
+
+function spawnFish() {
+  fishX              = spawnPos.x + (Math.random() - 0.5) * 0.5;
+  fishY              = spawnEyeY - 0.15;
+  fishZ              = mirrorZ - FISH_SPAWN_DIST;
+  fishPhase          = 'approach';
+  fishCrossTimer     = 0;
+  fishCrossTriggered = false;
+  fishDriftTime      = 0;
+  fishPhaseX         = Math.random() * Math.PI * 2;
+  fishPhaseY         = Math.random() * Math.PI * 2;
+  fishPhaseZ         = Math.random() * Math.PI * 2;
+  setFishOpacity(fishRealMats, 1);
+  setFishOpacity(fishMirrorMats, 1);
+  fishMirrorMesh.visible = false;
+  fishVel.set(0, 0, 0);
+  fishAnimationMixers.forEach(mixer => mixer.setTime(0));
+  pickNewWaypoint();
+}
+
+function updateFish(timestamp, userZ, dt) {
+  if (fishPhase === 'idle' || !spawnPos) {
+    fishReal.visible = false;
+    fishMirrorMesh.visible = false;
+    return;
+  }
+
+  fishAnimationMixers.forEach(mixer => mixer.update(dt));
+
+  if (fishPhase === 'approach') {
+    fishZ += FISH_APPROACH_SPEED * dt;
+    const bob  = Math.sin(timestamp * 0.0030) * 0.018;
+    const sway = Math.sin(timestamp * 0.0015) * 0.010;
+    fishReal.position.set(fishX + sway, fishY + bob, fishZ);
+    fishReal.rotation.set(0, Math.PI + Math.sin(timestamp * 0.0012) * 0.12, 0);
+    fishReal.visible = true;
+    fishMirrorMesh.visible = false;
+
+    if (fishZ >= mirrorZ) {
+      fishPhase = 'crossing';
+      fishCrossTimer = 0;
+      fishCrossTriggered = false;
+    }
+    return;
+  }
+
+  if (fishPhase === 'crossing') {
+    fishCrossTimer += dt;
+    fishZ += FISH_APPROACH_SPEED * dt;
+
+    if (!fishCrossTriggered) {
+      fishCrossTriggered = true;
+      triggerMirrorEffect(fishX, fishY, mirrorZ);
+    }
+
+    // 포털 통과 느낌: 원본 색감은 유지하고 opacity만 맥동
+    const crossT = Math.min(fishCrossTimer / FISH_CROSS_DUR, 1);
+    const flash  = Math.sin(crossT * Math.PI);
+    setFishOpacity(fishRealMats, 0.55 + flash * 0.25 + (1 - flash) * 0.2);
+
+    const bob = Math.sin(timestamp * 0.003) * 0.018;
+    fishReal.position.set(fishX, fishY + bob, fishZ);
+    fishReal.rotation.set(0, Math.PI, 0);
+    fishReal.visible = true;
+    fishMirrorMesh.visible = false;
+
+    if (fishCrossTimer >= FISH_CROSS_DUR) {
+      fishPhase = 'drift';
+      fishDriftEntryX = fishX;        // 통과 완료 지점을 drift 시작점으로 고정
+      fishDriftEntryY = fishY + Math.sin(timestamp * 0.003) * 0.018;
+      fishDriftEntryZ = fishZ;
+      setFishOpacity(fishRealMats, 1);
+      fishRevealPulseTimer = 0;       // 거울 통과 reveal 펄스 시작
+    }
+    return;
+  }
+
+  if (fishPhase === 'drift') {
+    fishDriftTime += dt;
+    const t = fishDriftTime;
+
+    // ── 웨이포인트 갱신 (항상 실행) ──────────────────────────
+    fishWptTimer -= dt;
+    const dWx = fishWptX - fishX, dWy = fishWptY - fishY, dWz = fishWptZ - fishZ;
+    const distToWpt = Math.sqrt(dWx*dWx + dWy*dWy + dWz*dWz);
+    if (fishWptTimer <= 0 || distToWpt < 0.1) pickNewWaypoint();
+
+    // ── 음성 상태에 따른 타겟 결정 ───────────────────────────
+    let targetX, targetY, targetZ;
+
+    if (voiceHeld === 'sing') {
+      lingerTimer = VOICE_LINGER;
+      // SING: 사용자 주변 원형 선회
+      const angle = t * 1.2 + fishPhaseX;
+      targetX = currentHeadX + Math.sin(angle) * FISH_ORBIT_R;
+      targetY = currentHeadY - 0.2 + Math.sin(t * 0.9 + fishPhaseY) * 0.08;
+      targetZ = currentHeadZ - 0.25 + Math.cos(angle) * FISH_ORBIT_R;
+
+    } else if (voiceHeld === 'call') {
+      lingerTimer = VOICE_LINGER;
+      // CALL: 사용자 앞으로, 약간의 흔들림
+      targetX = currentHeadX + Math.sin(t * 0.5 + fishPhaseX) * 0.08;
+      targetY = currentHeadY - 0.25;
+      targetZ = currentHeadZ - FISH_CALL_DIST;
+
+    } else if (voiceHeld === 'whisper') {
+      lingerTimer = VOICE_LINGER;
+      // WHISPER: 웨이포인트 + 사용자 방향 35% 블렌딩 (눈치만 챔)
+      const w = 0.35;
+      const midZ = mirrorZ + (currentHeadZ - mirrorZ) * 0.55;
+      targetX = fishWptX * (1 - w) + currentHeadX * w;
+      targetY = fishWptY * (1 - w) + (currentHeadY - 0.2) * w;
+      targetZ = fishWptZ * (1 - w) + midZ * w;
+
+    } else {
+      // SILENCE: 여운 후 웨이포인트로 자율 유영 재개
+      lingerTimer = Math.max(0, lingerTimer - dt);
+      if (lingerTimer > 0) {
+        targetX = fishX; targetY = fishY; targetZ = fishZ; // 여운: 제자리
+      } else {
+        targetX = fishWptX;  // 가던 길 계속
+        targetY = fishWptY;
+        targetZ = fishWptZ;
+      }
+    }
+
+    // ── 스프링 물리 ───────────────────────────────────────────
+    fishVel.x += (targetX - fishX) * FISH_SPRING_K * dt;
+    fishVel.y += (targetY - fishY) * FISH_SPRING_K * dt;
+    fishVel.z += (targetZ - fishZ) * FISH_SPRING_K * dt;
+    fishVel.multiplyScalar(FISH_SPRING_D);
+
+    fishX += fishVel.x * dt;
+    fishY += fishVel.y * dt;
+    fishZ += fishVel.z * dt;
+
+    // z 클램프: 거울 앞면 / 사용자 바로 앞 사이
+    fishZ = Math.max(mirrorZ + FISH_MODEL_LENGTH * 0.3, Math.min(fishZ, currentHeadZ - 0.15));
+
+    // ── 방향: 속도 벡터 기반 ─────────────────────────────────
+    const spd2D = Math.sqrt(fishVel.x * fishVel.x + fishVel.z * fishVel.z);
+    if (spd2D > 0.004) {
+      fishReal.rotation.y = Math.atan2(-fishVel.x, -fishVel.z);
+    }
+    fishReal.rotation.x = Math.max(-0.4, Math.min(0.4, -fishVel.y * 3.0));
+    fishReal.rotation.z = Math.max(-0.5, Math.min(0.5,  fishVel.x * 2.0));
+
+    fishReal.position.set(fishX, fishY, fishZ);
+    fishReal.visible = true;
+
+    // ── 거울 복제 ─────────────────────────────────────────────
+    fishMirrorMesh.position.set(fishX, fishY, reflectZ(fishZ));
+    fishMirrorMesh.rotation.set(
+       fishReal.rotation.x,
+       Math.PI - fishReal.rotation.y,
+      -fishReal.rotation.z
+    );
+    fishMirrorMesh.visible = true;
+
+    // ── M4 호흡 + 거울 통과 reveal 펄스 (emissive 변조) ──────
+    let revealPulse = 0;
+    if (fishRevealPulseTimer >= 0) {
+      fishRevealPulseTimer += dt;
+      if (fishRevealPulseTimer < 0.8) {
+        revealPulse = (1 - fishRevealPulseTimer / 0.8) * 1.5;
+      } else {
+        fishRevealPulseTimer = -1;
+      }
+    }
+    const breath = 1.0 + Math.sin(timestamp * 0.0018) * 0.5 + revealPulse;
+    fishRealMats.forEach(m   => { m.emissiveIntensity = breath; });
+    fishMirrorMats.forEach(m => { m.emissiveIntensity = breath; });
+  }
+}
+
+function resetSphereVisuals() {
+  graySphere.visible = false;
+  blueSphere.visible = false;
+  grayMat.opacity    = 1;
+  blueMat.opacity    = 1;
+}
+
+function triggerMirrorEffect(x, y, z) {
+  mirrorEffectTimer = 0;
+  rippleMeshes.forEach((m, i) => {
+    m.position.set(x, y, z);
+    m.scale.setScalar(0.01);
+    m.visible = true;
+    rippleMats[i].opacity = 0;
+  });
+  flashMesh.position.set(x, y, z);
+  flashMesh.scale.setScalar(0.01);
+  flashMesh.visible = true;
+  flashMat.opacity  = 0;
+  mirrorLight.position.set(x, y, z);
+  mirrorLight.intensity = 0;
+}
+
+function updateMirrorEffect(dt) {
+  if (mirrorEffectTimer < 0) return;
+  mirrorEffectTimer += dt;
+
+  const t = mirrorEffectTimer;
+  const RING_DELAY    = 0.13;
+  const RING_DURATION = 0.65;
+  const MAX_RADIUS    = 0.55;
+  const TOTAL_TIME    = RING_DELAY * (RIPPLE_COUNT - 1) + RING_DURATION + 0.1;
+
+  rippleMeshes.forEach((mesh, i) => {
+    const localT = t - i * RING_DELAY;
+    if (localT <= 0 || localT > RING_DURATION) { mesh.visible = false; return; }
+    const p = localT / RING_DURATION;
+    mesh.scale.setScalar(p * MAX_RADIUS);
+    rippleMats[i].opacity = (1 - p) * 0.75;
+    mesh.visible = true;
+  });
+
+  const FLASH_DUR = 0.25;
+  if (t < FLASH_DUR) {
+    const fp = t / FLASH_DUR;
+    flashMesh.scale.setScalar(fp * 0.3);
+    flashMat.opacity = (1 - fp) * 0.9;
+    flashMesh.visible = true;
+  } else {
+    flashMesh.visible = false;
+  }
+
+  const LIGHT_DUR = 0.3;
+  mirrorLight.intensity = t < LIGHT_DUR
+    ? Math.sin((t / LIGHT_DUR) * Math.PI) * 4.0
+    : 0;
+
+  if (t > TOTAL_TIME) {
+    mirrorEffectTimer = -1;
+    rippleMeshes.forEach(m => { m.visible = false; });
+    flashMesh.visible     = false;
+    mirrorLight.intensity = 0;
+  }
+}
+
+function startSphereAnimation() {
+  sphereZ           = mirrorZ - 1.0;
+  sphereY           = spawnEyeY;
+  spherePhase       = 'moving';
+  sphereAlpha       = 1;
+  grayMat.opacity   = 1;
+  blueMat.opacity   = 1;
+  mirrorTouched     = false;
+  mirrorEffectTimer = -1;
+}
+
+function updateSphere(timestamp, userZ) {
+  if (spherePhase === 'idle' || !spawnPos) { resetSphereVisuals(); return; }
+
+  const dt = prevTimestamp > 0
+    ? Math.min((timestamp - prevTimestamp) / 1000, 0.05)
+    : 0.016;
+
+  if (spherePhase === 'moving') {
+    sphereZ += SPHERE_MOVE_SPEED * dt;
+    const stopZ = userZ - SPHERE_STOP_DIST;
+    if (sphereZ >= stopZ) {
+      sphereZ = stopZ;
+      spherePhase     = 'hovering';
+      sphereHoverTime = SPHERE_HOVER_TIME;
+    }
+  } else if (spherePhase === 'hovering') {
+    sphereHoverTime -= dt;
+    if (sphereHoverTime <= 0) spherePhase = 'rising';
+  } else if (spherePhase === 'rising') {
+    sphereY     += SPHERE_RISE_SPEED * dt;
+    sphereAlpha -= SPHERE_FADE_SPEED * dt;
+    grayMat.opacity = Math.max(sphereAlpha, 0);
+    blueMat.opacity = Math.max(sphereAlpha, 0);
+    if (sphereAlpha <= 0) {
+      spherePhase = 'idle';
+      resetSphereVisuals();
+      btnSummon.textContent = '구체 소환';
+      btnSummon.classList.remove('active');
+      return;
+    }
+  }
+
+  const bob  = Math.sin(timestamp * 0.0025) * 0.015;
+  const posX = spawnPos.x;
+  const posY = sphereY + bob;
+  const posZ = sphereZ;
+
+  graySphere.position.set(posX, posY, posZ);
+  blueSphere.position.set(posX, posY, posZ);
+
+  const fullyBehind  = posZ < mirrorZ - SPHERE_RADIUS;
+  const fullyInFront = posZ > mirrorZ + SPHERE_RADIUS;
+
+  if (fullyBehind) {
+    grayMat.clippingPlanes = [];
+    graySphere.visible = true;
+    blueSphere.visible = false;
+  } else if (fullyInFront) {
+    blueMat.clippingPlanes = [];
+    graySphere.visible = false;
+    blueSphere.visible = true;
+  } else {
+    grayMat.clippingPlanes = [grayClipPlane];
+    blueMat.clippingPlanes = [blueClipPlane];
+    graySphere.visible = true;
+    blueSphere.visible = true;
+    if (!mirrorTouched) {
+      mirrorTouched = true;
+      triggerMirrorEffect(posX, posY, mirrorZ);
+    }
+  }
+}
+
+// _tmpPos: 손목 패널 등에서 공유하는 임시 Vector3
+const _tmpPos = new THREE.Vector3();
+
+// ────────────────────────────────────────────────────────────────
+//  핀치 감지 & 구체 업데이트
+// ────────────────────────────────────────────────────────────────
+const _indexPos = new THREE.Vector3();
+const _thumbPos = new THREE.Vector3();
+
+// ── 파티클 방출 ───────────────────────────────────────────────
+function emitParticles(x, y, z) {
+  for (let i = 0; i < PART_PER_PINCH; i++) {
+    if (particles.length >= PART_MAX) {
+      // 꽉 찼으면 가장 오래된 바닥 파티클 제거해서 자리 확보 → 무한 생성 가능
+      const oldIdx = particles.findIndex(p => p.state === 'resting');
+      if (oldIdx !== -1) particles.splice(oldIdx, 1);
+      else break; // 비행 중인 것만 있으면 포기
+    }
+    const angle  = Math.random() * Math.PI * 2;
+    const horiz  = 0.01 + Math.random() * 0.07;  // 매우 약한 수평 퍼짐
+    // 손끝에서 부스러지는 느낌: 대부분 아래로, 일부만 살짝 위로
+    const vy     = (Math.random() < 0.25 ? 1 : -1) * Math.random() * 0.08 - 0.04;
+    particles.push({
+      x, y, z,
+      vx: Math.cos(angle) * horiz,
+      vy,
+      vz: Math.sin(angle) * horiz,
+      state: 'flying', age: 0, flyTime: 0,
+      size: 0.008 + Math.random() * 0.010  // 8~18mm 작은 입자
+    });
+  }
+}
+
+// ── 파티클 갱신 ───────────────────────────────────────────────
+function updateParticles(dt) {
+  // 만료 파티클 제거 (비행 30초 초과 또는 바닥 PART_REST_TIME 초 초과)
+  particles = particles.filter(p =>
+    p.state === 'flying'
+      ? p.age < 30
+      : (p.age - p.flyTime) < PART_REST_TIME
+  );
+
+  const count = Math.min(particles.length, PART_MAX);
+  for (let i = 0; i < count; i++) {
+    const p = particles[i];
+    p.age += dt;
+
+    if (p.state === 'flying') {
+      p.vy += PART_GRAVITY * dt;
+      p.x  += p.vx * dt;
+      p.y  += p.vy * dt;
+      p.z  += p.vz * dt;
+      if (p.y <= PART_FLOOR_Y) {
+        p.y = PART_FLOOR_Y;
+        p.vx = 0; p.vy = 0; p.vz = 0;
+        p.state = 'resting'; p.flyTime = p.age;
+      }
+    }
+
+    // 알파: 비행 중 밝음 → 바닥에서 마지막 20초 동안 자연스럽게 페이드
+    let alpha;
+    if (p.state === 'flying') {
+      alpha = 0.60;   // 반투명
+    } else {
+      const restAge   = p.age - p.flyTime;
+      const fadeStart = Math.max(0, PART_REST_TIME - 20);
+      alpha = restAge < fadeStart
+        ? 0.45
+        : (1.0 - (restAge - fadeStart) / 20) * 0.45;
+    }
+
+    const b = i * 3;
+    _pPos[b]  = p.x; _pPos[b+1] = p.y; _pPos[b+2] = p.z;
+    _pAlp[i]  = Math.max(0, alpha);
+    _pSz[i]   = p.size;
+
+    if (spawnPos) {
+      _pPosM[b] = p.x; _pPosM[b+1] = p.y; _pPosM[b+2] = reflectZ(p.z);
+    }
+  }
+
+  _partGeo.setDrawRange(0, count);
+  _partGeoM.setDrawRange(0, spawnPos ? count : 0);
+  if (count > 0) {
+    _partGeo.attributes.position.needsUpdate  = true;
+    _partGeo.attributes.pAlpha.needsUpdate    = true;
+    _partGeo.attributes.pSize.needsUpdate     = true;
+    _partGeoM.attributes.position.needsUpdate = true;
+    _partGeoM.attributes.pAlpha.needsUpdate   = true;  // 비행 중 거울 반영 누락 수정
+    _partGeoM.attributes.pSize.needsUpdate    = true;  // 비행 중 거울 반영 누락 수정
+  }
+  partMesh.visible  = count > 0;
+  partMeshM.visible = count > 0 && !!spawnPos;
+}
+
+// ── 핀치 감지 (사운드 + 파티클) ──────────────────────────────
+function updatePinch(realHand, pinchObj, pinchAudio, wasPinching) {
+  const indexJoint = realHand.joints['index-finger-tip'];
+  const thumbJoint  = realHand.joints['thumb-tip'];
+
+  if (!indexJoint || !thumbJoint || !indexJoint.visible || !thumbJoint.visible) {
+    return wasPinching;
+  }
+
+  indexJoint.getWorldPosition(_indexPos);
+  thumbJoint.getWorldPosition(_thumbPos);
+
+  const isPinching = _indexPos.distanceTo(_thumbPos) < PINCH_THRESHOLD;
+
+  if (isPinching && !wasPinching) {
+    const mx = (_indexPos.x + _thumbPos.x) * 0.5;
+    const my = (_indexPos.y + _thumbPos.y) * 0.5;
+    const mz = (_indexPos.z + _thumbPos.z) * 0.5;
+    pinchObj.position.set(mx, my, mz);
+    if (bellBuffer) {
+      if (pinchAudio.isPlaying) pinchAudio.stop();
+      pinchAudio.setBuffer(bellBuffer);
+      pinchAudio.play();
+    }
+    emitParticles(mx, my, mz);
+  }
+
+  return isPinching;
+}
+
+// ────────────────────────────────────────────────────────────────
+//  포인터 감지 & 빛점 업데이트
+// ────────────────────────────────────────────────────────────────
+function detectPointing(realHand) {
+  const wrist  = realHand.joints['wrist'];
+  const idxTip = realHand.joints['index-finger-tip'];
+  const midTip = realHand.joints['middle-finger-tip'];
+  const rngTip = realHand.joints['ring-finger-tip'];
+  const pnkTip = realHand.joints['pinky-finger-tip'];
+
+  if (!wrist || !wrist.visible || !idxTip || !idxTip.visible) return false;
+  if (!midTip || !midTip.visible || !rngTip || !rngTip.visible || !pnkTip || !pnkTip.visible) return false;
+
+  wrist.getWorldPosition(_ptrWrist);
+  idxTip.getWorldPosition(_ptrIndex);
+  if (_ptrWrist.distanceTo(_ptrIndex) < INDEX_EXTEND_MIN) return false;
+
+  midTip.getWorldPosition(_ptrMid);
+  rngTip.getWorldPosition(_ptrRing);
+  pnkTip.getWorldPosition(_ptrPinky);
+
+  return (
+    _ptrWrist.distanceTo(_ptrMid)   < CURL_MAX &&
+    _ptrWrist.distanceTo(_ptrRing)  < CURL_MAX &&
+    _ptrWrist.distanceTo(_ptrPinky) < CURL_MAX
+  );
+}
+
+function updatePointerDot(realHand, dot, mirrorDot) {
+  const idxTip  = realHand.joints['index-finger-tip'];
+  const pointing = detectPointing(realHand);
+
+  if (pointing && idxTip && idxTip.visible) {
+    idxTip.getWorldPosition(_ptrIndex);
+
+    // lazy lerp — 현재 위치에서 검지 끝으로 천천히 이동
+    dot.lazyPos.lerp(_ptrIndex, LAZY_LERP);
+
+    dot.mesh.position.copy(dot.lazyPos);
+    dot.mesh.visible = true;
+
+    // 거울: 동일 lazyPos의 Z만 반전
+    if (spawnPos) {
+      mirrorDot.mesh.position.set(
+        dot.lazyPos.x,
+        dot.lazyPos.y,
+        2 * mirrorZ - dot.lazyPos.z
+      );
+      mirrorDot.mesh.visible = true;
+    }
+  } else {
+    dot.mesh.visible       = false;
+    mirrorDot.mesh.visible = false;
+
+    // 꺼질 때 현재 검지 위치로 스냅 (다음 활성화 시 튀지 않도록)
+    if (idxTip && idxTip.visible) {
+      idxTip.getWorldPosition(dot.lazyPos);
+    }
+  }
+
+  return pointing;
+}
+
+// ────────────────────────────────────────────────────────────────
+//  손목 패널 업데이트
+//  wristHand: 패널이 붙는 손 / pointerHand: 검지로 터치하는 손
+// ────────────────────────────────────────────────────────────────
+function updateWristPanel(wristHand, pointerHand, panel, mirrorPanel, timestamp) {
+  const dt = panel.lastTime > 0
+    ? Math.min((timestamp - panel.lastTime) / 1000, 0.05) : 0.016;
+  panel.lastTime = timestamp;
+
+  const wrist = wristHand.joints['wrist'];
+  if (!wrist || !wrist.visible) {
+    panel.mesh.visible       = false;
+    mirrorPanel.mesh.visible = false;
+    return;
+  }
+
+  // ── 패널 위치 & 회전: 손목 로컬 Y+ 방향으로 5cm 띄움 ─────
+  wrist.getWorldPosition(_tmpPos);
+  _wristOffset.set(0, WRIST_PANEL_OFFSET, 0).applyQuaternion(wrist.quaternion);
+  panel.mesh.position.copy(_tmpPos).add(_wristOffset);
+  panel.mesh.quaternion.copy(wrist.quaternion);
+  panel.mesh.visible = true;
+
+  // ── 거울 패널: Z 위치 반전 + 회전 Z축 반사 ────────────────
+  if (spawnPos) {
+    const q = wrist.quaternion;
+    mirrorPanel.mesh.position.set(
+      panel.mesh.position.x,
+      panel.mesh.position.y,
+      2 * mirrorZ - panel.mesh.position.z
+    );
+    mirrorPanel.mesh.quaternion.set(q.x, q.y, -q.z, q.w).normalize();
+    mirrorPanel.mesh.visible = true;
+  }
+
+  // ── 다른 손 검지 끝으로 충돌 감지 ─────────────────────────
+  const idxTip = pointerHand.joints['index-finger-tip'];
+  let isPressed = false;
+
+  if (idxTip && idxTip.visible) {
+    idxTip.getWorldPosition(_ptrIndex);
+
+    // 패널 법선 (로컬 Z → 월드)
+    _panelNormal.set(0, 0, 1).applyQuaternion(panel.mesh.quaternion);
+    _tipToPanel.copy(_ptrIndex).sub(panel.mesh.position);
+
+    // 패널 면과의 수직 거리
+    const perpDist = Math.abs(_tipToPanel.dot(_panelNormal));
+
+    if (perpDist < WRIST_PRESS_DIST) {
+      // 패널 내부 여부: 로컬 X/Y 범위 확인
+      const half = WRIST_PANEL_SIZE * 0.5;
+      _panelRight.set(1, 0, 0).applyQuaternion(panel.mesh.quaternion);
+      _panelUp.set(0, 1, 0).applyQuaternion(panel.mesh.quaternion);
+      isPressed = (
+        Math.abs(_tipToPanel.dot(_panelRight)) < half &&
+        Math.abs(_tipToPanel.dot(_panelUp))    < half
+      );
+    }
+  }
+
+  // rising edge → 소리 + 눌림 타이머 시작
+  if (isPressed && panel.pressTimer <= 0) {
+    if (alertBuffer) {
+      if (panel.sound.isPlaying) panel.sound.stop();
+      panel.sound.setBuffer(alertBuffer);
+      panel.sound.play();
+    }
+    panel.pressTimer = WRIST_PRESS_DUR;
+  }
+
+  // 눌림 색 유지 후 원상복귀
+  if (panel.pressTimer > 0) {
+    panel.pressTimer -= dt;
+    panel.mat.color.copy(PANEL_COL_PRESS);
+    mirrorPanel.mat.color.copy(PANEL_COL_PRESS);
+  } else {
+    panel.mat.color.copy(PANEL_COL_NORMAL);
+    mirrorPanel.mat.color.copy(PANEL_COL_NORMAL);
+  }
+}
+
+// ────────────────────────────────────────────────────────────────
+//  UI
+// ────────────────────────────────────────────────────────────────
+const statusEl  = document.getElementById('status');
+const btnSummon = document.getElementById('btnSummon');
+const btnFish   = document.getElementById('btnFish');
+
+function setStatus(text) { statusEl.textContent = text; }
+
+btnSummon.onclick = () => {
+  if (!spawnPos) return;
+  if (spherePhase !== 'idle') {
+    spherePhase = 'idle';
+    resetSphereVisuals();
+    btnSummon.textContent = '구체 소환';
+    btnSummon.classList.remove('active');
+    return;
+  }
+  startSphereAnimation();
+  btnSummon.textContent = '소환 취소';
+  btnSummon.classList.add('active');
+};
+
+btnFish.onclick = () => {
+  if (!spawnPos) return;
+  if (fishPhase !== 'idle') {
+    resetFish();
+    btnFish.textContent = '물고기 소환';
+    btnFish.classList.remove('active');
+    return;
+  }
+  spawnFish();
+  btnFish.textContent = '소환 취소';
+  btnFish.classList.add('active');
+};
+
+// ────────────────────────────────────────────────────────────────
+//  AR SESSION
+// ────────────────────────────────────────────────────────────────
+const btnStart = document.getElementById('btnStart');
+
+function enterSessionUI(session) {
+  currentSession = session;
+  btnStart.textContent = 'AR 종료';
+  btnStart.classList.add('ending');
+  document.getElementById('hint').style.display = 'none';
+  btnSummon.style.display = 'inline-block';
+  btnFish.style.display   = 'inline-block';
+}
+
+function exitSessionUI() {
+  currentSession = null;
+  btnStart.textContent = 'AR 시작';
+  btnStart.classList.remove('ending');
+  btnSummon.style.display = 'none';
+  btnSummon.textContent = '구체 소환';
+  btnSummon.classList.remove('active');
+  btnFish.style.display = 'none';
+  btnFish.textContent = '물고기 소환';
+  btnFish.classList.remove('active');
+  spawnPos = null;
+  guideGroup.visible = false;
+  spherePhase = 'idle';
+  resetSphereVisuals();
+  resetFish();
+  stopMic();
+  setStatus('세션 종료됨');
+  renderer.setAnimationLoop(null);
+}
+
+btnStart.onclick = async () => {
+  if (currentSession) { currentSession.end(); return; }
+
+  if (!navigator.xr) {
+    setStatus('⚠ WebXR 없음 — Quest 브라우저인가요?');
+    return;
+  }
+
+  const ok = await navigator.xr.isSessionSupported('immersive-ar').catch(() => false);
+  if (!ok) {
+    setStatus('⚠ immersive-ar 미지원 — Quest 브라우저 + 최신 OS 필요');
+    return;
+  }
+
+  let session;
+  try {
+    session = await navigator.xr.requestSession('immersive-ar', {
+      requiredFeatures: ['local-floor'],
+      optionalFeatures: ['dom-overlay', 'hand-tracking'],
+      domOverlay: { root: document.getElementById('ui') }
+    });
+  } catch (e) {
+    setStatus('⚠ 세션 시작 실패: ' + e.message);
+    return;
+  }
+
+  await renderer.xr.setSession(session);
+  const refSpace = await session.requestReferenceSpace('local-floor');
+
+  startMic();  // 마이크 권한 요청 (AR와 함께 시작)
+
+  enterSessionUI(session);
+  setStatus('⏳ 스폰 위치 초기화 중...');
+
+  session.addEventListener('visibilitychange', () => {
+    if (session.visibilityState === 'visible') setStatus('▶ AR 재개됨');
+  });
+  session.addEventListener('end', exitSessionUI);
+
+  // ── 메인 루프 ──────────────────────────────────────────────
+  renderer.setAnimationLoop((timestamp, frame) => {
+    if (!frame) { renderer.render(scene, camera); return; }
+
+    const pose = frame.getViewerPose(refSpace);
+    if (!pose) { renderer.render(scene, camera); return; }
+
+    const h = pose.transform.position;
+
+    // ── 최초 1회: 스폰 포지션 & 거울 평면 기록 ──────────────
+    if (!spawnPos) {
+      spawnPos  = { x: h.x, z: h.z };
+      spawnEyeY = h.y;
+      mirrorZ   = h.z - MIRROR_DIST;
+
+      grayClipPlane = new THREE.Plane(new THREE.Vector3(0, 0, -1),  mirrorZ);
+      blueClipPlane = new THREE.Plane(new THREE.Vector3(0, 0,  1), -mirrorZ);
+
+      guideGroup.position.set(h.x, 0.005, mirrorZ);
+      guideGroup.visible = true;
+
+      setStatus(
+        `✓ 준비 완료 | 거울 위치(앞 ${MIRROR_DIST}m) | 핀치 / 포인터 / 물고기 — 거울에 비칩니다`
+      );
+    }
+
+    // ── 현재 헤드 위치 갱신 ───────────────────────────────────
+    currentHeadX = h.x; currentHeadY = h.y; currentHeadZ = h.z;
+
+    // ── 프레임 dt (루프 레벨 1회 계산) ───────────────────────────
+    const dt = prevTimestamp > 0
+      ? Math.min((timestamp - prevTimestamp) / 1000, 0.05)
+      : 0.016;
+
+    // ── 음성 상태 갱신 ────────────────────────────────────────
+    updateVoiceState(dt);
+
+    // ── 구체 ──────────────────────────────────────────────────
+    updateSphere(timestamp, h.z);
+
+    // ── 거울 이펙트 (구체·물고기 공용, 프레임당 1회) ──────────
+    updateMirrorEffect(dt);
+
+    // ── 물고기 ─────────────────────────────────────────────────
+    updateFish(timestamp, h.z, dt);
+    if (fishPhase === 'idle' && btnFish.classList.contains('active')) {
+      btnFish.textContent = '물고기 소환';
+      btnFish.classList.remove('active');
+    }
+    // 1단계 검증: 음성 상태 표시 (확인 후 제거)
+    if (fishPhase === 'drift' && micAnalyser) {
+      const icon = { silence:'😶', whisper:'👀', call:'🐟', sing:'✨' };
+      setStatus(`🎤 ${voiceHeld.toUpperCase()} ${icon[voiceHeld]}`);
+    }
+
+    prevTimestamp = timestamp;
+
+    // ── 핀치 파티클 ────────────────────────────────────────────
+    wasPinching1 = updatePinch(hand1, pinchObj1, pinchAudio1, wasPinching1);
+    wasPinching2 = updatePinch(hand2, pinchObj2, pinchAudio2, wasPinching2);
+    updateParticles(dt);
+
+    // ── 포인터 빛점 + 궤적 (실제 + 거울) ────────────────────
+    const isPointing1 = updatePointerDot(hand1, ptrDot1, mirrorPtrDot1);
+    const isPointing2 = updatePointerDot(hand2, ptrDot2, mirrorPtrDot2);
+    trail1.update(timestamp, isPointing1, ptrDot1.lazyPos);
+    trail2.update(timestamp, isPointing2, ptrDot2.lazyPos);
+
+    // ── 손목 UI 패널 (실제 + 거울) ───────────────────────────
+    // hand1 손목에 패널, hand2 검지로 터치
+    updateWristPanel(hand1, hand2, wristPanel, mirrorWristPanel, timestamp);
+
+    renderer.render(scene, camera);
+  });
+};
+</script>
+</body>
+</html>

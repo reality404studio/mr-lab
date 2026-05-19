@@ -1,0 +1,16 @@
+.DS_Store
+.AppleDouble
+.LSOverride
+
+node_modules/
+dist/
+build/
+
+# Local-only workspace areas.
+PRIVATE/
+private/
+PUBLIC/
+
+# GitHub blocks regular Git files over 100MB. Keep these local or move them to
+# Git LFS / external hosting before enabling a hosted demo.
+projects/03.TINYMYSELF/*.ply
