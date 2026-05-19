@@ -30,6 +30,13 @@ export const CONFIG = Object.freeze({
   head: Object.freeze({
     radius: 0.15,
     followDistance: 0.42,
+    waistYOffset: -0.55,
+    orbitRadius: 0.46,
+    orbitDepth: 0.18,
+    orbitSpeed: 1.35,
+    orbitArcRadians: 0.72,
+    orbitScoreMax: 3,
+    trailScoreFull: 5,
     faceSlerp: 0.1,
     gameOverIdleAmplitude: 0.025,
     gameOverIdleSpeed: 1.8

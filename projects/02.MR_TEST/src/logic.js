@@ -60,7 +60,7 @@ export class SnakeController {
     this.segments = [];
     this.history = [];
     this.frozen = false;
-    this.headPosition = this.computeHeadPosition(playerPos, playerForward);
+    this.headPosition = this.computeHeadPosition(playerPos, playerForward, 0, 0);
     this.trailDirection = this.computeTrailDirection(playerForward);
     this.seedHistory();
   }
@@ -73,21 +73,51 @@ export class SnakeController {
     this.frozen = false;
   }
 
-  computeHeadPosition(playerPos, playerForward) {
+  computeHeadPosition(playerPos, playerForward, score = 0, timeSeconds = 0) {
+    const orbitPosition = this.computeOrbitPosition(playerPos, playerForward, timeSeconds);
+    const trailPosition = this.computeTrailPosition(playerPos, playerForward);
+    const { orbitScoreMax, trailScoreFull } = this.config.head;
+
+    if (score <= orbitScoreMax) {
+      return orbitPosition;
+    }
+
+    if (score >= trailScoreFull) {
+      return trailPosition;
+    }
+
+    const t = (score - orbitScoreMax) / (trailScoreFull - orbitScoreMax);
+    return vecLerp(orbitPosition, trailPosition, t);
+  }
+
+  computeOrbitPosition(playerPos, playerForward, timeSeconds) {
     const flatForward = flattenForward(playerForward);
-    return vecScaleAndAdd(playerPos, flatForward, -this.config.head.followDistance);
+    const right = horizontalRightFromForward(flatForward);
+    const orbit = this.config.head;
+    const angle = Math.sin(timeSeconds * orbit.orbitSpeed) * orbit.orbitArcRadians;
+    let position = vecScaleAndAdd(playerPos, [0, 1, 0], orbit.waistYOffset);
+    position = vecScaleAndAdd(position, right, Math.cos(angle) * orbit.orbitRadius);
+    position = vecScaleAndAdd(position, flatForward, Math.sin(angle) * orbit.orbitDepth);
+    return position;
+  }
+
+  computeTrailPosition(playerPos, playerForward) {
+    const flatForward = flattenForward(playerForward);
+    let position = vecScaleAndAdd(playerPos, [0, 1, 0], this.config.head.waistYOffset);
+    position = vecScaleAndAdd(position, flatForward, -this.config.head.followDistance);
+    return position;
   }
 
   computeTrailDirection(playerForward) {
     return vecScale(flattenForward(playerForward), -1);
   }
 
-  tick(playerPos, playerForward) {
+  tick(playerPos, playerForward, score = 0, timeSeconds = 0) {
     if (this.frozen) {
       return;
     }
 
-    this.headPosition = this.computeHeadPosition(playerPos, playerForward);
+    this.headPosition = this.computeHeadPosition(playerPos, playerForward, score, timeSeconds);
     this.trailDirection = this.computeTrailDirection(playerForward);
     this.history.push([...this.headPosition]);
 

@@ -590,14 +590,14 @@ class MRSnakeApp {
     };
 
     if (this.machine.beat === BEATS.READY || this.machine.beat === BEATS.PLAYING) {
-      this.snake.tick(this.currentPose.position, this.currentPose.forward);
+      this.snake.tick(this.currentPose.position, this.currentPose.forward, this.score.get(), time / 1000);
       this.spawner.ensureSet(this.currentPose.position, this.currentPose.forward);
       this.handleControllers(controllers);
       this.handleEating();
 
       if (this.machine.beat === BEATS.PLAYING) {
         const tailPos = this.snake.getTailPosition();
-        if (this.collisionDetector.check(this.currentPose.position, tailPos)) {
+        if (this.collisionDetector.check(this.getSnakeCollisionPosition(), tailPos)) {
           this.machine.gameOver(this.score.get());
         }
       }
@@ -701,9 +701,10 @@ class MRSnakeApp {
 
     this.snake.segments.forEach((segment, index) => {
       const mesh = this.visuals.body[index];
+      const earlyTail = this.score.get() <= CONFIG.head.orbitScoreMax;
       mesh.position = [...segment.position];
       mesh.material.color = this.colorFor(segment.color);
-      mesh.material.kind = index === this.snake.segments.length - 1
+      mesh.material.kind = earlyTail || index === this.snake.segments.length - 1
         ? MATERIAL_KIND.TAIL
         : MATERIAL_KIND.SOLID;
     });
@@ -759,6 +760,10 @@ class MRSnakeApp {
     let position = vecScaleAndAdd(pose.position, forward, CONFIG.eat.mouthForwardOffset);
     position = vecScaleAndAdd(position, [0, 1, 0], CONFIG.eat.mouthYOffset);
     return position;
+  }
+
+  getSnakeCollisionPosition(pose = this.currentPose) {
+    return vecScaleAndAdd(pose.position, [0, 1, 0], CONFIG.head.waistYOffset);
   }
 
   colorFor(color) {
