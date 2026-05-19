@@ -31,14 +31,6 @@
   #btnSummon.active { background: #e91e63; }
   #btnFish { background: #ff7043; color: white; display: none; }
   #btnFish.active { background: #e53935; }
-  #devLink {
-    position: fixed; bottom: 10px; right: 14px;
-    font-size: 11px; color: rgba(255,255,255,0.25);
-    text-decoration: none; z-index: 30;
-    padding: 4px 8px; border-radius: 6px;
-  }
-  #devLink:hover { color: rgba(255,255,255,0.6); background: rgba(255,255,255,0.08); }
-
   #hint {
     position: fixed; top: 50%; left: 50%;
     transform: translate(-50%, -50%);
@@ -63,8 +55,6 @@
   <button id="btnFish">물고기 소환</button>
 </div>
 
-<a id="devLink" href="mic_test.html">🎤 Mic Test</a>
-
 <script type="importmap">
 {
   "imports": {
@@ -85,7 +75,7 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 // ────────────────────────────────────────────────────────────────
 const MIRROR_DIST  = 1.5;
 
-// ── 비쥬얼 문법 토큰 (snapshots/VISUAL_GRAMMAR.md) ────────────
+// ── 비쥬얼 문법 토큰 ────────────
 const LAGOON  = new THREE.Color(0x00B4D8);
 const SHALLOW = new THREE.Color(0x90E0EF);
 

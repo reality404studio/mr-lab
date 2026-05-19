@@ -14,3 +14,19 @@ PUBLIC/
 # GitHub blocks regular Git files over 100MB. Keep these local or move them to
 # Git LFS / external hosting before enabling a hosted demo.
 projects/03.TINYMYSELF/*.ply
+
+# Local project instructions, work notes, drafts, and debug-only files that are
+# not needed for GitHub Pages hosting.
+projects/**/AGENTS.md
+projects/**/CLAUDE.md
+projects/**/DESIGN.md
+projects/**/NEEDS_DECISION.md
+projects/**/snapshots/
+projects/**/*.pages
+projects/**/index0430.txt
+projects/**/studyguide.md
+projects/**/inputfeedback.md
+projects/**/modelfeedback.md
+projects/**/mic_test.html
+projects/**/package.json
+projects/**/assets/fishtest.glb

@@ -1,11 +1,11 @@
 # MR Snake Quest Browser Prototype
 
-`DESIGN.md` 기준으로 구현한 WebXR 정적 앱입니다. 외부 패키지나 CDN 없이 Quest Browser에서 열 수 있도록 `index.html`, CSS, ES module JavaScript만 사용합니다.
+외부 패키지나 CDN 없이 Quest Browser에서 열 수 있도록 만든 WebXR 정적 앱입니다. `index.html`, CSS, ES module JavaScript만 사용합니다.
 
 ## 실행
 
 ```bash
-npm run start
+python3 -m http.server 8080
 ```
 
 로컬 확인:
