@@ -158,7 +158,7 @@ export function ScoreDisplay({ planeGeometry, renderer, score = 0 }) {
   return TextSprite({
     planeGeometry,
     renderer,
-    text: `Score ${score}`,
+    text: `Length ${score}`,
     width: CONFIG.visual.scoreWidth,
     height: CONFIG.visual.scoreHeight,
     fontPx: CONFIG.visual.scoreFontPx,
@@ -192,7 +192,7 @@ export function GameOverOverlay({ planeGeometry, renderer, score }) {
   const title = TextSprite({
     planeGeometry,
     renderer,
-    text: "GAME OVER",
+    text: "TIME UP",
     width: CONFIG.visual.overlayTitleWidth,
     height: CONFIG.visual.overlayLineHeight,
     fontPx: CONFIG.visual.overlayTitleFontPx,
@@ -202,7 +202,7 @@ export function GameOverOverlay({ planeGeometry, renderer, score }) {
   const body = TextSprite({
     planeGeometry,
     renderer,
-    text: `Final ${score}\nTrigger 다시하기  Grip 다음 학생`,
+    text: `내 얼굴 친구 길이 ${score}\nTrigger 다시하기  Grip 다음 학생`,
     width: CONFIG.visual.overlayTextWidth,
     height: CONFIG.visual.overlayLineHeight * CONFIG.visual.overlayBodyHeightScale,
     fontPx: CONFIG.visual.overlayBodyFontPx,

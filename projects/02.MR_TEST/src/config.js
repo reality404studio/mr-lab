@@ -29,10 +29,16 @@ export const CONFIG = Object.freeze({
   }),
   head: Object.freeze({
     radius: 0.15,
-    followDistance: 0.42,
+    followDistance: 0.52,
     followLerp: 0.18,
     waistYOffset: -0.55,
     faceSlerp: 0.1,
+    foodLeanRange: 0.6,
+    foodLeanOffset: 0.07,
+    foodLookBlend: 0.26,
+    bounceDurationSeconds: 0.34,
+    bounceHeight: 0.07,
+    bounceScale: 0.14,
     gameOverIdleAmplitude: 0.025,
     gameOverIdleSpeed: 1.8
   }),
@@ -52,6 +58,11 @@ export const CONFIG = Object.freeze({
     threshold: 0.14,
     controllerHoldOffset: Object.freeze([0, 0, -0.03])
   }),
+  pickup: Object.freeze({
+    threshold: 0.34,
+    deliveryLerp: 0.18,
+    absorbThreshold: 0.1
+  }),
   eat: Object.freeze({
     threshold: 0.18,
     mouthForwardOffset: 0.14,
@@ -59,7 +70,15 @@ export const CONFIG = Object.freeze({
   }),
   collision: Object.freeze({
     threshold: 0.1,
-    minSegments: 6
+    minSegments: 6,
+    penaltyMin: 1,
+    penaltyMax: 2,
+    penaltyCooldownSeconds: 1.2,
+    slowDurationSeconds: 1.4,
+    slowFactor: 0.42
+  }),
+  game: Object.freeze({
+    durationSeconds: 120
   }),
   link: Object.freeze({
     radius: 0.014,
@@ -71,8 +90,8 @@ export const CONFIG = Object.freeze({
     minDistFromPlayer: 0.8,
     radiusMin: 0.85,
     radiusMax: 1.35,
-    heightMin: -0.18,
-    heightMax: 0.22,
+    heightMin: -0.58,
+    heightMax: -0.3,
     attempts: 24
   }),
   input: Object.freeze({

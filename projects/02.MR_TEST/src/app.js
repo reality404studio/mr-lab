@@ -18,7 +18,9 @@ import {
   vecAdd,
   vecDistance,
   vecLerp,
-  vecScaleAndAdd
+  vecNormalize,
+  vecScaleAndAdd,
+  vecSub
 } from "./math.js";
 import {
   createPlaneGeometry,
@@ -58,6 +60,12 @@ class MRSnakeApp {
     this.previewYaw = 0;
     this.previewPlayerPos = [...CONFIG.preview.startPosition];
     this.lastFrameTime = 0;
+    this.gameStartTime = null;
+    this.remainingSeconds = CONFIG.game.durationSeconds;
+    this.headBounceStart = 0;
+    this.headBounceUntil = 0;
+    this.slowUntil = 0;
+    this.tailPenaltyCooldownUntil = 0;
     this.controllerStates = new Map();
     this.keys = new Set();
     this.dom = this.getDom();
@@ -320,16 +328,19 @@ class MRSnakeApp {
   }
 
   onBeat({ beat, message, score }) {
-    this.dom.beatLabel.textContent = beat;
+    this.updateTimerLabel();
 
     if (beat === BEATS.READY) {
       this.enterReady();
-      this.setStatus("READY: 첫 FoodOrb를 그랩하면 PLAYING으로 전환됩니다.");
+      this.setStatus("READY: 먹이 근처로 이동하면 얼굴 친구가 먹이를 흡수합니다.");
       return;
     }
 
     if (beat === BEATS.PLAYING) {
-      this.setStatus("PLAYING: 구슬을 얼굴 구에 가져가세요.");
+      this.gameStartTime = performance.now() / 1000;
+      this.remainingSeconds = CONFIG.game.durationSeconds;
+      this.updateTimerLabel();
+      this.setStatus("PLAYING: 2분 안에 얼굴 친구를 최대한 길게 키우세요.");
       if (this.visuals.hint) {
         this.visuals.hint.visible = false;
       }
@@ -355,7 +366,14 @@ class MRSnakeApp {
 
   enterReady() {
     this.score.reset();
+    this.gameStartTime = null;
+    this.remainingSeconds = CONFIG.game.durationSeconds;
+    this.headBounceStart = 0;
+    this.headBounceUntil = 0;
+    this.slowUntil = 0;
+    this.tailPenaltyCooldownUntil = 0;
     this.updateScore(0);
+    this.updateTimerLabel();
     this.hideGameOver();
     this.snake.reset(this.currentPose.position, this.currentPose.forward);
     this.spawner.reset(this.currentPose.position, this.currentPose.forward);
@@ -374,14 +392,17 @@ class MRSnakeApp {
     this.visuals.hint = HintDisplay({
       planeGeometry: this.planeGeometry,
       renderer: this.renderer,
-      text: "Grip으로 구슬을 잡으세요"
+      text: "먹이 근처로 이동하세요"
     });
     this.syncVisuals(performance.now() / 1000);
   }
 
   enterWaiting() {
     this.score.reset();
+    this.gameStartTime = null;
+    this.remainingSeconds = CONFIG.game.durationSeconds;
     this.updateScore(0);
+    this.updateTimerLabel();
     this.visuals.body = [];
     this.visuals.links = [];
     this.visuals.orbs.clear();
@@ -400,12 +421,13 @@ class MRSnakeApp {
     this.snake.freeze();
     this.dom.gameOverPanel.hidden = false;
     this.dom.finalScoreLabel.textContent = String(score);
+    this.dom.beatLabel.textContent = "TIME UP";
     this.visuals.gameOver = GameOverOverlay({
       planeGeometry: this.planeGeometry,
       renderer: this.renderer,
       score
     });
-    this.setStatus("GAME_OVER: Trigger는 다시하기, Grip은 다음 학생입니다.");
+    this.setStatus(`TIME UP: 내가 키운 얼굴 친구 길이 ${score}`);
   }
 
   hideGameOver() {
@@ -416,11 +438,18 @@ class MRSnakeApp {
   updateScore(value) {
     this.dom.scoreLabel.textContent = String(value);
     if (this.visuals.score) {
-      updateTextSprite(this.visuals.score, this.renderer, `Score ${value}`, {
+      updateTextSprite(this.visuals.score, this.renderer, `Length ${value}`, {
         fontPx: CONFIG.visual.scoreFontPx,
         lineHeight: CONFIG.visual.scoreLineHeight
       });
     }
+  }
+
+  updateTimerLabel() {
+    const total = Math.max(0, Math.ceil(this.remainingSeconds));
+    const minutes = Math.floor(total / 60);
+    const seconds = String(total % 60).padStart(2, "0");
+    this.dom.beatLabel.textContent = `${minutes}:${seconds}`;
   }
 
   updateQueue(size) {
@@ -473,7 +502,8 @@ class MRSnakeApp {
       return;
     }
 
-    const pose = this.updatePreviewPose();
+    const timeSeconds = time / 1000;
+    const pose = this.updatePreviewPose(timeSeconds);
     const controllers = [this.readPreviewController(pose)];
     this.step(time, pose, controllers);
 
@@ -491,11 +521,11 @@ class MRSnakeApp {
       viewMatrix: mat4LookAt(cameraPosition, cameraTarget),
       cameraPosition
     }, {
-      time: time / 1000
+      time: timeSeconds
     });
   }
 
-  updatePreviewPose() {
+  updatePreviewPose(timeSeconds = performance.now() / 1000) {
     if (this.keys.has("KeyQ")) {
       this.previewYaw += CONFIG.preview.turnSpeed;
     }
@@ -506,17 +536,19 @@ class MRSnakeApp {
     const forward = [Math.sin(this.previewYaw), 0, -Math.cos(this.previewYaw)];
     const right = [Math.cos(this.previewYaw), 0, Math.sin(this.previewYaw)];
 
+    const moveSpeed = CONFIG.preview.moveSpeed * this.getSlowFactor(timeSeconds);
+
     if (this.keys.has("KeyW") || this.keys.has("ArrowUp")) {
-      this.previewPlayerPos = vecScaleAndAdd(this.previewPlayerPos, forward, CONFIG.preview.moveSpeed);
+      this.previewPlayerPos = vecScaleAndAdd(this.previewPlayerPos, forward, moveSpeed);
     }
     if (this.keys.has("KeyS") || this.keys.has("ArrowDown")) {
-      this.previewPlayerPos = vecScaleAndAdd(this.previewPlayerPos, forward, -CONFIG.preview.moveSpeed);
+      this.previewPlayerPos = vecScaleAndAdd(this.previewPlayerPos, forward, -moveSpeed);
     }
     if (this.keys.has("KeyA") || this.keys.has("ArrowLeft")) {
-      this.previewPlayerPos = vecScaleAndAdd(this.previewPlayerPos, right, -CONFIG.preview.moveSpeed);
+      this.previewPlayerPos = vecScaleAndAdd(this.previewPlayerPos, right, -moveSpeed);
     }
     if (this.keys.has("KeyD") || this.keys.has("ArrowRight")) {
-      this.previewPlayerPos = vecScaleAndAdd(this.previewPlayerPos, right, CONFIG.preview.moveSpeed);
+      this.previewPlayerPos = vecScaleAndAdd(this.previewPlayerPos, right, moveSpeed);
     }
 
     return {
@@ -588,49 +620,28 @@ class MRSnakeApp {
   }
 
   step(time, pose, controllers) {
+    const timeSeconds = time / 1000;
     this.currentPose = {
       position: [...pose.position],
       forward: flattenForward(pose.forward)
     };
 
     if (this.machine.beat === BEATS.READY || this.machine.beat === BEATS.PLAYING) {
-      this.snake.tick(this.currentPose.position, this.currentPose.forward);
+      this.snake.tick(this.currentPose.position, this.currentPose.forward, this.getSlowFactor(timeSeconds));
       this.spawner.ensureSet(this.currentPose.position, this.currentPose.forward);
-      this.handleControllers(controllers);
-      this.handleEating();
+      this.handleFoodPickup(timeSeconds);
 
       if (this.machine.beat === BEATS.PLAYING) {
-        const collisionPoint = this.getSnakeCollisionPosition();
-        const hitTail = this.snake
-          .getCollisionPositions()
-          .some((position) => this.collisionDetector.check(collisionPoint, position));
-        if (hitTail) {
-          this.machine.gameOver(this.score.get());
+        this.updateTimer(timeSeconds);
+        if (this.machine.beat === BEATS.PLAYING) {
+          this.handleTailContact(timeSeconds);
         }
       }
     } else if (this.machine.beat === BEATS.GAME_OVER) {
       this.handleGameOverInput(controllers);
     }
 
-    this.syncVisuals(time / 1000);
-  }
-
-  handleControllers(controllers) {
-    for (const controller of controllers) {
-      if (controller.justGrip) {
-        const orb = this.findNearestGrabbableOrb(controller.position);
-        if (orb) {
-          this.machine.firstGrab();
-          this.spawner.setHeld(orb.id, controller.id);
-        }
-      }
-
-      if (controller.gripPressed) {
-        this.spawner.updateHeldPosition(controller.id, controller.position);
-      } else {
-        this.spawner.releaseHeld(controller.id);
-      }
-    }
+    this.syncVisuals(timeSeconds);
   }
 
   handleGameOverInput(controllers) {
@@ -644,47 +655,97 @@ class MRSnakeApp {
     }
   }
 
-  findNearestGrabbableOrb(position) {
-    let closest = null;
-    let closestDistance = CONFIG.grab.threshold;
+  handleFoodPickup(timeSeconds) {
+    const pickupPoint = this.getFoodPickupPosition();
 
     for (const orb of this.spawner.getAll()) {
-      if (orb.heldBy) {
-        continue;
+      if (!orb.delivering && vecDistance(pickupPoint, orb.position) <= CONFIG.pickup.threshold) {
+        this.machine.startPlaying();
+        orb.delivering = true;
+        orb.heldBy = null;
+        this.setStatus("먹이가 얼굴 친구에게 전달됩니다.");
       }
 
-      const distance = vecDistance(position, orb.position);
-      if (distance <= closestDistance) {
-        closest = orb;
-        closestDistance = distance;
+      if (orb.delivering) {
+        orb.position = vecLerp(orb.position, this.snake.headPosition, CONFIG.pickup.deliveryLerp);
+        if (this.eatDetector.check(orb.position, this.snake.headPosition, CONFIG.pickup.absorbThreshold)) {
+          this.eatOrb(orb, timeSeconds);
+        }
       }
     }
-
-    return closest;
   }
 
-  handleEating() {
-    for (const orb of this.spawner.getAll()) {
-      if (!orb.heldBy) {
-        continue;
-      }
+  eatOrb(orb, timeSeconds) {
+    const color = orb.color;
+    this.spawner.remove(orb.id);
+    this.snake.addSegment(color);
+    this.updateScore(this.score.increment());
+    this.triggerHeadBounce(timeSeconds);
+    this.playEatSound();
+    this.spawner.spawn(color, this.currentPose.position, this.currentPose.forward);
+  }
 
-      if (this.eatDetector.check(orb.position, this.getMouthPosition())) {
-        const color = orb.color;
-        this.spawner.remove(orb.id);
-        this.snake.addSegment(color);
-        this.updateScore(this.score.increment());
-        this.playEatSound();
-        this.spawner.spawn(color, this.currentPose.position, this.currentPose.forward);
-      }
+  triggerHeadBounce(timeSeconds) {
+    this.headBounceStart = timeSeconds;
+    this.headBounceUntil = timeSeconds + CONFIG.head.bounceDurationSeconds;
+  }
+
+  updateTimer(timeSeconds) {
+    if (this.gameStartTime === null) {
+      this.gameStartTime = timeSeconds;
     }
+
+    const elapsed = Math.max(0, timeSeconds - this.gameStartTime);
+    this.remainingSeconds = Math.max(0, CONFIG.game.durationSeconds - elapsed);
+    this.updateTimerLabel();
+
+    if (this.remainingSeconds <= 0) {
+      this.machine.gameOver(this.score.get());
+    }
+  }
+
+  handleTailContact(timeSeconds) {
+    if (timeSeconds < this.tailPenaltyCooldownUntil) {
+      return;
+    }
+
+    const tailPosition = this.snake.getTailPosition();
+    if (!tailPosition || !this.collisionDetector.check(this.getSnakeCollisionPosition(), tailPosition)) {
+      return;
+    }
+
+    const penalty = this.randomTailPenalty();
+    const removed = this.snake.trimSegments(penalty);
+    if (removed === 0) {
+      return;
+    }
+
+    this.updateScore(this.score.decrement(removed));
+    this.tailPenaltyCooldownUntil = timeSeconds + CONFIG.collision.penaltyCooldownSeconds;
+    this.slowUntil = Math.max(this.slowUntil, timeSeconds + CONFIG.collision.slowDurationSeconds);
+    this.setStatus(`꼬리에 닿아 몸통 ${removed}개 감소. 잠깐 느려집니다.`);
+  }
+
+  randomTailPenalty() {
+    const min = CONFIG.collision.penaltyMin;
+    const max = CONFIG.collision.penaltyMax;
+    return min + Math.floor(Math.random() * (max - min + 1));
+  }
+
+  getSlowFactor(timeSeconds) {
+    return timeSeconds < this.slowUntil ? CONFIG.collision.slowFactor : 1;
   }
 
   syncVisuals(timeSeconds) {
     if (this.visuals.head) {
-      this.visuals.head.position = [...this.snake.headPosition];
-      const target = quatLookAt(this.visuals.head.position, this.currentPose.position);
+      const nearbyFood = this.findNearestFoodToHead(CONFIG.head.foodLeanRange);
+      this.visuals.head.position = this.getHeadDisplayPosition(timeSeconds, nearbyFood);
+      const lookTarget = nearbyFood
+        ? vecLerp(this.currentPose.position, nearbyFood.position, CONFIG.head.foodLookBlend)
+        : this.currentPose.position;
+      const target = quatLookAt(this.visuals.head.position, lookTarget);
       this.visuals.head.quaternion = quatSlerp(this.visuals.head.quaternion, target, CONFIG.head.faceSlerp);
+      this.visuals.head.scale = this.getHeadDisplayScale(timeSeconds);
 
       if (this.machine.beat === BEATS.GAME_OVER) {
         const wiggle = Math.sin(timeSeconds * CONFIG.head.gameOverIdleSpeed) * CONFIG.head.gameOverIdleAmplitude;
@@ -699,6 +760,10 @@ class MRSnakeApp {
   }
 
   syncBodyVisuals() {
+    while (this.visuals.body.length > this.snake.segments.length) {
+      this.visuals.body.pop();
+    }
+
     while (this.visuals.body.length < this.snake.segments.length) {
       const segment = this.snake.segments[this.visuals.body.length];
       this.visuals.body.push(BodySegment({
@@ -778,7 +843,7 @@ class MRSnakeApp {
       }
       const visual = this.visuals.orbs.get(orb.id);
       visual.setPosition(orb.position);
-      visual.setHeld(Boolean(orb.heldBy));
+      visual.setHeld(Boolean(orb.heldBy || orb.delivering));
     }
 
     for (const id of this.visuals.orbs.keys()) {
@@ -786,6 +851,54 @@ class MRSnakeApp {
         this.visuals.orbs.delete(id);
       }
     }
+  }
+
+  getHeadDisplayPosition(timeSeconds, nearbyFood) {
+    let position = [...this.snake.headPosition];
+
+    if (nearbyFood) {
+      const leanDirection = vecNormalize(vecSub(nearbyFood.position, position));
+      position = vecScaleAndAdd(position, leanDirection, CONFIG.head.foodLeanOffset);
+    }
+
+    const bounceProgress = this.getHeadBounceProgress(timeSeconds);
+    if (bounceProgress > 0) {
+      position[1] += Math.sin(bounceProgress * Math.PI) * CONFIG.head.bounceHeight;
+    }
+
+    return position;
+  }
+
+  getHeadDisplayScale(timeSeconds) {
+    const bounceProgress = this.getHeadBounceProgress(timeSeconds);
+    const pop = bounceProgress > 0
+      ? Math.sin(bounceProgress * Math.PI) * CONFIG.head.bounceScale
+      : 0;
+    const radius = CONFIG.head.radius * (1 + pop);
+    return [radius, radius, radius];
+  }
+
+  getHeadBounceProgress(timeSeconds) {
+    if (timeSeconds < this.headBounceStart || timeSeconds > this.headBounceUntil) {
+      return 0;
+    }
+
+    return (timeSeconds - this.headBounceStart) / CONFIG.head.bounceDurationSeconds;
+  }
+
+  findNearestFoodToHead(maxDistance) {
+    let nearest = null;
+    let nearestDistance = maxDistance;
+
+    for (const orb of this.spawner.getAll()) {
+      const distance = vecDistance(this.snake.headPosition, orb.position);
+      if (distance <= nearestDistance) {
+        nearest = orb;
+        nearestDistance = distance;
+      }
+    }
+
+    return nearest;
   }
 
   placeTextVisuals() {
@@ -816,6 +929,10 @@ class MRSnakeApp {
     let position = vecScaleAndAdd(pose.position, forward, CONFIG.eat.mouthForwardOffset);
     position = vecScaleAndAdd(position, [0, 1, 0], CONFIG.eat.mouthYOffset);
     return position;
+  }
+
+  getFoodPickupPosition(pose = this.currentPose) {
+    return vecScaleAndAdd(pose.position, [0, 1, 0], CONFIG.head.waistYOffset * 0.65);
   }
 
   getSnakeCollisionPosition(pose = this.currentPose) {

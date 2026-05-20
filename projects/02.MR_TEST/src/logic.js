@@ -26,6 +26,11 @@ export class ScoreManager {
     return this.value;
   }
 
+  decrement(amount) {
+    this.value = Math.max(0, this.value - amount);
+    return this.value;
+  }
+
   get() {
     return this.value;
   }
@@ -76,7 +81,7 @@ export class SnakeController {
   computeHeadPosition(playerPos, playerForward) {
     const flatForward = flattenForward(playerForward);
     let position = vecScaleAndAdd(playerPos, [0, 1, 0], this.config.head.waistYOffset);
-    position = vecScaleAndAdd(position, flatForward, -this.config.head.followDistance);
+    position = vecScaleAndAdd(position, flatForward, this.config.head.followDistance);
     return position;
   }
 
@@ -84,13 +89,14 @@ export class SnakeController {
     return vecScale(flattenForward(playerForward), -1);
   }
 
-  tick(playerPos, playerForward) {
+  tick(playerPos, playerForward, motionScale = 1) {
     if (this.frozen) {
       return;
     }
 
     const targetPosition = this.computeHeadPosition(playerPos, playerForward);
-    this.headPosition = vecLerp(this.headPosition, targetPosition, this.config.head.followLerp);
+    const followLerp = this.config.head.followLerp * motionScale;
+    this.headPosition = vecLerp(this.headPosition, targetPosition, followLerp);
     this.trailDirection = this.computeTrailDirection(playerForward);
     this.history.push([...this.headPosition]);
 
@@ -112,6 +118,16 @@ export class SnakeController {
     const position = this.sampleHistory(this.config.snake.segmentSpacing * (this.segments.length + 1));
     this.segments.push({ color, position });
     return this.segments[this.segments.length - 1];
+  }
+
+  trimSegments(count) {
+    const trimCount = Math.min(this.segments.length, Math.max(0, count));
+    if (trimCount === 0) {
+      return 0;
+    }
+
+    this.segments.splice(this.segments.length - trimCount, trimCount);
+    return trimCount;
   }
 
   getSegmentPositions() {
@@ -221,7 +237,7 @@ export class OrbSpawner {
 
     const id = `orb-${this.nextId}`;
     this.nextId += 1;
-    const orb = { id, color, position, heldBy: null };
+    const orb = { id, color, position, heldBy: null, delivering: false };
     this.active.set(id, orb);
     return orb;
   }
@@ -339,6 +355,10 @@ export class GameStateMachine {
   }
 
   firstGrab() {
+    this.startPlaying();
+  }
+
+  startPlaying() {
     if (this.beat === BEATS.READY) {
       this.enter(BEATS.PLAYING);
     }
