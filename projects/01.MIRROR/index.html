@@ -492,6 +492,10 @@ const _ptrMid   = new THREE.Vector3();
 const _ptrRing  = new THREE.Vector3();
 const _ptrPinky = new THREE.Vector3();
 
+// 설정 단계 미리보기 회전용
+const _camFwd    = new THREE.Vector3();
+const _setupAxis = new THREE.Vector3(0, 0, 1);
+
 // ────────────────────────────────────────────────────────────────
 //  궤적(Trail) 시스템 — 포인터 빛점이 지나간 자리에 잔상
 // ────────────────────────────────────────────────────────────────
@@ -659,6 +663,9 @@ let spawnEyeY      = 1.5;
 let mirrorZ        = 0;
 let currentSession = null;
 let setupPreviewZ  = null;  // 설정 단계 미리보기 Z (null = 미초기화)
+let setupPhase     = 'idle'; // 'idle' | 'dragging' | 'frozen'
+let setupDragHand  = null;   // 드래그 중인 손 (1 or 2)
+let setupFrozenZ   = null;   // 핀치 해제 시 고정된 Z
 
 let spherePhase     = 'idle';
 let sphereZ         = 0;
@@ -1447,6 +1454,9 @@ function exitSessionUI() {
   btnFish.classList.remove('active');
   spawnPos = null;
   setupPreviewZ = null;
+  setupPhase    = 'idle';
+  setupDragHand = null;
+  setupFrozenZ  = null;
   previewMirrorMesh.visible = false;
   guideGroup.visible = false;
   spherePhase = 'idle';
@@ -1508,26 +1518,10 @@ btnStart.onclick = async () => {
     // ── 현재 헤드 위치 갱신 ───────────────────────────────────
     currentHeadX = h.x; currentHeadY = h.y; currentHeadZ = h.z;
 
-    // ── 설정 단계: 검지 끝으로 거울 위치 조정, 핀치로 확정 ──────
+    // ── 설정 단계: 핀치 드래그로 거울 거리 조정, 두 번째 핀치로 확정 ──
     if (!spawnPos) {
-      // 검지 끝 Z → 미리보기 평면 위치 추적
-      const h2Idx = hand2.joints?.['index-finger-tip'];
-      const h1Idx = hand1.joints?.['index-finger-tip'];
-      let targetZ = h.z - MIRROR_DIST;
-      if (h2Idx && h2Idx.visible) {
-        h2Idx.getWorldPosition(_ptrIndex);
-        targetZ = _ptrIndex.z;
-      } else if (h1Idx && h1Idx.visible) {
-        h1Idx.getWorldPosition(_ptrIndex);
-        targetZ = _ptrIndex.z;
-      }
-      if (setupPreviewZ === null) setupPreviewZ = targetZ;
-      else setupPreviewZ += (targetZ - setupPreviewZ) * 0.12;
-      previewMirrorMesh.position.set(h.x, h.y - 0.3, setupPreviewZ);
-      previewMirrorMesh.visible = true;
-
-      // 핀치 감지 (raw, 사이드 이펙트 없음)
-      const checkPinch = (hand) => {
+      // 핀치 중간점 Z 반환 (아니면 null)
+      const getPinchZ = (hand) => {
         const idx = hand.joints?.['index-finger-tip'];
         const thm = hand.joints?.['thumb-tip'];
         if (!idx || !thm || !idx.visible || !thm.visible) return null;
@@ -1536,25 +1530,73 @@ btnStart.onclick = async () => {
         return _indexPos.distanceTo(_thumbPos) < PINCH_THRESHOLD
           ? (_indexPos.z + _thumbPos.z) * 0.5 : null;
       };
-      const p2 = checkPinch(hand2);
-      const p1 = checkPinch(hand1);
-      const newPinch2 = p2 !== null && !wasPinching2;
-      const newPinch1 = p1 !== null && !wasPinching1;
-      wasPinching2 = p2 !== null;
-      wasPinching1 = p1 !== null;
+      const p2 = getPinchZ(hand2);
+      const p1 = getPinchZ(hand1);
+      const pinching2 = p2 !== null;
+      const pinching1 = p1 !== null;
 
-      const confirmedZ = newPinch2 ? p2 : newPinch1 ? p1 : null;
-      if (confirmedZ !== null) {
-        spawnPos  = { x: h.x, z: h.z };
-        spawnEyeY = h.y;
-        mirrorZ   = confirmedZ;
-        previewMirrorMesh.visible = false;
-        grayClipPlane = new THREE.Plane(new THREE.Vector3(0, 0, -1),  mirrorZ);
-        blueClipPlane = new THREE.Plane(new THREE.Vector3(0, 0,  1), -mirrorZ);
-        guideGroup.position.set(h.x, 0.005, mirrorZ);
-        guideGroup.visible = true;
-        setStatus(`✓ 거울 위치 확정 | 핀치 / 포인터 / 물고기 — 거울에 비칩니다`);
+      // 최소 0.3m / 최대 4.0m 거리 클램프
+      const clampZ = (z) => Math.max(h.z - 4.0, Math.min(h.z - 0.3, z));
+
+      if (setupPhase === 'idle') {
+        // 기본 위치 (1.5m 앞) 표시, 첫 핀치 대기
+        const defaultZ = clampZ(h.z - MIRROR_DIST);
+        if (setupPreviewZ === null) setupPreviewZ = defaultZ;
+        if (!wasPinching2 && pinching2) { setupPhase = 'dragging'; setupDragHand = 2; }
+        else if (!wasPinching1 && pinching1) { setupPhase = 'dragging'; setupDragHand = 1; }
+
+      } else if (setupPhase === 'dragging') {
+        const draggingZ = setupDragHand === 2 ? p2 : p1;
+        const stillPinching = setupDragHand === 2 ? pinching2 : pinching1;
+        if (draggingZ !== null) setupPreviewZ = clampZ(draggingZ);
+        if (!stillPinching) {
+          // 핀치 해제 → 현재 위치에 고정
+          setupFrozenZ = setupPreviewZ;
+          setupPhase = 'frozen';
+        }
+
+      } else if (setupPhase === 'frozen') {
+        // 두 번째 핀치 → 확정
+        const newPinch2 = !wasPinching2 && pinching2;
+        const newPinch1 = !wasPinching1 && pinching1;
+        if (newPinch2 || newPinch1) {
+          spawnPos  = { x: h.x, z: h.z };
+          spawnEyeY = h.y;
+          mirrorZ   = setupPreviewZ;
+          previewMirrorMesh.visible = false;
+          grayClipPlane = new THREE.Plane(new THREE.Vector3(0, 0, -1),  mirrorZ);
+          blueClipPlane = new THREE.Plane(new THREE.Vector3(0, 0,  1), -mirrorZ);
+          guideGroup.position.set(h.x, 0.005, mirrorZ);
+          guideGroup.visible = true;
+          setStatus(`✓ 거울 위치 확정 | 핀치 / 포인터 / 물고기 — 거울에 비칩니다`);
+          wasPinching2 = pinching2;
+          wasPinching1 = pinching1;
+          prevTimestamp = timestamp;
+          renderer.render(scene, camera);
+          return;
+        }
       }
+
+      wasPinching2 = pinching2;
+      wasPinching1 = pinching1;
+
+      // 미리보기 평면 위치
+      previewMirrorMesh.position.set(h.x, h.y - 0.3, setupPreviewZ);
+
+      // 사용자를 향해 수평 회전 (billboarding, Y축만)
+      _camFwd.set(0, 0, -1).applyQuaternion(camera.quaternion);
+      _camFwd.y = 0;
+      if (_camFwd.lengthSq() > 0.001) {
+        _camFwd.normalize();
+        previewMirrorMesh.quaternion.setFromUnitVectors(_setupAxis, _camFwd);
+      }
+      previewMirrorMesh.visible = true;
+
+      // 상태별 안내 메시지
+      const distM = Math.abs(setupPreviewZ - h.z).toFixed(1);
+      if (setupPhase === 'idle')     setStatus(`핀치로 거울을 잡고 앞뒤로 조정하세요 — ${distM}m`);
+      else if (setupPhase === 'dragging') setStatus(`드래그 중 ${distM}m — 놓으면 고정`);
+      else                           setStatus(`${distM}m — 핀치로 거울 위치 확정`);
 
       prevTimestamp = timestamp;
       renderer.render(scene, camera);
