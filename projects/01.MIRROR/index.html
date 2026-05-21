@@ -667,6 +667,13 @@ let setupPhase     = 'idle'; // 'idle' | 'dragging' | 'frozen'
 let setupDragHand  = null;   // 드래그 중인 손 (1 or 2)
 let setupFrozenZ   = null;   // 핀치 해제 시 고정된 Z
 
+// ── 수면 파동 시스템 ─────────────────────────────────────────────
+let mirrorWaterMesh = null;
+const WATER_MAX_RIPPLES = 8;
+const waterRipples = Array.from({ length: WATER_MAX_RIPPLES },
+  () => new THREE.Vector4(0, 0, -999, 0));
+let prevIdxZ1 = null, prevIdxZ2 = null;
+
 let spherePhase     = 'idle';
 let sphereZ         = 0;
 let sphereY         = 1.5;
@@ -724,6 +731,68 @@ let currentHeadZ = 0;
 //  HELPER
 // ────────────────────────────────────────────────────────────────
 function reflectZ(z) { return 2 * mirrorZ - z; }
+
+// ── 수면 파동 ────────────────────────────────────────────────────
+function createMirrorWater() {
+  const VS = `
+    uniform float uTime;
+    uniform vec4 uRipples[8];
+    varying float vDisp;
+    void main() {
+      vec3 pos = position;
+      float disp = 0.0;
+      for (int i = 0; i < 8; i++) {
+        float t = uTime - uRipples[i].z;
+        if (t >= 0.0 && t < 4.0) {
+          float d = length(pos.xy - uRipples[i].xy);
+          disp += sin(d * 12.0 - t * 8.0) * exp(-d * 1.0) * exp(-t * 0.8) * 0.06;
+        }
+      }
+      disp += sin(pos.x * 2.3 + uTime * 0.7) * sin(pos.y * 1.9 + uTime * 0.5) * 0.004
+            + sin(pos.x * 4.1 + uTime * 1.3) * cos(pos.y * 3.3 + uTime * 1.0) * 0.002;
+      vDisp = disp;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(pos + normal * disp, 1.0);
+    }
+  `;
+  const FS = `
+    varying float vDisp;
+    void main() {
+      vec3 col = mix(vec3(0.15, 0.45, 0.78), vec3(0.85, 0.96, 1.0),
+                     smoothstep(0.0, 0.07, vDisp));
+      float alpha = clamp(0.07 + abs(vDisp) * 5.0, 0.04, 0.42);
+      gl_FragColor = vec4(col, alpha);
+    }
+  `;
+  const mat = new THREE.ShaderMaterial({
+    uniforms: { uTime: { value: 0.0 }, uRipples: { value: waterRipples } },
+    vertexShader: VS, fragmentShader: FS,
+    transparent: true, side: THREE.DoubleSide, depthWrite: false
+  });
+  mirrorWaterMesh = new THREE.Mesh(new THREE.PlaneGeometry(2.6, 2.6, 48, 48), mat);
+  mirrorWaterMesh.position.set(spawnPos.x, spawnEyeY, mirrorZ);
+  mirrorWaterMesh.renderOrder = 1;
+  scene.add(mirrorWaterMesh);
+}
+
+function addWaterRipple(worldX, worldY, timeSec) {
+  if (!mirrorWaterMesh) return;
+  let slot = 0, oldestT = Infinity;
+  for (let i = 0; i < WATER_MAX_RIPPLES; i++) {
+    const t = waterRipples[i].z;
+    if (t < -100 || timeSec - t > 4.0) { slot = i; break; }
+    if (t < oldestT) { oldestT = t; slot = i; }
+  }
+  waterRipples[slot].set(
+    worldX - mirrorWaterMesh.position.x,
+    worldY - mirrorWaterMesh.position.y,
+    timeSec, 0
+  );
+}
+
+function updateMirrorWater(timeSec) {
+  if (!mirrorWaterMesh) return;
+  mirrorWaterMesh.material.uniforms.uTime.value = timeSec;
+}
 
 // ── 마이크 / 음성 상태 ───────────────────────────────────────────
 async function startMic() {
@@ -1453,6 +1522,8 @@ function exitSessionUI() {
   btnFish.textContent = '물고기 소환';
   btnFish.classList.remove('active');
   spawnPos = null;
+  if (mirrorWaterMesh) { scene.remove(mirrorWaterMesh); mirrorWaterMesh = null; }
+  prevIdxZ1 = null; prevIdxZ2 = null;
   setupPreviewZ = null;
   setupPhase    = 'idle';
   setupDragHand = null;
@@ -1568,6 +1639,7 @@ btnStart.onclick = async () => {
           blueClipPlane = new THREE.Plane(new THREE.Vector3(0, 0,  1), -mirrorZ);
           guideGroup.position.set(h.x, 0.005, mirrorZ);
           guideGroup.visible = true;
+          createMirrorWater();
           setStatus(`✓ 거울 위치 확정 | 핀치 / 포인터 / 물고기 — 거울에 비칩니다`);
           wasPinching2 = pinching2;
           wasPinching1 = pinching1;
@@ -1630,6 +1702,24 @@ btnStart.onclick = async () => {
     }
 
     prevTimestamp = timestamp;
+
+    // ── 수면 파동 터치 감지 & 업데이트 ──────────────────────────────
+    const timeSec = timestamp / 1000;
+    const idx1 = hand1.joints?.['index-finger-tip'];
+    if (idx1 && idx1.visible) {
+      idx1.getWorldPosition(_ptrIndex);
+      if (prevIdxZ1 !== null && Math.sign(_ptrIndex.z - mirrorZ) !== Math.sign(prevIdxZ1 - mirrorZ))
+        addWaterRipple(_ptrIndex.x, _ptrIndex.y, timeSec);
+      prevIdxZ1 = _ptrIndex.z;
+    } else prevIdxZ1 = null;
+    const idx2 = hand2.joints?.['index-finger-tip'];
+    if (idx2 && idx2.visible) {
+      idx2.getWorldPosition(_ptrIndex);
+      if (prevIdxZ2 !== null && Math.sign(_ptrIndex.z - mirrorZ) !== Math.sign(prevIdxZ2 - mirrorZ))
+        addWaterRipple(_ptrIndex.x, _ptrIndex.y, timeSec);
+      prevIdxZ2 = _ptrIndex.z;
+    } else prevIdxZ2 = null;
+    updateMirrorWater(timeSec);
 
     // ── 핀치 파티클 ────────────────────────────────────────────
     wasPinching1 = updatePinch(hand1, pinchObj1, pinchAudio1, wasPinching1);
