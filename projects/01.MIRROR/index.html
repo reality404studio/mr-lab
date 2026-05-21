@@ -165,6 +165,20 @@ const arrow = new THREE.Mesh(arrowGeo, barMat);
 arrow.position.set(0, 0.006, -0.12);
 guideGroup.add(arrow);
 
+// ── 거울 위치 설정 단계 미리보기 평면 ──────────────────────────
+const previewMirrorMesh = (() => {
+  const mesh = new THREE.Mesh(
+    new THREE.PlaneGeometry(1.6, 2.0),
+    new THREE.MeshBasicMaterial({
+      color: 0x88ccff, transparent: true, opacity: 0.22,
+      side: THREE.DoubleSide, depthWrite: false
+    })
+  );
+  mesh.visible = false;
+  scene.add(mesh);
+  return mesh;
+})();
+
 // ────────────────────────────────────────────────────────────────
 //  구체: 거울을 통과하는 오브젝트
 // ────────────────────────────────────────────────────────────────
@@ -644,6 +658,7 @@ let spawnPos       = null;
 let spawnEyeY      = 1.5;
 let mirrorZ        = 0;
 let currentSession = null;
+let setupPreviewZ  = null;  // 설정 단계 미리보기 Z (null = 미초기화)
 
 let spherePhase     = 'idle';
 let sphereZ         = 0;
@@ -1431,6 +1446,8 @@ function exitSessionUI() {
   btnFish.textContent = '물고기 소환';
   btnFish.classList.remove('active');
   spawnPos = null;
+  setupPreviewZ = null;
+  previewMirrorMesh.visible = false;
   guideGroup.visible = false;
   spherePhase = 'idle';
   resetSphereVisuals();
@@ -1472,7 +1489,7 @@ btnStart.onclick = async () => {
   startMic();  // 마이크 권한 요청 (AR와 함께 시작)
 
   enterSessionUI(session);
-  setStatus('⏳ 스폰 위치 초기화 중...');
+  setStatus('검지를 앞으로 뻗어 거울 위치를 정하고 핀치하세요');
 
   session.addEventListener('visibilitychange', () => {
     if (session.visibilityState === 'visible') setStatus('▶ AR 재개됨');
@@ -1488,25 +1505,61 @@ btnStart.onclick = async () => {
 
     const h = pose.transform.position;
 
-    // ── 최초 1회: 스폰 포지션 & 거울 평면 기록 ──────────────
-    if (!spawnPos) {
-      spawnPos  = { x: h.x, z: h.z };
-      spawnEyeY = h.y;
-      mirrorZ   = h.z - MIRROR_DIST;
-
-      grayClipPlane = new THREE.Plane(new THREE.Vector3(0, 0, -1),  mirrorZ);
-      blueClipPlane = new THREE.Plane(new THREE.Vector3(0, 0,  1), -mirrorZ);
-
-      guideGroup.position.set(h.x, 0.005, mirrorZ);
-      guideGroup.visible = true;
-
-      setStatus(
-        `✓ 준비 완료 | 거울 위치(앞 ${MIRROR_DIST}m) | 핀치 / 포인터 / 물고기 — 거울에 비칩니다`
-      );
-    }
-
     // ── 현재 헤드 위치 갱신 ───────────────────────────────────
     currentHeadX = h.x; currentHeadY = h.y; currentHeadZ = h.z;
+
+    // ── 설정 단계: 검지 끝으로 거울 위치 조정, 핀치로 확정 ──────
+    if (!spawnPos) {
+      // 검지 끝 Z → 미리보기 평면 위치 추적
+      const h2Idx = hand2.joints?.['index-finger-tip'];
+      const h1Idx = hand1.joints?.['index-finger-tip'];
+      let targetZ = h.z - MIRROR_DIST;
+      if (h2Idx && h2Idx.visible) {
+        h2Idx.getWorldPosition(_ptrIndex);
+        targetZ = _ptrIndex.z;
+      } else if (h1Idx && h1Idx.visible) {
+        h1Idx.getWorldPosition(_ptrIndex);
+        targetZ = _ptrIndex.z;
+      }
+      if (setupPreviewZ === null) setupPreviewZ = targetZ;
+      else setupPreviewZ += (targetZ - setupPreviewZ) * 0.12;
+      previewMirrorMesh.position.set(h.x, h.y - 0.3, setupPreviewZ);
+      previewMirrorMesh.visible = true;
+
+      // 핀치 감지 (raw, 사이드 이펙트 없음)
+      const checkPinch = (hand) => {
+        const idx = hand.joints?.['index-finger-tip'];
+        const thm = hand.joints?.['thumb-tip'];
+        if (!idx || !thm || !idx.visible || !thm.visible) return null;
+        idx.getWorldPosition(_indexPos);
+        thm.getWorldPosition(_thumbPos);
+        return _indexPos.distanceTo(_thumbPos) < PINCH_THRESHOLD
+          ? (_indexPos.z + _thumbPos.z) * 0.5 : null;
+      };
+      const p2 = checkPinch(hand2);
+      const p1 = checkPinch(hand1);
+      const newPinch2 = p2 !== null && !wasPinching2;
+      const newPinch1 = p1 !== null && !wasPinching1;
+      wasPinching2 = p2 !== null;
+      wasPinching1 = p1 !== null;
+
+      const confirmedZ = newPinch2 ? p2 : newPinch1 ? p1 : null;
+      if (confirmedZ !== null) {
+        spawnPos  = { x: h.x, z: h.z };
+        spawnEyeY = h.y;
+        mirrorZ   = confirmedZ;
+        previewMirrorMesh.visible = false;
+        grayClipPlane = new THREE.Plane(new THREE.Vector3(0, 0, -1),  mirrorZ);
+        blueClipPlane = new THREE.Plane(new THREE.Vector3(0, 0,  1), -mirrorZ);
+        guideGroup.position.set(h.x, 0.005, mirrorZ);
+        guideGroup.visible = true;
+        setStatus(`✓ 거울 위치 확정 | 핀치 / 포인터 / 물고기 — 거울에 비칩니다`);
+      }
+
+      prevTimestamp = timestamp;
+      renderer.render(scene, camera);
+      return;
+    }
 
     // ── 프레임 dt (루프 레벨 1회 계산) ───────────────────────────
     const dt = prevTimestamp > 0
