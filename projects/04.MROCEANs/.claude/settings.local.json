@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(\" /Users/rafaela/01_PROJECT_NOW/05.MR_LABS/PROJECTS/projects/04.MROCEANs/index.html)",
+      "Bash(grep -n \"\\\\\\\\\\\\\\\\`\" /Users/rafaela/01_PROJECT_NOW/05.MR_LABS/PROJECTS/projects/04.MROCEANs/index.html)"
+    ]
+  }
+}

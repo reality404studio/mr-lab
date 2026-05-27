@@ -511,7 +511,7 @@
         gl_PointSize = max(4.0, 14.0 / max(0.1, -mv.z));
         gl_Position  = projectionMatrix * mv;
       }
-    \`;
+    `;
     const _ringFrag = `
       varying float vPhase;
       uniform float uAlpha;
@@ -525,7 +525,7 @@
         float a = uAlpha * (1.0 - smoothstep(0.2, 0.5, r));
         gl_FragColor = vec4(col, a);
       }
-    \`;
+    `;
 
     const _handRing  = {};
     const _hrTmpQ    = new THREE.Quaternion();
