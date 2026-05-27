@@ -133,10 +133,12 @@
     const BURST_DURATION   = 1.2;
     const BURST_SCATTER_R  = 0.60;
 
-    const VORTEX_RADIUS     = 0.35;
+    const VORTEX_RING_R     = 0.09;   // 9cm 반지름 → 18cm 지름
     const VORTEX_PART_COUNT = 120;
-    const VORTEX_DURATION   = 3.0;
+    const VORTEX_DURATION   = 3.2;
     const VORTEX_ROT_THRESH = 4.0;
+    const VORTEX_P1_END     = 0.28;   // 수렴 종료
+    const VORTEX_P2_END     = 0.70;   // 유지 종료 → 흩어짐 시작
 
     const RING_COUNT       = 3;
     const RING_STAGGER     = 0.13;
@@ -493,34 +495,54 @@
     }
 
     // ─────────────────────────────────────────────────────────────
-    // C09 — VORTEX
+    // C09 — VORTEX (Magic Ring)
     // ─────────────────────────────────────────────────────────────
 
     const _vortVert = `
-      uniform float uAlpha; varying float vA;
+      attribute float aPhase;
+      uniform float uAlpha;
+      varying float vPhase;
+      varying float vA;
       void main() {
+        vPhase = aPhase;
         vA = uAlpha;
         vec4 mv = modelViewMatrix * vec4(position, 1.0);
-        gl_PointSize = max(2.0, 3.0 / max(0.1, -mv.z));
+        gl_PointSize = max(4.0, 14.0 / max(0.1, -mv.z));
         gl_Position  = projectionMatrix * mv;
       }
     `;
     const _vortFrag = `
+      varying float vPhase;
       varying float vA;
       void main() {
         float r = length(gl_PointCoord - vec2(0.5));
         if (r > 0.5) discard;
-        vec3 col = mix(vec3(0.4,0.75,1.0), vec3(0.7,1.0,0.95), gl_PointCoord.x);
-        gl_FragColor = vec4(col, vA*(1.0-smoothstep(0.0,0.5,r)));
+        vec3 cyan   = vec3(0.3, 0.9, 1.0);
+        vec3 purple = vec3(0.75, 0.4, 1.0);
+        vec3 col = mix(cyan, purple, 0.5 + 0.5 * sin(vPhase));
+        col = mix(col, vec3(1.0), pow(max(0.0, 1.0 - r * 2.2), 3.0));
+        float a = vA * (1.0 - smoothstep(0.2, 0.5, r));
+        gl_FragColor = vec4(col, a);
       }
     `;
+
     const _vortexPool = [];
+    const _vortTmpQ  = new THREE.Quaternion();
+    const _vortAxisX = new THREE.Vector3();
+    const _vortAxisY = new THREE.Vector3();
 
     function initVortex() {
       for (let s = 0; s < 2; s++) {
+        const posArr   = new Float32Array(VORTEX_PART_COUNT * 3);
+        const phaseArr = new Float32Array(VORTEX_PART_COUNT);
+        const startArr = new Float32Array(VORTEX_PART_COUNT * 3);
+        const velArr   = new Float32Array(VORTEX_PART_COUNT * 3);
+        for (let i = 0; i < VORTEX_PART_COUNT; i++) {
+          phaseArr[i] = (i / VORTEX_PART_COUNT) * Math.PI * 2;
+        }
         const geo = new THREE.BufferGeometry();
-        const posArr = new Float32Array(VORTEX_PART_COUNT * 3);
         geo.setAttribute('position', new THREE.BufferAttribute(posArr, 3));
+        geo.setAttribute('aPhase',   new THREE.BufferAttribute(phaseArr, 1));
         geo.setDrawRange(0, VORTEX_PART_COUNT);
         const mat = new THREE.ShaderMaterial({
           uniforms: { uAlpha: { value: 0 } },
@@ -530,17 +552,38 @@
         const mesh = new THREE.Points(geo, mat);
         mesh.frustumCulled = false; mesh.visible = false;
         scene.add(mesh);
-        _vortexPool.push({ active: false, timer: 0, cx:0, cy:0, cz:0, mesh, posArr });
+        _vortexPool.push({
+          active: false, timer: 0,
+          cx: 0, cy: 0, cz: 0,
+          qx: 0, qy: 0, qz: 0, qw: 1,
+          scatterStarted: false,
+          mesh, posArr, startArr, velArr,
+        });
       }
     }
 
-    function triggerVortex(x, y, z) {
+    function triggerVortex(x, y, z, quat) {
       const slot = _vortexPool.find(v => !v.active);
       if (!slot) return;
-      slot.active = true; slot.timer = 0;
+      slot.active = true; slot.timer = 0; slot.scatterStarted = false;
       slot.cx = x; slot.cy = y; slot.cz = z;
+      slot.qx = quat.x; slot.qy = quat.y; slot.qz = quat.z; slot.qw = quat.w;
+      // 파티클 초기 흩어진 위치 설정 (손목 주변 구형으로 랜덤)
+      for (let i = 0; i < VORTEX_PART_COUNT; i++) {
+        const r  = 0.25 + Math.random() * 0.35;
+        const th = Math.random() * Math.PI * 2;
+        const ph = (Math.random() - 0.5) * Math.PI;
+        slot.startArr[i*3]   = x + r * Math.cos(th) * Math.cos(ph);
+        slot.startArr[i*3+1] = y + r * Math.sin(ph);
+        slot.startArr[i*3+2] = z + r * Math.sin(th) * Math.cos(ph);
+        // 초기 위치는 startArr과 동일하게
+        slot.posArr[i*3]   = slot.startArr[i*3];
+        slot.posArr[i*3+1] = slot.startArr[i*3+1];
+        slot.posArr[i*3+2] = slot.startArr[i*3+2];
+      }
+      slot.mesh.geometry.attributes.position.needsUpdate = true;
       slot.mesh.visible = true;
-      if (DEBUG) console.log(`[vortex] (${x.toFixed(2)},${y.toFixed(2)},${z.toFixed(2)})`);
+      if (DEBUG) console.log(`[vortex] magic ring (${x.toFixed(2)},${y.toFixed(2)},${z.toFixed(2)})`);
     }
 
     function updateVortex(timestamp, dt) {
@@ -548,19 +591,75 @@
       for (const s of _vortexPool) {
         if (!s.active) continue;
         s.timer += dt;
-        const prog  = s.timer / VORTEX_DURATION;
-        const r     = VORTEX_RADIUS * Math.sin(prog * Math.PI);
-        const alpha = Math.sin(prog * Math.PI) * 0.8;
-        for (let i = 0; i < VORTEX_PART_COUNT; i++) {
-          const phase = (i / VORTEX_PART_COUNT) * Math.PI * 2;
-          const ang   = phase + t * 3.0;
-          s.posArr[i*3]   = s.cx + r * Math.cos(ang);
-          s.posArr[i*3+1] = s.cy + Math.sin(phase*3 + t*2) * 0.05;
-          s.posArr[i*3+2] = s.cz + r * Math.sin(ang);
+        const prog = s.timer / VORTEX_DURATION;
+
+        // 손목 축 계산 (프레임당 1회)
+        _vortTmpQ.set(s.qx, s.qy, s.qz, s.qw);
+        _vortAxisX.set(1, 0, 0).applyQuaternion(_vortTmpQ);
+        _vortAxisY.set(0, 1, 0).applyQuaternion(_vortTmpQ);
+        const ax = _vortAxisX, ay = _vortAxisY;
+
+        if (prog < VORTEX_P1_END) {
+          // Phase 1: 수렴 — 파티클이 링 위치로 모임
+          const p1   = prog / VORTEX_P1_END;
+          const ease = p1 * p1 * (3.0 - 2.0 * p1);  // smoothstep
+          const rot  = t * 1.5;
+          for (let i = 0; i < VORTEX_PART_COUNT; i++) {
+            const phase = (i / VORTEX_PART_COUNT) * Math.PI * 2 + rot;
+            const c = Math.cos(phase), ss = Math.sin(phase);
+            const rx = s.cx + VORTEX_RING_R * (c * ax.x + ss * ay.x);
+            const ry = s.cy + VORTEX_RING_R * (c * ax.y + ss * ay.y);
+            const rz = s.cz + VORTEX_RING_R * (c * ax.z + ss * ay.z);
+            s.posArr[i*3]   = s.startArr[i*3]   + (rx - s.startArr[i*3])   * ease;
+            s.posArr[i*3+1] = s.startArr[i*3+1] + (ry - s.startArr[i*3+1]) * ease;
+            s.posArr[i*3+2] = s.startArr[i*3+2] + (rz - s.startArr[i*3+2]) * ease;
+          }
+          s.mesh.material.uniforms.uAlpha.value = p1 * 0.9;
+
+        } else if (prog < VORTEX_P2_END) {
+          // Phase 2: 유지 — 링이 빛나며 회전
+          const shimmer = 1.0 + 0.04 * Math.sin(t * 9.0);
+          const rot     = t * 2.8;
+          for (let i = 0; i < VORTEX_PART_COUNT; i++) {
+            const phase = (i / VORTEX_PART_COUNT) * Math.PI * 2 + rot;
+            const r = VORTEX_RING_R * shimmer;
+            const c = Math.cos(phase), ss = Math.sin(phase);
+            s.posArr[i*3]   = s.cx + r * (c * ax.x + ss * ay.x);
+            s.posArr[i*3+1] = s.cy + r * (c * ax.y + ss * ay.y);
+            s.posArr[i*3+2] = s.cz + r * (c * ax.z + ss * ay.z);
+          }
+          s.mesh.material.uniforms.uAlpha.value = 0.9;
+
+        } else {
+          // Phase 3: 흩어짐
+          if (!s.scatterStarted) {
+            s.scatterStarted = true;
+            for (let i = 0; i < VORTEX_PART_COUNT; i++) {
+              s.startArr[i*3]   = s.posArr[i*3];
+              s.startArr[i*3+1] = s.posArr[i*3+1];
+              s.startArr[i*3+2] = s.posArr[i*3+2];
+              const dx = s.posArr[i*3]   - s.cx;
+              const dy = s.posArr[i*3+1] - s.cy;
+              const dz = s.posArr[i*3+2] - s.cz;
+              const len = Math.sqrt(dx*dx + dy*dy + dz*dz) || 0.001;
+              const spd = 1.0 + Math.random() * 1.5;
+              s.velArr[i*3]   = (dx/len + (Math.random()-0.5)*0.4) * spd;
+              s.velArr[i*3+1] = (dy/len + (Math.random()-0.5)*0.4 + 0.4) * spd;
+              s.velArr[i*3+2] = (dz/len + (Math.random()-0.5)*0.4) * spd;
+            }
+          }
+          const p3     = (prog - VORTEX_P2_END) / (1.0 - VORTEX_P2_END);
+          const easeOut = 1.0 - (1.0 - p3) * (1.0 - p3);
+          for (let i = 0; i < VORTEX_PART_COUNT; i++) {
+            s.posArr[i*3]   = s.startArr[i*3]   + s.velArr[i*3]   * easeOut;
+            s.posArr[i*3+1] = s.startArr[i*3+1] + s.velArr[i*3+1] * easeOut;
+            s.posArr[i*3+2] = s.startArr[i*3+2] + s.velArr[i*3+2] * easeOut;
+          }
+          s.mesh.material.uniforms.uAlpha.value = (1.0 - p3) * 0.9;
+          if (prog >= 1.0) { s.active = false; s.mesh.visible = false; }
         }
+
         s.mesh.geometry.attributes.position.needsUpdate = true;
-        s.mesh.material.uniforms.uAlpha.value = alpha;
-        if (s.timer >= VORTEX_DURATION) { s.active = false; s.mesh.visible = false; }
       }
     }
 
@@ -572,17 +671,16 @@
 
     function initGlowOrb() {
       _orb.group = new THREE.Group();
-      const mk = (r, col, op) => {
+      const mk = (r, col, isRim, alpha) => {
         const m = new THREE.Mesh(
-          new THREE.SphereGeometry(r, 16, 16),
-          new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: op,
-            blending: THREE.AdditiveBlending, depthWrite: false })
+          new THREE.SphereGeometry(r, 24, 24),
+          _makeGlowMat(col, isRim, alpha)
         );
         _orb.group.add(m);
       };
-      mk(ORB_MAX_R * 0.33, 0xffffff, 1.0);
-      mk(ORB_MAX_R * 0.80, 0x88ccff, 0.18);
-      mk(ORB_MAX_R * 1.33, 0x4499ff, 0.07);
+      mk(ORB_MAX_R * 0.45, 0xffffff,  false, 1.0);   // 밝은 코어
+      mk(ORB_MAX_R * 1.00, 0xaaddff,  false, 0.55);  // 중간 확산
+      mk(ORB_MAX_R * 1.40, 0x4499ff,  true,  0.60);  // 림 글로우
       _orb.group.visible = false;
       scene.add(_orb.group);
     }
@@ -788,31 +886,71 @@
     }
 
     // ─────────────────────────────────────────────────────────────
+    // GLOW MATERIAL HELPER
+    // ─────────────────────────────────────────────────────────────
+
+    const _glowVert = `
+      varying vec3 vNormal;
+      varying vec3 vViewPos;
+      void main() {
+        vNormal  = normalMatrix * normal;
+        vec4 mv  = modelViewMatrix * vec4(position, 1.0);
+        vViewPos = mv.xyz;
+        gl_Position = projectionMatrix * mv;
+      }
+    `;
+    // 중심이 밝고 가장자리로 갈수록 흐려짐
+    const _glowFragCore = `
+      uniform vec3  uColor;
+      uniform float uAlpha;
+      varying vec3  vNormal;
+      varying vec3  vViewPos;
+      void main() {
+        float NdotV = abs(dot(normalize(vNormal), normalize(-vViewPos)));
+        float i = pow(NdotV, 0.55);
+        gl_FragColor = vec4(uColor, i * uAlpha);
+      }
+    `;
+    // 가장자리만 발광 (rim glow)
+    const _glowFragRim = `
+      uniform vec3  uColor;
+      uniform float uAlpha;
+      varying vec3  vNormal;
+      varying vec3  vViewPos;
+      void main() {
+        float NdotV = abs(dot(normalize(vNormal), normalize(-vViewPos)));
+        float rim = pow(1.0 - NdotV, 1.8);
+        gl_FragColor = vec4(uColor, rim * uAlpha);
+      }
+    `;
+
+    function _makeGlowMat(color, isRim, alpha) {
+      return new THREE.ShaderMaterial({
+        uniforms: {
+          uColor: { value: new THREE.Color(color) },
+          uAlpha: { value: alpha },
+        },
+        vertexShader:   _glowVert,
+        fragmentShader: isRim ? _glowFragRim : _glowFragCore,
+        transparent: true, depthWrite: false,
+        blending: THREE.AdditiveBlending,
+      });
+    }
+
+    // ─────────────────────────────────────────────────────────────
     // C02 — POINTER DOT
     // ─────────────────────────────────────────────────────────────
 
     const _ptrDots = {};
 
     function initPointerDot() {
-      const coreMat = new THREE.MeshBasicMaterial({
-        color: 0xffffff,
-        blending: THREE.AdditiveBlending,
-        depthWrite: false,
-      });
-      const haloMat = new THREE.MeshBasicMaterial({
-        color: 0x88eeff,
-        transparent: true,
-        opacity: 0.25,
-        blending: THREE.AdditiveBlending,
-        depthWrite: false,
-      });
-      const coreGeo = new THREE.SphereGeometry(0.008, 8, 8);
-      const haloGeo = new THREE.SphereGeometry(0.022, 8, 8);
+      const coreGeo = new THREE.SphereGeometry(0.010, 16, 16);
+      const rimGeo  = new THREE.SphereGeometry(0.026, 16, 16);
 
       for (const side of ['left', 'right']) {
-        const core = new THREE.Mesh(coreGeo, coreMat.clone());
-        const halo = new THREE.Mesh(haloGeo, haloMat.clone());
-        core.add(halo);
+        const core = new THREE.Mesh(coreGeo, _makeGlowMat(0xffffff,  false, 0.95));
+        const rim  = new THREE.Mesh(rimGeo,  _makeGlowMat(0x88eeff,  true,  0.70));
+        core.add(rim);
         core.visible = false;
         scene.add(core);
         _ptrDots[side] = {
@@ -1035,7 +1173,7 @@
         if (state.rotAccum >= VORTEX_ROT_THRESH && !state.triggered) {
           state.triggered = true;
           const p = j.wrist.pos;
-          triggerVortex(p.x, p.y, p.z);
+          triggerVortex(p.x, p.y, p.z, j.wrist.quat);
           state.rotAccum = 0;
           if (DEBUG) console.log(`[wristRotation] ${side}`);
         }
@@ -1108,7 +1246,7 @@
       void main() {
         vA = alpha;
         vec4 mv = modelViewMatrix * vec4(position, 1.0);
-        gl_PointSize = max(1.5, 2.5 / max(0.1, -mv.z));
+        gl_PointSize = max(4.0, 10.0 / max(0.1, -mv.z));
         gl_Position  = projectionMatrix * mv;
       }
     `;
@@ -1633,20 +1771,16 @@
 
     function _makeEggGroup(col) {
       const g = new THREE.Group();
-      const mk = (r, opacity) => {
+      const mk = (r, isRim, alpha) => {
         const m = new THREE.Mesh(
-          new THREE.SphereGeometry(r, 12, 12),
-          new THREE.MeshBasicMaterial({
-            color: col, transparent: true, opacity,
-            blending: THREE.AdditiveBlending, depthWrite: false,
-          })
+          new THREE.SphereGeometry(r, 16, 16),
+          _makeGlowMat(col, isRim, alpha)
         );
         g.add(m);
         return m;
       };
-      g.userData.core  = mk(0.035, 0.9);
-      g.userData.mid   = mk(0.070, 0.35);
-      g.userData.outer = mk(0.120, 0.10);
+      g.userData.core = mk(0.032, false, 0.90);  // 밝은 코어
+      g.userData.rim  = mk(0.090, true,  0.55);  // 림 글로우
       return g;
     }
 
@@ -1704,11 +1838,11 @@
 
         e.group.scale.setScalar(baseScale * pulse);
 
-        // 부화 직전(85%) — 외부 껍질 강하게 깜빡임
+        // 부화 직전(85%) — 림이 강하게 깜빡임
         if (prog > 0.85) {
           const flash = 0.5 + 0.5 * Math.sin(e.timer * 20);
-          e.group.userData.outer.material.opacity = 0.10 + flash * 0.35;
-          e.group.userData.mid.material.opacity   = 0.35 + flash * 0.30;
+          e.group.userData.rim.material.uniforms.uAlpha.value  = 0.55 + flash * 0.45;
+          e.group.userData.core.material.uniforms.uAlpha.value = 0.90 + flash * 0.10;
         }
       }
     }
