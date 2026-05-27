@@ -314,9 +314,20 @@ def add_tail(builder: MeshBuilder, slots: dict[str, int]) -> None:
 
 def add_dorsal_fin(builder: MeshBuilder, slots: dict[str, int]) -> None:
     mat = slots["fins_tail"]
-    base = [(-0.030, body_top_y_at(-0.030) - 0.001), (-0.006, body_top_y_at(-0.006) - 0.001),
-            (0.024, body_top_y_at(0.024) - 0.001), (0.056, body_top_y_at(0.056) - 0.001)]
-    crest = [(-0.034, 0.036), (-0.006, Y_MAX), (0.032, 0.035), (0.062, 0.027)]
+    base = [
+        (-0.037, body_top_y_at(-0.037) - 0.0008),
+        (-0.020, body_top_y_at(-0.020) - 0.0008),
+        (0.010, body_top_y_at(0.010) - 0.0008),
+        (0.040, body_top_y_at(0.040) - 0.0008),
+        (0.064, body_top_y_at(0.064) - 0.0008),
+    ]
+    crest = [
+        (-0.045, 0.031),
+        (-0.020, Y_MAX),
+        (0.016, 0.0365),
+        (0.047, 0.031),
+        (0.069, 0.023),
+    ]
     base_ids = [builder.v((0.0, y, z)) for z, y in base]
     crest_ids = [builder.v((0.0, y, z)) for z, y in crest]
     for index in range(len(base_ids) - 1):
@@ -326,9 +337,9 @@ def add_dorsal_fin(builder: MeshBuilder, slots: dict[str, int]) -> None:
 def add_pectoral_and_pelvic_fins(builder: MeshBuilder, slots: dict[str, int]) -> None:
     mat = slots["fins_tail"]
     for side in (-1.0, 1.0):
-        p0 = builder.v(surface_point(side, -0.003, 0.028, 0.00025))
-        p1 = builder.v(surface_point(side, -0.022, -0.010, 0.00025))
-        p2 = builder.v(surface_point(side, -0.006, -0.002, 0.00025))
+        p0 = builder.v(surface_point(side, -0.001, 0.030, 0.00035))
+        p1 = builder.v(surface_point(side, -0.026, -0.020, 0.00035))
+        p2 = builder.v(surface_point(side, -0.007, -0.002, 0.00035))
         if side > 0:
             builder.tri(p0, p1, p2, mat)
         else:
@@ -349,7 +360,7 @@ def add_patterns_and_eyes(builder: MeshBuilder, slots: dict[str, int]) -> None:
         add_surface_polygon(
             builder,
             side,
-            [(0.024, 0.055), (0.021, 0.067), (-0.018, 0.080), (-0.022, 0.067), (0.001, 0.056)],
+            [(0.030, 0.053), (0.026, 0.067), (-0.019, 0.081), (-0.023, 0.066), (-0.004, 0.056)],
             slots["eye_band"],
             PATCH_OFFSET,
         )
@@ -369,9 +380,9 @@ def add_patterns_and_eyes(builder: MeshBuilder, slots: dict[str, int]) -> None:
             )
 
         # Layered cute eye above the eye band.
-        add_surface_disc(builder, side, 0.004, 0.070, 0.0070, slots["eye_white"], 12, EYE_OFFSET)
-        add_surface_disc(builder, side, 0.004, 0.071, 0.0043, slots["eye_black"], 12, EYE_OFFSET + 0.00018)
-        add_surface_disc(builder, side, 0.0070, 0.0735, 0.00115, slots["eye_white"], 8, EYE_OFFSET + 0.00035)
+        add_surface_disc(builder, side, 0.0035, 0.070, 0.0068, slots["eye_white"], 12, EYE_OFFSET)
+        add_surface_disc(builder, side, 0.0035, 0.071, 0.0042, slots["eye_black"], 12, EYE_OFFSET + 0.00018)
+        add_surface_disc(builder, side, 0.0068, 0.0734, 0.00110, slots["eye_white"], 8, EYE_OFFSET + 0.00035)
 
 
 def create_fish_medium():

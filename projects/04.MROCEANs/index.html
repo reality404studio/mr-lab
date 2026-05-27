@@ -133,12 +133,15 @@
     const BURST_DURATION   = 1.2;
     const BURST_SCATTER_R  = 0.60;
 
-    const VORTEX_RING_R     = 0.09;   // 9cm 반지름 → 18cm 지름
-    const VORTEX_PART_COUNT = 120;
-    const VORTEX_DURATION   = 3.2;
-    const VORTEX_ROT_THRESH = 4.0;
-    const VORTEX_P1_END     = 0.28;   // 수렴 종료
-    const VORTEX_P2_END     = 0.70;   // 유지 종료 → 흩어짐 시작
+    const RING_R           = 0.09;   // 9cm 반지름 → 18cm 지름
+    const RING_PART_COUNT  = 120;
+    const RING_STILL_SPEED = 0.10;   // m/s 이하 = 정지
+    const RING_GATHER_RATE = 0.50;   // 초당 gatherProgress 증가 (2초에 완성)
+    const RING_DECAY_RATE  = 1.20;   // 손 움직일 때 초당 감소
+    const RING_SCATTER_ROT = 1.0;    // 흩어짐 트리거 누적 회전량 (rad)
+    const RING_ROT_DECAY   = 0.85;   // 프레임당 회전 누적 감쇠
+    const RING_SCATTER_DUR = 1.0;    // 흩어짐 지속 시간 (초)
+    const RING_SPREAD_R    = 0.28;   // 초기 산포 반지름
 
     const RING_COUNT       = 3;
     const RING_STAGGER     = 0.13;
@@ -495,25 +498,23 @@
     }
 
     // ─────────────────────────────────────────────────────────────
-    // C09 — VORTEX (Magic Ring)
+    // C09 — HAND RING  (정지 → 수렴, 손목 회전 → 흩어짐)
     // ─────────────────────────────────────────────────────────────
 
-    const _vortVert = `
+    const _ringVert = `
       attribute float aPhase;
       uniform float uAlpha;
       varying float vPhase;
-      varying float vA;
       void main() {
         vPhase = aPhase;
-        vA = uAlpha;
         vec4 mv = modelViewMatrix * vec4(position, 1.0);
         gl_PointSize = max(4.0, 14.0 / max(0.1, -mv.z));
         gl_Position  = projectionMatrix * mv;
       }
-    `;
-    const _vortFrag = `
+    \`;
+    const _ringFrag = `
       varying float vPhase;
-      varying float vA;
+      uniform float uAlpha;
       void main() {
         float r = length(gl_PointCoord - vec2(0.5));
         if (r > 0.5) discard;
@@ -521,166 +522,213 @@
         vec3 purple = vec3(0.75, 0.4, 1.0);
         vec3 col = mix(cyan, purple, 0.5 + 0.5 * sin(vPhase));
         col = mix(col, vec3(1.0), pow(max(0.0, 1.0 - r * 2.2), 3.0));
-        float a = vA * (1.0 - smoothstep(0.2, 0.5, r));
+        float a = uAlpha * (1.0 - smoothstep(0.2, 0.5, r));
         gl_FragColor = vec4(col, a);
       }
-    `;
+    \`;
 
-    const _vortexPool = [];
-    const _vortTmpQ  = new THREE.Quaternion();
-    const _vortAxisX = new THREE.Vector3();
-    const _vortAxisY = new THREE.Vector3();
+    const _handRing  = {};
+    const _hrTmpQ    = new THREE.Quaternion();
+    const _hrAxisX   = new THREE.Vector3();
+    const _hrAxisY   = new THREE.Vector3();
 
-    function initVortex() {
-      for (let s = 0; s < 2; s++) {
-        const posArr   = new Float32Array(VORTEX_PART_COUNT * 3);
-        const phaseArr = new Float32Array(VORTEX_PART_COUNT);
-        const startArr = new Float32Array(VORTEX_PART_COUNT * 3);
-        const velArr   = new Float32Array(VORTEX_PART_COUNT * 3);
-        for (let i = 0; i < VORTEX_PART_COUNT; i++) {
-          phaseArr[i] = (i / VORTEX_PART_COUNT) * Math.PI * 2;
+    function initHandRing() {
+      for (const side of ['left', 'right']) {
+        const posArr    = new Float32Array(RING_PART_COUNT * 3);
+        const phaseArr  = new Float32Array(RING_PART_COUNT);
+        const offsetArr = new Float32Array(RING_PART_COUNT * 3);
+        const velArr    = new Float32Array(RING_PART_COUNT * 3);
+        const startArr  = new Float32Array(RING_PART_COUNT * 3);
+        for (let i = 0; i < RING_PART_COUNT; i++) {
+          phaseArr[i] = (i / RING_PART_COUNT) * Math.PI * 2;
         }
         const geo = new THREE.BufferGeometry();
         geo.setAttribute('position', new THREE.BufferAttribute(posArr, 3));
         geo.setAttribute('aPhase',   new THREE.BufferAttribute(phaseArr, 1));
-        geo.setDrawRange(0, VORTEX_PART_COUNT);
+        geo.setDrawRange(0, RING_PART_COUNT);
         const mat = new THREE.ShaderMaterial({
           uniforms: { uAlpha: { value: 0 } },
-          vertexShader: _vortVert, fragmentShader: _vortFrag,
+          vertexShader: _ringVert, fragmentShader: _ringFrag,
           transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
         });
         const mesh = new THREE.Points(geo, mat);
         mesh.frustumCulled = false; mesh.visible = false;
         scene.add(mesh);
-        _vortexPool.push({
-          active: false, timer: 0,
-          cx: 0, cy: 0, cz: 0,
-          qx: 0, qy: 0, qz: 0, qw: 1,
-          scatterStarted: false,
-          mesh, posArr, startArr, velArr,
-        });
+        _handRing[side] = {
+          phase: 'idle',
+          gatherProgress: 0,
+          scatterTimer: 0,
+          rotAccum: 0,
+          offsetsReady: false,
+          prevPos:  new THREE.Vector3(),
+          prevQuat: new THREE.Quaternion(),
+          posArr, offsetArr, velArr, startArr, mesh,
+        };
       }
     }
 
-    function triggerVortex(x, y, z, quat) {
-      const slot = _vortexPool.find(v => !v.active);
-      if (!slot) return;
-      slot.active = true; slot.timer = 0; slot.scatterStarted = false;
-      slot.cx = x; slot.cy = y; slot.cz = z;
-      slot.qx = quat.x; slot.qy = quat.y; slot.qz = quat.z; slot.qw = quat.w;
-      // 파티클 초기 흩어진 위치 설정 (손목 주변 구형으로 랜덤)
-      for (let i = 0; i < VORTEX_PART_COUNT; i++) {
-        const r  = 0.25 + Math.random() * 0.35;
+    function _initRingOffsets(ring) {
+      for (let i = 0; i < RING_PART_COUNT; i++) {
+        const r  = RING_SPREAD_R * (0.5 + Math.random() * 0.5);
         const th = Math.random() * Math.PI * 2;
         const ph = (Math.random() - 0.5) * Math.PI;
-        slot.startArr[i*3]   = x + r * Math.cos(th) * Math.cos(ph);
-        slot.startArr[i*3+1] = y + r * Math.sin(ph);
-        slot.startArr[i*3+2] = z + r * Math.sin(th) * Math.cos(ph);
-        // 초기 위치는 startArr과 동일하게
-        slot.posArr[i*3]   = slot.startArr[i*3];
-        slot.posArr[i*3+1] = slot.startArr[i*3+1];
-        slot.posArr[i*3+2] = slot.startArr[i*3+2];
+        ring.offsetArr[i*3]   = r * Math.cos(th) * Math.cos(ph);
+        ring.offsetArr[i*3+1] = r * Math.sin(ph);
+        ring.offsetArr[i*3+2] = r * Math.sin(th) * Math.cos(ph);
       }
-      slot.mesh.geometry.attributes.position.needsUpdate = true;
-      slot.mesh.visible = true;
-      if (DEBUG) console.log(`[vortex] magic ring (${x.toFixed(2)},${y.toFixed(2)},${z.toFixed(2)})`);
+      ring.offsetsReady = true;
     }
 
-    function updateVortex(timestamp, dt) {
+    function getActiveRingPositions() {
+      const result = [];
+      for (const side of ['left', 'right']) {
+        const ring = _handRing[side];
+        if (ring && (ring.phase === 'formed' || ring.phase === 'gathering') && ring.gatherProgress > 0.5) {
+          const j = ctx.handJoints[side];
+          if (j.valid) result.push({ x: j.wrist.pos.x, y: j.wrist.pos.y, z: j.wrist.pos.z });
+        }
+      }
+      return result;
+    }
+
+    function updateHandRing(timestamp, dt) {
       const t = timestamp / 1000;
-      for (const s of _vortexPool) {
-        if (!s.active) continue;
-        s.timer += dt;
-        const prog = s.timer / VORTEX_DURATION;
+      for (const side of ['left', 'right']) {
+        const ring = _handRing[side];
+        const j    = ctx.handJoints[side];
 
-        // 손목 축 계산 (프레임당 1회)
-        _vortTmpQ.set(s.qx, s.qy, s.qz, s.qw);
-        _vortAxisX.set(1, 0, 0).applyQuaternion(_vortTmpQ);
-        _vortAxisY.set(0, 1, 0).applyQuaternion(_vortTmpQ);
-        const ax = _vortAxisX, ay = _vortAxisY;
-
-        if (prog < VORTEX_P1_END) {
-          // Phase 1: 수렴 — 파티클이 링 위치로 모임
-          const p1   = prog / VORTEX_P1_END;
-          const ease = p1 * p1 * (3.0 - 2.0 * p1);  // smoothstep
-          const rot  = t * 1.5;
-          for (let i = 0; i < VORTEX_PART_COUNT; i++) {
-            const phase = (i / VORTEX_PART_COUNT) * Math.PI * 2 + rot;
-            const c = Math.cos(phase), ss = Math.sin(phase);
-            const rx = s.cx + VORTEX_RING_R * (c * ax.x + ss * ay.x);
-            const ry = s.cy + VORTEX_RING_R * (c * ax.y + ss * ay.y);
-            const rz = s.cz + VORTEX_RING_R * (c * ax.z + ss * ay.z);
-            s.posArr[i*3]   = s.startArr[i*3]   + (rx - s.startArr[i*3])   * ease;
-            s.posArr[i*3+1] = s.startArr[i*3+1] + (ry - s.startArr[i*3+1]) * ease;
-            s.posArr[i*3+2] = s.startArr[i*3+2] + (rz - s.startArr[i*3+2]) * ease;
+        if (!j.valid) {
+          if (ring.phase !== 'idle') {
+            ring.phase = 'idle'; ring.gatherProgress = 0;
+            ring.rotAccum = 0;   ring.offsetsReady = false;
+            ring.mesh.visible = false;
           }
-          s.mesh.material.uniforms.uAlpha.value = p1 * 0.9;
-
-        } else if (prog < VORTEX_P2_END) {
-          // Phase 2: 유지 — 링이 빛나며 회전
-          const shimmer = 1.0 + 0.04 * Math.sin(t * 9.0);
-          const rot     = t * 2.8;
-          for (let i = 0; i < VORTEX_PART_COUNT; i++) {
-            const phase = (i / VORTEX_PART_COUNT) * Math.PI * 2 + rot;
-            const r = VORTEX_RING_R * shimmer;
-            const c = Math.cos(phase), ss = Math.sin(phase);
-            s.posArr[i*3]   = s.cx + r * (c * ax.x + ss * ay.x);
-            s.posArr[i*3+1] = s.cy + r * (c * ax.y + ss * ay.y);
-            s.posArr[i*3+2] = s.cz + r * (c * ax.z + ss * ay.z);
-          }
-          s.mesh.material.uniforms.uAlpha.value = 0.9;
-
-        } else {
-          // Phase 3: 흩어짐
-          if (!s.scatterStarted) {
-            s.scatterStarted = true;
-            for (let i = 0; i < VORTEX_PART_COUNT; i++) {
-              s.startArr[i*3]   = s.posArr[i*3];
-              s.startArr[i*3+1] = s.posArr[i*3+1];
-              s.startArr[i*3+2] = s.posArr[i*3+2];
-              const dx = s.posArr[i*3]   - s.cx;
-              const dy = s.posArr[i*3+1] - s.cy;
-              const dz = s.posArr[i*3+2] - s.cz;
-              const len = Math.sqrt(dx*dx + dy*dy + dz*dz) || 0.001;
-              const spd = 1.0 + Math.random() * 1.5;
-              s.velArr[i*3]   = (dx/len + (Math.random()-0.5)*0.4) * spd;
-              s.velArr[i*3+1] = (dy/len + (Math.random()-0.5)*0.4 + 0.4) * spd;
-              s.velArr[i*3+2] = (dz/len + (Math.random()-0.5)*0.4) * spd;
-            }
-          }
-          const p3     = (prog - VORTEX_P2_END) / (1.0 - VORTEX_P2_END);
-          const easeOut = 1.0 - (1.0 - p3) * (1.0 - p3);
-          for (let i = 0; i < VORTEX_PART_COUNT; i++) {
-            s.posArr[i*3]   = s.startArr[i*3]   + s.velArr[i*3]   * easeOut;
-            s.posArr[i*3+1] = s.startArr[i*3+1] + s.velArr[i*3+1] * easeOut;
-            s.posArr[i*3+2] = s.startArr[i*3+2] + s.velArr[i*3+2] * easeOut;
-          }
-          s.mesh.material.uniforms.uAlpha.value = (1.0 - p3) * 0.9;
-          if (prog >= 1.0) { s.active = false; s.mesh.visible = false; }
+          ring.prevPos.copy(j.wrist.pos);
+          ring.prevQuat.copy(j.wrist.quat);
+          continue;
         }
 
-        s.mesh.geometry.attributes.position.needsUpdate = true;
+        const speed   = dt > 0 ? ring.prevPos.distanceTo(j.wrist.pos) / dt : 0;
+        const isStill = speed < RING_STILL_SPEED;
+
+        _hrTmpQ.copy(ring.prevQuat).invert().multiply(j.wrist.quat);
+        const rotDelta = 2 * Math.acos(Math.min(1, Math.abs(_hrTmpQ.w)));
+        ring.prevPos.copy(j.wrist.pos);
+        ring.prevQuat.copy(j.wrist.quat);
+
+        _hrTmpQ.copy(j.wrist.quat);
+        _hrAxisX.set(1, 0, 0).applyQuaternion(_hrTmpQ);
+        _hrAxisY.set(0, 1, 0).applyQuaternion(_hrTmpQ);
+        const ax = _hrAxisX, ay = _hrAxisY;
+        const wx = j.wrist.pos.x, wy = j.wrist.pos.y, wz = j.wrist.pos.z;
+
+        // 흩어짐 애니메이션
+        if (ring.phase === 'scattering') {
+          ring.scatterTimer += dt;
+          const p3      = Math.min(ring.scatterTimer / RING_SCATTER_DUR, 1.0);
+          const easeOut = 1.0 - (1.0 - p3) * (1.0 - p3);
+          for (let i = 0; i < RING_PART_COUNT; i++) {
+            ring.posArr[i*3]   = ring.startArr[i*3]   + ring.velArr[i*3]   * easeOut;
+            ring.posArr[i*3+1] = ring.startArr[i*3+1] + ring.velArr[i*3+1] * easeOut;
+            ring.posArr[i*3+2] = ring.startArr[i*3+2] + ring.velArr[i*3+2] * easeOut;
+          }
+          ring.mesh.material.uniforms.uAlpha.value = (1.0 - p3) * 0.9;
+          ring.mesh.geometry.attributes.position.needsUpdate = true;
+          if (p3 >= 1.0) {
+            ring.phase = 'idle'; ring.gatherProgress = 0;
+            ring.rotAccum = 0;   ring.offsetsReady = false;
+            ring.mesh.visible = false;
+          }
+          continue;
+        }
+
+        // 손목 회전 → 흩어짐 트리거
+        if (ring.phase === 'formed' || ring.phase === 'gathering') {
+          ring.rotAccum = ring.rotAccum * RING_ROT_DECAY + rotDelta;
+          if (ring.rotAccum >= RING_SCATTER_ROT && ring.gatherProgress > 0.3) {
+            ring.phase = 'scattering'; ring.scatterTimer = 0;
+            for (let i = 0; i < RING_PART_COUNT; i++) {
+              ring.startArr[i*3]   = ring.posArr[i*3];
+              ring.startArr[i*3+1] = ring.posArr[i*3+1];
+              ring.startArr[i*3+2] = ring.posArr[i*3+2];
+              const dx = ring.posArr[i*3]   - wx;
+              const dy = ring.posArr[i*3+1] - wy;
+              const dz = ring.posArr[i*3+2] - wz;
+              const len = Math.sqrt(dx*dx+dy*dy+dz*dz) || 0.001;
+              const spd = 1.0 + Math.random() * 1.5;
+              ring.velArr[i*3]   = (dx/len + (Math.random()-0.5)*0.4) * spd;
+              ring.velArr[i*3+1] = (dy/len + (Math.random()-0.5)*0.4 + 0.3) * spd;
+              ring.velArr[i*3+2] = (dz/len + (Math.random()-0.5)*0.4) * spd;
+            }
+            ring.mesh.geometry.attributes.position.needsUpdate = true;
+            if (DEBUG) console.log(`[ring] ${side} scatter`);
+            continue;
+          }
+        }
+
+        // gatherProgress 갱신
+        if (isStill) {
+          if (!ring.offsetsReady) _initRingOffsets(ring);
+          ring.gatherProgress = Math.min(ring.gatherProgress + RING_GATHER_RATE * dt, 1.0);
+          ring.phase = ring.gatherProgress >= 1.0 ? 'formed' : 'gathering';
+        } else {
+          ring.gatherProgress = Math.max(ring.gatherProgress - RING_DECAY_RATE * dt, 0);
+          if (ring.gatherProgress < 0.01) {
+            ring.phase = 'idle'; ring.offsetsReady = false;
+          } else {
+            ring.phase = 'gathering';
+          }
+        }
+
+        if (ring.phase === 'idle') {
+          ring.mesh.visible = false; ring.rotAccum = 0;
+          continue;
+        }
+
+        // 렌더링 (gathering / formed)
+        const isFormed = ring.phase === 'formed';
+        const rot      = t * (isFormed ? 2.8 : 1.5);
+        const shimmer  = isFormed ? 1.0 + 0.04 * Math.sin(t * 9.0) : 1.0;
+        const ease     = ring.gatherProgress * ring.gatherProgress * (3.0 - 2.0 * ring.gatherProgress);
+
+        for (let i = 0; i < RING_PART_COUNT; i++) {
+          const phase = (i / RING_PART_COUNT) * Math.PI * 2 + rot;
+          const r  = RING_R * shimmer;
+          const c  = Math.cos(phase), ss = Math.sin(phase);
+          const rx = wx + r * (c * ax.x + ss * ay.x);
+          const ry = wy + r * (c * ax.y + ss * ay.y);
+          const rz = wz + r * (c * ax.z + ss * ay.z);
+          const sx = wx + ring.offsetArr[i*3];
+          const sy = wy + ring.offsetArr[i*3+1];
+          const sz = wz + ring.offsetArr[i*3+2];
+          ring.posArr[i*3]   = sx + (rx - sx) * ease;
+          ring.posArr[i*3+1] = sy + (ry - sy) * ease;
+          ring.posArr[i*3+2] = sz + (rz - sz) * ease;
+        }
+
+        ring.mesh.material.uniforms.uAlpha.value = 0.25 + ring.gatherProgress * 0.65;
+        ring.mesh.visible = true;
+        ring.mesh.geometry.attributes.position.needsUpdate = true;
       }
     }
 
-    // ─────────────────────────────────────────────────────────────
-    // C10 — GLOW ORB
+        // C10 — GLOW ORB
     // ─────────────────────────────────────────────────────────────
 
     const _orb = { state: 'inactive', scale: 0, group: null };
 
     function initGlowOrb() {
       _orb.group = new THREE.Group();
-      const mk = (r, col, isRim, alpha) => {
+      const mk = (r, col, type, alpha) => {
         const m = new THREE.Mesh(
           new THREE.SphereGeometry(r, 24, 24),
-          _makeGlowMat(col, isRim, alpha)
+          _makeGlowMat(col, type, alpha)
         );
         _orb.group.add(m);
       };
-      mk(ORB_MAX_R * 0.45, 0xffffff,  false, 1.0);   // 밝은 코어
-      mk(ORB_MAX_R * 1.00, 0xaaddff,  false, 0.55);  // 중간 확산
-      mk(ORB_MAX_R * 1.40, 0x4499ff,  true,  0.60);  // 림 글로우
+      mk(ORB_MAX_R * 0.45, 0xffffff,  'core', 1.0);
+      mk(ORB_MAX_R * 1.00, 0xaaddff,  'core', 0.55);
+      mk(ORB_MAX_R * 1.40, 0x4499ff,  'rim',  0.60);
       _orb.group.visible = false;
       scene.add(_orb.group);
     }
@@ -923,15 +971,31 @@
         gl_FragColor = vec4(uColor, rim * uAlpha);
       }
     `;
+    // 볼류메트릭 — 경계선 없이 내부에서 빛이 새어나오는 느낌
+    const _glowFragVol = `
+      uniform vec3  uColor;
+      uniform float uAlpha;
+      varying vec3  vNormal;
+      varying vec3  vViewPos;
+      void main() {
+        float NdotV = abs(dot(normalize(vNormal), normalize(-vViewPos)));
+        float vol   = sqrt(NdotV);
+        vec3  col   = mix(uColor, vec3(1.0), pow(NdotV, 2.5));
+        gl_FragColor = vec4(col, vol * uAlpha);
+      }
+    `;
 
-    function _makeGlowMat(color, isRim, alpha) {
+    function _makeGlowMat(color, type, alpha) {
+      const frag = type === 'rim' ? _glowFragRim
+                 : type === 'vol' ? _glowFragVol
+                 : _glowFragCore;
       return new THREE.ShaderMaterial({
         uniforms: {
           uColor: { value: new THREE.Color(color) },
           uAlpha: { value: alpha },
         },
         vertexShader:   _glowVert,
-        fragmentShader: isRim ? _glowFragRim : _glowFragCore,
+        fragmentShader: frag,
         transparent: true, depthWrite: false,
         blending: THREE.AdditiveBlending,
       });
@@ -948,8 +1012,8 @@
       const rimGeo  = new THREE.SphereGeometry(0.026, 16, 16);
 
       for (const side of ['left', 'right']) {
-        const core = new THREE.Mesh(coreGeo, _makeGlowMat(0xffffff,  false, 0.95));
-        const rim  = new THREE.Mesh(rimGeo,  _makeGlowMat(0x88eeff,  true,  0.70));
+        const core = new THREE.Mesh(coreGeo, _makeGlowMat(0xffffff,  'core', 0.95));
+        const rim  = new THREE.Mesh(rimGeo,  _makeGlowMat(0x88eeff,  'rim',  0.70));
         core.add(rim);
         core.visible = false;
         scene.add(core);
@@ -1142,43 +1206,6 @@
       }
     }
 
-    // ─────────────────────────────────────────────────────────────
-    // C05 — WRIST ROTATION
-    // ─────────────────────────────────────────────────────────────
-
-    const _wristRot = {
-      left:  { rotAccum: 0, prevQuat: new THREE.Quaternion(), triggered: false },
-      right: { rotAccum: 0, prevQuat: new THREE.Quaternion(), triggered: false },
-    };
-    const _rotTmp = new THREE.Quaternion();
-
-    function updateWristRotation() {
-      for (const side of ['left', 'right']) {
-        const j     = ctx.handJoints[side];
-        const state = _wristRot[side];
-        if (!j.valid) continue;
-
-        // delta quaternion = prevQuat_inv * currQuat
-        _rotTmp.copy(state.prevQuat).invert().multiply(j.wrist.quat);
-        const angle = 2 * Math.acos(Math.min(1, Math.abs(_rotTmp.w)));
-        state.prevQuat.copy(j.wrist.quat);
-
-        if (angle < 0.01) {
-          state.rotAccum *= 0.97;
-          if (state.rotAccum < 0.1) { state.rotAccum = 0; state.triggered = false; }
-        } else {
-          state.rotAccum += angle;
-        }
-
-        if (state.rotAccum >= VORTEX_ROT_THRESH && !state.triggered) {
-          state.triggered = true;
-          const p = j.wrist.pos;
-          triggerVortex(p.x, p.y, p.z, j.wrist.quat);
-          state.rotAccum = 0;
-          if (DEBUG) console.log(`[wristRotation] ${side}`);
-        }
-      }
-    }
 
     // ─────────────────────────────────────────────────────────────
     // C06 — TWO HAND GESTURE
@@ -1628,9 +1655,7 @@
       for (const j of _jellyData) _applyScatterImpulse(j, x, y, z, r);
     }
 
-    function getActiveVortexPositions() {
-      return _vortexPool.filter(v => v.active).map(v => ({ x:v.cx, y:v.cy, z:v.cz }));
-    }
+    
 
     function updateJellyfish(timestamp, dt) {
       if (!_jellyMesh || _jellyData.length === 0) return;
@@ -1641,7 +1666,7 @@
       _jellyMesh.material.emissiveIntensity +=
         (targetEmissive - _jellyMesh.material.emissiveIntensity) * 0.05;
 
-      const vortexPos = getActiveVortexPositions();
+      const vortexPos = getActiveRingPositions();
 
       for (let i = 0; i < _jellyData.length; i++) {
         const j = _jellyData[i];
@@ -1771,16 +1796,16 @@
 
     function _makeEggGroup(col) {
       const g = new THREE.Group();
-      const mk = (r, isRim, alpha) => {
+      const mk = (r, type, alpha) => {
         const m = new THREE.Mesh(
-          new THREE.SphereGeometry(r, 16, 16),
-          _makeGlowMat(col, isRim, alpha)
+          new THREE.SphereGeometry(r, 20, 20),
+          _makeGlowMat(col, type, alpha)
         );
         g.add(m);
         return m;
       };
-      g.userData.core = mk(0.032, false, 0.90);  // 밝은 코어
-      g.userData.rim  = mk(0.090, true,  0.55);  // 림 글로우
+      g.userData.core = mk(0.055, 'vol', 0.80);  // 볼류메트릭 내부 발광
+      g.userData.rim  = mk(0.095, 'rim', 0.50);  // 외곽 림 글로우
       return g;
     }
 
@@ -2014,13 +2039,12 @@
         updatePointerDot();
         updateHandTrail(timestamp);
         updateFistRelease(dt);
-        updateWristRotation();
         updateTwoHandGesture(dt);
 
         // ── Phase 3: VFX 레이어 ──────────────────────────────────
         updateFoodParticle(timestamp, dt);
         updateBubbleBurst(timestamp, dt);
-        updateVortex(timestamp, dt);
+        updateHandRing(timestamp, dt);
         updateGlowOrb(timestamp, dt);
         updateRingEffect(timestamp, dt);
         updateAmbientEnvironment(timestamp, dt);
@@ -2073,7 +2097,7 @@
       _phase3Inited = true;
       initFoodParticle();
       initBubbleBurst();
-      initVortex();
+      initHandRing();
       initGlowOrb();
       initRingEffect();
       initAmbientEnvironment();
@@ -2128,7 +2152,7 @@
       _ambBubs.length   = 0;
       _bubTimer         = 0;
       _burstPool.forEach(b => { b.active = false; if (b.mesh) b.mesh.visible = false; });
-      _vortexPool.forEach(v => { v.active = false; if (v.mesh) v.mesh.visible = false; });
+      Object.values(_handRing).forEach(r => { r.phase='idle'; r.gatherProgress=0; r.rotAccum=0; r.offsetsReady=false; if(r.mesh) r.mesh.visible=false; });
       _ringPool.forEach(r => { r.active = false; r.meshes?.forEach(m => m.visible = false); });
       if (_orb.group) { _orb.state = 'inactive'; _orb.group.visible = false; }
       _fishSData.length = 0; _fishMData.length = 0;

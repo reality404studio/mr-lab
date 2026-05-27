@@ -46,7 +46,7 @@
       "flat_shading": true
     },
     "metrics": {
-      "triangle_count": 308,
+      "triangle_count": 310,
       "dimensions_m": {
         "width": 0.044737618416547775,
         "height": 0.07500000298023224,
@@ -76,7 +76,7 @@
       "materials_embedded": true,
       "no_external_images": true
     },
-    "file_size_bytes": 11216
+    "file_size_bytes": 11220
   },
   "visual_features": {
     "deep_body_silhouette": true,
