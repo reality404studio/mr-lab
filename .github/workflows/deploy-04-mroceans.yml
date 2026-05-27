@@ -1,0 +1,43 @@
+name: Deploy 04 MROCEANs
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/deploy-04-mroceans.yml"
+      - "projects/04.MROCEANs/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+        with:
+          enablement: true
+
+      - name: Upload 04 MROCEANs
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: projects/04.MROCEANs
+
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,1966 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MROCEANs</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #000; overflow: hidden; }
+    canvas { display: block; }
+
+    #overlay {
+      position: fixed; inset: 0; z-index: 10;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      background: rgba(0, 8, 18, 0.92);
+    }
+    #overlay.hidden { display: none; }
+    #overlay h1 {
+      color: #88eeff; font-size: 2.4rem;
+      letter-spacing: 0.18em; font-weight: 300;
+      margin-bottom: 0.6rem;
+    }
+    #overlay p {
+      color: rgba(136, 238, 255, 0.5);
+      font-size: 0.9rem; letter-spacing: 0.1em;
+      margin-bottom: 3rem;
+    }
+    #btnAR {
+      padding: 0.9rem 3rem; font-size: 1.05rem;
+      background: transparent; color: #88eeff;
+      border: 1px solid rgba(136, 238, 255, 0.6);
+      border-radius: 6px; cursor: pointer;
+      letter-spacing: 0.12em;
+      transition: background 0.25s, border-color 0.25s;
+    }
+    #btnAR:hover { background: rgba(136, 238, 255, 0.1); border-color: #88eeff; }
+    #errMsg {
+      color: #ff8877; margin-top: 1.6rem;
+      font-size: 0.82rem; text-align: center;
+      max-width: 320px; line-height: 1.5;
+    }
+    #dbg {
+      position: fixed; top: 0.8rem; left: 0.8rem; z-index: 20;
+      color: #88ff88; font-family: monospace; font-size: 0.72rem;
+      line-height: 1.6; pointer-events: none;
+      text-shadow: 0 0 6px #000; display: none;
+    }
+  </style>
+</head>
+<body>
+
+  <div id="overlay">
+    <h1>MROCEANs</h1>
+    <p>Mixed Reality Ocean Experience</p>
+    <button id="btnAR">바다 속으로</button>
+    <div id="errMsg"></div>
+  </div>
+  <div id="dbg"></div>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.165.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.165.0/examples/jsm/"
+    }
+  }
+  </script>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { GLTFLoader }  from 'three/addons/loaders/GLTFLoader.js';
+    import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
+
+    const DEBUG = location.search.includes('debug');
+    const dbgEl = document.getElementById('dbg');
+    if (DEBUG) dbgEl.style.display = 'block';
+
+    // ─────────────────────────────────────────────────────────────
+    // CONSTANTS
+    // ─────────────────────────────────────────────────────────────
+
+    const SPAWN_RADIUS_XZ  = 2.0;
+    const FISH_FLOOR_Y     = 0.3;
+    const FISH_CEIL_Y      = 2.5;
+    const USER_NEAR_DIST   = 0.5;
+
+    const FISH_S_LENGTH    = 0.08;
+    const FISH_S_SPEED     = 0.60;
+    const FISH_S_SPRING_K  = 4.0;
+    const FISH_S_SPRING_D  = 0.85;
+    const FISH_S_SEP_R     = 0.15;
+    const FISH_S_ALIGN_R   = 0.50;
+    const FISH_S_COH_R     = 1.00;
+
+    const FISH_M_LENGTH    = 0.18;
+    const FISH_M_SPEED     = 0.40;
+    const FISH_M_SPRING_K  = 3.0;
+    const FISH_M_SPRING_D  = 0.88;
+
+    const FISH_L_LENGTH    = 0.35;
+    const FISH_L_SPEED     = 0.22;
+    const FISH_L_SPRING_K  = 1.8;
+    const FISH_L_SPRING_D  = 0.92;
+
+    const JELLY_UMBRELLA_R   = 0.18;
+    const JELLY_DRIFT_SPEED  = 0.10;
+    const JELLY_PULSE_PERIOD = 2.8;
+    const JELLY_VORTEX_DIST  = 1.5;
+    const JELLY_SPRING_K     = 1.5;
+    const JELLY_SPRING_D     = 0.95;
+
+    const WHALE_LENGTH     = 3.0;
+    const WHALE_SPEED      = 0.35;
+    const WHALE_SPAWN_DIST = 7.0;
+    const WHALE_FADE_DUR   = 4.0;
+    const WHALE_PASS_DUR   = 35;
+
+    const FOOD_PER_PINCH   = 8;
+    const FOOD_LIFETIME    = 5.0;
+    const FOOD_GRAVITY     = -0.30;
+    const FOOD_SPREAD      = 0.12;
+    const FOOD_ATTRACT_R   = 0.80;
+    const FOOD_MAX         = 200;
+
+    const PTR_LAZY_LERP       = 0.07;
+    const TRAIL_LIFETIME      = 8.0;
+    const TRAIL_ADD_INTERVAL  = 0.033;
+    const TRAIL_FISH_FOLLOW_R = 0.60;
+
+    const BURST_RADIUS     = 0.40;
+    const BURST_PART_COUNT = 60;
+    const BURST_DURATION   = 1.2;
+    const BURST_SCATTER_R  = 0.60;
+
+    const VORTEX_RADIUS     = 0.35;
+    const VORTEX_PART_COUNT = 120;
+    const VORTEX_DURATION   = 3.0;
+    const VORTEX_ROT_THRESH = 4.0;
+
+    const RING_COUNT       = 3;
+    const RING_STAGGER     = 0.13;
+    const RING_EXPAND_DUR  = 0.9;
+    const RING_SHOCK_SCALE = 1.8;
+    const RING_WAVE_SCALE  = 1.0;
+
+    const ORB_MAX_R        = 0.15;
+    const ORB_GROW_SPEED   = 0.08;
+    const ORB_ATTRACT_R    = 1.0;
+    const ORB_FISH_ORBIT_R = 0.25;
+
+    const VOICE_THRESH = 0.02;
+    const VOICE_HOLD   = 2.0;
+    const VOICE_HYST   = 0.25;
+    const VOICE_ATK    = 0.18;
+    const VOICE_REL    = 0.04;
+    const VOICE_LINGER = 2.5;
+
+    const PINCH_THRESHOLD   = 0.02;
+    const INDEX_EXTEND_MIN  = 0.14;
+    const CURL_MAX          = 0.13;
+    const FIST_CURL_MAX     = 0.08;
+    const SWIPE_VELOCITY    = 1.2;
+    const CUP_HAND_MAX_DIST = 0.15;
+    const SPREAD_VELOCITY   = 0.8;
+    const LAZY_LERP         = 0.07;
+
+    const BUBBLE_RATE_BASE    = 4;
+    const BUBBLE_RATE_SING    = 15;
+    const BUBBLE_RISE_SPEED   = 0.35;
+    const BUBBLE_LIFETIME     = 5.0;
+    const GODRAY_OPACITY_BASE = 0.06;
+    const GODRAY_OPACITY_SING = 0.22;
+    const GODRAY_COUNT        = 3;
+
+    const SPAWN_PINCH_FIRST  = 5;
+    const SPAWN_PINCH_STEP   = 3;
+    const SPAWN_TRAIL_STEP   = 2.0;
+    const SPAWN_VOICE_FIRST  = 10;
+    const SPAWN_VOICE_STEP   = 8;
+    const SPAWN_LARGE_PINCH  = 15;
+    const SPAWN_LARGE_MED    = 3;
+    const SPAWN_WHALE_TIME   = 180;
+    const SPAWN_WHALE_SING   = 8;
+    const SPAWN_DELAY_MIN    = 30;
+    const SPAWN_DELAY_MAX    = 60;
+
+    // ─────────────────────────────────────────────────────────────
+    // GLOBAL CONTEXT
+    // ─────────────────────────────────────────────────────────────
+
+    const ctx = {
+      headPos:     new THREE.Vector3(),
+      spawnEyeY:   1.6,
+      calibrated:  false,
+      voiceHeld:   'silence',
+      sessionTime: 0,
+
+      counters: {
+        pinchTotal:  0,
+        trailLength: 0,
+        voiceSec:    0,
+        singSec:     0,
+      },
+
+      spawnState: {
+        fishSCount:   0,
+        fishMCount:   0,
+        fishLCount:   0,
+        jellyCount:   0,
+        whaleSpawned: false,
+        pendingQueue: [],
+      },
+
+      foodParticles: [],
+      trailPoints:   [],
+
+      handJoints: {
+        left: {
+          wrist:     { pos: new THREE.Vector3(), quat: new THREE.Quaternion() },
+          thumbTip:  new THREE.Vector3(),
+          indexTip:  new THREE.Vector3(),
+          middleTip: new THREE.Vector3(),
+          ringTip:   new THREE.Vector3(),
+          pinkyTip:  new THREE.Vector3(),
+          valid:     false,
+        },
+        right: {
+          wrist:     { pos: new THREE.Vector3(), quat: new THREE.Quaternion() },
+          thumbTip:  new THREE.Vector3(),
+          indexTip:  new THREE.Vector3(),
+          middleTip: new THREE.Vector3(),
+          ringTip:   new THREE.Vector3(),
+          pinkyTip:  new THREE.Vector3(),
+          valid:     false,
+        },
+      },
+    };
+
+    // ─────────────────────────────────────────────────────────────
+    // THREE.JS SCENE
+    // ─────────────────────────────────────────────────────────────
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.xr.enabled = true;
+    renderer.xr.setReferenceSpaceType('local-floor');
+    document.body.appendChild(renderer.domElement);
+
+    const scene  = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(
+      75, window.innerWidth / window.innerHeight, 0.01, 50
+    );
+    scene.add(camera);
+
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+    scene.add(ambientLight);
+
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // GLB LOADER
+    // ─────────────────────────────────────────────────────────────
+
+    const dracoLoader = new DRACOLoader();
+    dracoLoader.setDecoderPath(
+      'https://www.gstatic.com/draco/versioned/decoders/1.5.6/'
+    );
+    const gltfLoader = new GLTFLoader();
+    gltfLoader.setDRACOLoader(dracoLoader);
+
+    const models = { fishS: null, fishM: null, fishL: null, jellyfish: null, whale: null };
+
+    function loadGLB(url) {
+      return new Promise((resolve, reject) =>
+        gltfLoader.load(url, gltf => resolve(gltf.scene), undefined, reject)
+      );
+    }
+
+    function _dummyFish(len, color) {
+      const g   = new THREE.Group();
+      const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.7 });
+      const body = new THREE.Mesh(new THREE.ConeGeometry(len * 0.22, len, 5), mat);
+      body.rotation.x = Math.PI / 2;
+      g.add(body);
+      return g;
+    }
+    function _dummyJellyfish() {
+      const g   = new THREE.Group();
+      const mat = new THREE.MeshStandardMaterial({
+        color: 0x8899ff, transparent: true, opacity: 0.55, depthWrite: false,
+      });
+      const dome = new THREE.Mesh(
+        new THREE.SphereGeometry(JELLY_UMBRELLA_R, 12, 6, 0, Math.PI * 2, 0, Math.PI / 2),
+        mat
+      );
+      dome.name = 'jelly_umbrella';
+      g.add(dome);
+      return g;
+    }
+    function _dummyWhale() {
+      const g   = new THREE.Group();
+      const mat = new THREE.MeshStandardMaterial({ color: 0x334455, roughness: 0.85 });
+      const body = new THREE.Mesh(
+        new THREE.CapsuleGeometry(WHALE_LENGTH * 0.11, WHALE_LENGTH * 0.68, 4, 10),
+        mat
+      );
+      body.rotation.x = Math.PI / 2;
+      body.name = 'whale_body';
+      g.add(body);
+      return g;
+    }
+
+    async function initModels() {
+      models.fishS     = _dummyFish(FISH_S_LENGTH, 0x66ccff);
+      models.fishM     = _dummyFish(FISH_M_LENGTH, 0x33aadd);
+      models.fishL     = _dummyFish(FISH_L_LENGTH, 0x1177aa);
+      models.jellyfish = _dummyJellyfish();
+      models.whale     = _dummyWhale();
+      if (DEBUG) console.log('[models] 더미 초기화 완료');
+    }
+
+    // onPinchEvent / onTrailLengthUpdate / playPinchSound → C16·C19에서 정의
+
+    // ─────────────────────────────────────────────────────────────
+    // C07 — FOOD PARTICLE
+    // ─────────────────────────────────────────────────────────────
+
+    const _foodVert = `
+      attribute float alpha;
+      varying float vAlpha;
+      void main() {
+        vAlpha = alpha;
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        gl_PointSize = max(3.0, 14.0 * (300.0 / -mv.z));
+        gl_Position  = projectionMatrix * mv;
+      }
+    `;
+    const _foodFrag = `
+      varying float vAlpha;
+      void main() {
+        float r = length(gl_PointCoord - vec2(0.5));
+        if (r > 0.5) discard;
+        float glow = 1.0 - smoothstep(0.0, 0.5, r);
+        vec3  col  = mix(vec3(1.0, 0.92, 0.3), vec3(1.0, 0.98, 0.85), r * 2.0);
+        gl_FragColor = vec4(col, vAlpha * glow);
+      }
+    `;
+
+    const _foodParts  = [];
+    let   _foodMesh   = null;
+    let   _foodPosArr, _foodAlphaArr;
+
+    function initFoodParticle() {
+      const geo = new THREE.BufferGeometry();
+      _foodPosArr   = new Float32Array(FOOD_MAX * 3);
+      _foodAlphaArr = new Float32Array(FOOD_MAX);
+      geo.setAttribute('position', new THREE.BufferAttribute(_foodPosArr,   3));
+      geo.setAttribute('alpha',    new THREE.BufferAttribute(_foodAlphaArr, 1));
+      geo.setDrawRange(0, 0);
+      _foodMesh = new THREE.Points(geo, new THREE.ShaderMaterial({
+        vertexShader: _foodVert, fragmentShader: _foodFrag,
+        transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+      }));
+      _foodMesh.frustumCulled = false;
+      scene.add(_foodMesh);
+    }
+
+    function emitFoodParticles(x, y, z) {
+      for (let i = 0; i < FOOD_PER_PINCH; i++) {
+        if (_foodParts.length >= FOOD_MAX) _foodParts.shift();
+        const a = Math.random() * Math.PI * 2;
+        const s = FOOD_SPREAD * (0.5 + Math.random() * 0.5);
+        _foodParts.push({ x, y, z, vx: Math.cos(a)*s, vy: 0.05 + Math.random()*0.08, vz: Math.sin(a)*s, age: 0 });
+      }
+    }
+
+    function updateFoodParticle(timestamp, dt) {
+      if (!_foodMesh) return;
+      for (let i = _foodParts.length - 1; i >= 0; i--) {
+        const p = _foodParts[i];
+        p.age += dt;
+        if (p.age >= FOOD_LIFETIME) { _foodParts.splice(i, 1); continue; }
+        p.vy += FOOD_GRAVITY * dt;
+        p.x  += p.vx * dt;  p.y += p.vy * dt;  p.z += p.vz * dt;
+        if (p.y < FISH_FLOOR_Y) { p.y = FISH_FLOOR_Y; p.vy = 0; p.vx *= 0.8; p.vz *= 0.8; }
+      }
+      const count = Math.min(_foodParts.length, FOOD_MAX);
+      for (let i = 0; i < count; i++) {
+        const p = _foodParts[i], t = p.age / FOOD_LIFETIME;
+        _foodPosArr[i*3] = p.x; _foodPosArr[i*3+1] = p.y; _foodPosArr[i*3+2] = p.z;
+        _foodAlphaArr[i] = t < 0.65 ? 0.85 : 0.85 * (1 - (t - 0.65) / 0.35);
+      }
+      _foodMesh.geometry.attributes.position.needsUpdate = true;
+      _foodMesh.geometry.attributes.alpha.needsUpdate    = true;
+      _foodMesh.geometry.setDrawRange(0, count);
+      ctx.foodParticles = _foodParts.map(p => ({ x: p.x, y: p.y, z: p.z, age: p.age }));
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // C08 — BUBBLE BURST
+    // ─────────────────────────────────────────────────────────────
+
+    const _burstVert = `
+      uniform float uAlpha; uniform float uProgress; varying float vA;
+      void main() {
+        vA = uAlpha;
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        gl_PointSize = max(2.0, (10.0 - 6.0*uProgress) * (300.0/-mv.z));
+        gl_Position  = projectionMatrix * mv;
+      }
+    `;
+    const _burstFrag = `
+      varying float vA;
+      void main() {
+        float r = length(gl_PointCoord - vec2(0.5));
+        if (r > 0.5) discard;
+        vec3 col = mix(vec3(0.75,0.92,1.0), vec3(1.0), r*2.0);
+        gl_FragColor = vec4(col, vA * (1.0-smoothstep(0.0,0.5,r)));
+      }
+    `;
+
+    let _burstDirs = null;
+    const _burstPool = [];
+
+    function initBubbleBurst() {
+      _burstDirs = new Float32Array(BURST_PART_COUNT * 3);
+      for (let i = 0; i < BURST_PART_COUNT; i++) {
+        const th = Math.random()*Math.PI*2, ph = Math.acos(2*Math.random()-1);
+        _burstDirs[i*3]   = Math.sin(ph)*Math.cos(th);
+        _burstDirs[i*3+1] = Math.sin(ph)*Math.sin(th);
+        _burstDirs[i*3+2] = Math.cos(ph);
+      }
+      for (let s = 0; s < 3; s++) {
+        const geo = new THREE.BufferGeometry();
+        const posArr = new Float32Array(BURST_PART_COUNT * 3);
+        geo.setAttribute('position', new THREE.BufferAttribute(posArr, 3));
+        geo.setDrawRange(0, BURST_PART_COUNT);
+        const mat = new THREE.ShaderMaterial({
+          uniforms: { uAlpha: { value: 0 }, uProgress: { value: 0 } },
+          vertexShader: _burstVert, fragmentShader: _burstFrag,
+          transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+        });
+        const mesh = new THREE.Points(geo, mat);
+        mesh.frustumCulled = false; mesh.visible = false;
+        scene.add(mesh);
+        _burstPool.push({ active: false, timer: 0, cx:0, cy:0, cz:0, rot:0, mesh, posArr });
+      }
+    }
+
+    function triggerBubbleBurst(x, y, z) {
+      const slot = _burstPool.find(b => !b.active);
+      if (!slot) return;
+      slot.active = true; slot.timer = 0; slot.rot = Math.random()*Math.PI*2;
+      slot.cx = x; slot.cy = y; slot.cz = z;
+      slot.mesh.visible = true;
+      scatterFishAt(x, y, z);
+      scatterJellyfishAt(x, y, z, BURST_SCATTER_R);
+      if (DEBUG) console.log(`[burstBurst] (${x.toFixed(2)},${y.toFixed(2)},${z.toFixed(2)})`);
+    }
+
+    function updateBubbleBurst(timestamp, dt) {
+      for (const s of _burstPool) {
+        if (!s.active) continue;
+        s.timer += dt;
+        const p  = Math.min(s.timer / BURST_DURATION, 1.0);
+        const cr = Math.cos(s.rot), sr = Math.sin(s.rot);
+        for (let i = 0; i < BURST_PART_COUNT; i++) {
+          const r  = p * BURST_RADIUS;
+          const dx = _burstDirs[i*3], dy = _burstDirs[i*3+1], dz = _burstDirs[i*3+2];
+          s.posArr[i*3]   = s.cx + (dx*cr - dz*sr)*r;
+          s.posArr[i*3+1] = s.cy + dy*r;
+          s.posArr[i*3+2] = s.cz + (dx*sr + dz*cr)*r;
+        }
+        s.mesh.geometry.attributes.position.needsUpdate = true;
+        s.mesh.material.uniforms.uAlpha.value    = 1.0 - p;
+        s.mesh.material.uniforms.uProgress.value = p;
+        if (p >= 1.0) { s.active = false; s.mesh.visible = false; }
+      }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // C09 — VORTEX
+    // ─────────────────────────────────────────────────────────────
+
+    const _vortVert = `
+      uniform float uAlpha; varying float vA;
+      void main() {
+        vA = uAlpha;
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        gl_PointSize = max(2.0, 6.0*(300.0/-mv.z));
+        gl_Position  = projectionMatrix * mv;
+      }
+    `;
+    const _vortFrag = `
+      varying float vA;
+      void main() {
+        float r = length(gl_PointCoord - vec2(0.5));
+        if (r > 0.5) discard;
+        vec3 col = mix(vec3(0.4,0.75,1.0), vec3(0.7,1.0,0.95), gl_PointCoord.x);
+        gl_FragColor = vec4(col, vA*(1.0-smoothstep(0.0,0.5,r)));
+      }
+    `;
+    const _vortexPool = [];
+
+    function initVortex() {
+      for (let s = 0; s < 2; s++) {
+        const geo = new THREE.BufferGeometry();
+        const posArr = new Float32Array(VORTEX_PART_COUNT * 3);
+        geo.setAttribute('position', new THREE.BufferAttribute(posArr, 3));
+        geo.setDrawRange(0, VORTEX_PART_COUNT);
+        const mat = new THREE.ShaderMaterial({
+          uniforms: { uAlpha: { value: 0 } },
+          vertexShader: _vortVert, fragmentShader: _vortFrag,
+          transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+        });
+        const mesh = new THREE.Points(geo, mat);
+        mesh.frustumCulled = false; mesh.visible = false;
+        scene.add(mesh);
+        _vortexPool.push({ active: false, timer: 0, cx:0, cy:0, cz:0, mesh, posArr });
+      }
+    }
+
+    function triggerVortex(x, y, z) {
+      const slot = _vortexPool.find(v => !v.active);
+      if (!slot) return;
+      slot.active = true; slot.timer = 0;
+      slot.cx = x; slot.cy = y; slot.cz = z;
+      slot.mesh.visible = true;
+      if (DEBUG) console.log(`[vortex] (${x.toFixed(2)},${y.toFixed(2)},${z.toFixed(2)})`);
+    }
+
+    function updateVortex(timestamp, dt) {
+      const t = timestamp / 1000;
+      for (const s of _vortexPool) {
+        if (!s.active) continue;
+        s.timer += dt;
+        const prog  = s.timer / VORTEX_DURATION;
+        const r     = VORTEX_RADIUS * Math.sin(prog * Math.PI);
+        const alpha = Math.sin(prog * Math.PI) * 0.8;
+        for (let i = 0; i < VORTEX_PART_COUNT; i++) {
+          const phase = (i / VORTEX_PART_COUNT) * Math.PI * 2;
+          const ang   = phase + t * 3.0;
+          s.posArr[i*3]   = s.cx + r * Math.cos(ang);
+          s.posArr[i*3+1] = s.cy + Math.sin(phase*3 + t*2) * 0.05;
+          s.posArr[i*3+2] = s.cz + r * Math.sin(ang);
+        }
+        s.mesh.geometry.attributes.position.needsUpdate = true;
+        s.mesh.material.uniforms.uAlpha.value = alpha;
+        if (s.timer >= VORTEX_DURATION) { s.active = false; s.mesh.visible = false; }
+      }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // C10 — GLOW ORB
+    // ─────────────────────────────────────────────────────────────
+
+    const _orb = { state: 'inactive', scale: 0, group: null };
+
+    function initGlowOrb() {
+      _orb.group = new THREE.Group();
+      const mk = (r, col, op) => {
+        const m = new THREE.Mesh(
+          new THREE.SphereGeometry(r, 16, 16),
+          new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: op,
+            blending: THREE.AdditiveBlending, depthWrite: false })
+        );
+        _orb.group.add(m);
+      };
+      mk(ORB_MAX_R * 0.33, 0xffffff, 1.0);
+      mk(ORB_MAX_R * 0.80, 0x88ccff, 0.18);
+      mk(ORB_MAX_R * 1.33, 0x4499ff, 0.07);
+      _orb.group.visible = false;
+      scene.add(_orb.group);
+    }
+
+    function activateGlowOrb(x, y, z) {
+      if (_orb.state !== 'inactive') return;
+      _orb.state = 'growing'; _orb.scale = 0;
+      _orb.group.position.set(x, y, z);
+      _orb.group.visible = true;
+    }
+    function deactivateGlowOrb() {
+      if (_orb.state !== 'inactive') _orb.state = 'dissolving';
+    }
+    function updateGlowOrbPosition(x, y, z) {
+      if (_orb.state === 'growing' || _orb.state === 'active')
+        _orb.group.position.set(x, y, z);
+    }
+
+    function updateGlowOrb(timestamp, dt) {
+      if (_orb.state === 'inactive' || !_orb.group) return;
+      const growRate = ORB_GROW_SPEED / ORB_MAX_R;
+      if (_orb.state === 'growing') {
+        _orb.scale = Math.min(_orb.scale + growRate * dt, 1.0);
+        if (_orb.scale >= 1.0) _orb.state = 'active';
+      } else if (_orb.state === 'active') {
+        _orb.scale = 1.0 + 0.05 * Math.sin(timestamp / 1000 * 3.0);
+      } else if (_orb.state === 'dissolving') {
+        _orb.scale = Math.max(_orb.scale - growRate * 2 * dt, 0);
+        if (_orb.scale <= 0) { _orb.state = 'inactive'; _orb.group.visible = false; return; }
+      }
+      _orb.group.scale.setScalar(_orb.scale);
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // C11 — RING EFFECT  (ShockwaveRing + WaterWave 공용)
+    // ─────────────────────────────────────────────────────────────
+
+    const _ringPool = [];
+    const _ringGeo  = new THREE.TorusGeometry(1, 0.015, 8, 48);
+
+    function initRingEffect() {
+      const mat = new THREE.MeshBasicMaterial({
+        color: 0x88ccff, transparent: true,
+        depthWrite: false, blending: THREE.AdditiveBlending,
+      });
+      for (let s = 0; s < 3; s++) {
+        const meshes = [];
+        for (let r = 0; r < RING_COUNT; r++) {
+          const m = new THREE.Mesh(_ringGeo, mat.clone());
+          m.rotation.x = Math.PI / 2;
+          m.visible = false;
+          scene.add(m);
+          meshes.push(m);
+        }
+        _ringPool.push({ active: false, timer: 0, type: 'shockwave', cx:0, cy:0, cz:0, meshes });
+      }
+    }
+
+    function triggerShockwaveRing(x, y, z) {
+      const slot = _ringPool.find(r => !r.active);
+      if (!slot) return;
+      slot.active = true; slot.timer = 0; slot.type = 'shockwave';
+      slot.cx = x; slot.cy = y; slot.cz = z;
+      slot.meshes.forEach(m => m.visible = true);
+      scatterFishAt(x, y, z);
+      scatterJellyfishAt(x, y, z, RING_SHOCK_SCALE);
+      if (DEBUG) console.log(`[ring] (${x.toFixed(2)},${y.toFixed(2)},${z.toFixed(2)})`);
+    }
+
+    function updateRingEffect(timestamp, dt) {
+      for (const s of _ringPool) {
+        if (!s.active) continue;
+        s.timer += dt;
+        const maxSc = s.type === 'shockwave' ? RING_SHOCK_SCALE : RING_WAVE_SCALE;
+        for (let r = 0; r < RING_COUNT; r++) {
+          const m    = s.meshes[r];
+          const tOff = s.timer - r * RING_STAGGER;
+          if (tOff <= 0) { m.visible = false; continue; }
+          const p = Math.min(tOff / RING_EXPAND_DUR, 1.0);
+          m.scale.setScalar(p * maxSc);
+          m.position.set(s.cx, s.cy, s.cz);
+          m.material.opacity = (1.0 - p) * 0.75;
+          m.visible = p < 1.0;
+        }
+        if (s.timer >= RING_STAGGER * (RING_COUNT-1) + RING_EXPAND_DUR) {
+          s.active = false;
+          s.meshes.forEach(m => m.visible = false);
+        }
+      }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // C17 — VOICE ANALYZER
+    // ─────────────────────────────────────────────────────────────
+
+    let _audioCtx       = null;
+    let _analyser       = null;
+    let _micBuf         = null;
+    let _smoothedRms    = 0;
+    let _voiceHoldTimer = 0;
+
+    const _V_THRESH = {
+      whisper: VOICE_THRESH * 0.15,
+      call:    VOICE_THRESH * 0.63,
+      sing:    VOICE_THRESH * 0.88,
+    };
+    const _V_EXIT = {
+      whisper: VOICE_THRESH * 0.15 * VOICE_HYST,
+      call:    VOICE_THRESH * 0.63 * VOICE_HYST,
+      sing:    VOICE_THRESH * 0.88 * VOICE_HYST,
+    };
+    const _V_LVL = { silence: 0, whisper: 1, call: 2, sing: 3 };
+
+    async function initVoiceAnalyzer() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        _audioCtx = new AudioContext();
+        _analyser = _audioCtx.createAnalyser();
+        _analyser.fftSize = 2048;
+        _micBuf = new Float32Array(_analyser.fftSize);
+        _audioCtx.createMediaStreamSource(stream).connect(_analyser);
+        if (DEBUG) console.log('[voice] mic ready');
+      } catch (e) {
+        console.warn('[voice] mic unavailable:', e.message);
+      }
+    }
+
+    function updateVoiceAnalyzer(dt) {
+      if (!_analyser) return;
+
+      _analyser.getFloatTimeDomainData(_micBuf);
+      let sum = 0;
+      for (let i = 0; i < _micBuf.length; i++) sum += _micBuf[i] * _micBuf[i];
+      const raw = Math.sqrt(sum / _micBuf.length);
+
+      const k = raw > _smoothedRms ? VOICE_ATK : VOICE_REL;
+      _smoothedRms += (raw - _smoothedRms) * k;
+      const rms = _smoothedRms;
+
+      let target = 'silence';
+      if      (rms >= _V_THRESH.sing)    target = 'sing';
+      else if (rms >= _V_THRESH.call)    target = 'call';
+      else if (rms >= _V_THRESH.whisper) target = 'whisper';
+
+      const targetLvl  = _V_LVL[target];
+      const currentLvl = _V_LVL[ctx.voiceHeld];
+
+      if (targetLvl > currentLvl) {
+        ctx.voiceHeld    = target;
+        _voiceHoldTimer  = 0;
+      } else if (targetLvl < currentLvl) {
+        const exitKey   = ctx.voiceHeld;
+        const exitThresh = _V_EXIT[exitKey] ?? 0;
+        if (rms < exitThresh) {
+          ctx.voiceHeld   = target;
+          _voiceHoldTimer = 0;
+        } else {
+          _voiceHoldTimer += dt;
+          if (_voiceHoldTimer >= VOICE_HOLD) {
+            ctx.voiceHeld   = target;
+            _voiceHoldTimer = 0;
+          }
+        }
+      } else {
+        _voiceHoldTimer = 0;
+      }
+
+      if (ctx.voiceHeld !== 'silence') ctx.counters.voiceSec += dt;
+      if (ctx.voiceHeld === 'sing')    ctx.counters.singSec  += dt;
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // C01 — PINCH GESTURE
+    // ─────────────────────────────────────────────────────────────
+
+    const _pinch = {
+      left:  { wasPinching: false },
+      right: { wasPinching: false },
+    };
+
+    function updatePinchGesture() {
+      for (const side of ['left', 'right']) {
+        const j = ctx.handJoints[side];
+        if (!j.valid) continue;
+
+        const isPinching = j.thumbTip.distanceTo(j.indexTip) < PINCH_THRESHOLD;
+
+        if (isPinching && !_pinch[side].wasPinching) {
+          const mx = (j.thumbTip.x + j.indexTip.x) * 0.5;
+          const my = (j.thumbTip.y + j.indexTip.y) * 0.5;
+          const mz = (j.thumbTip.z + j.indexTip.z) * 0.5;
+
+          emitFoodParticles(mx, my, mz);
+          playPinchSound(mx, my, mz);
+          ctx.counters.pinchTotal++;
+          onPinchEvent();
+
+          if (DEBUG) console.log(`[pinch] ${side}  total=${ctx.counters.pinchTotal}`);
+        }
+
+        _pinch[side].wasPinching = isPinching;
+      }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // C02 — POINTER DOT
+    // ─────────────────────────────────────────────────────────────
+
+    const _ptrDots = {};
+
+    function initPointerDot() {
+      const coreMat = new THREE.MeshBasicMaterial({
+        color: 0xffffff,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+      });
+      const haloMat = new THREE.MeshBasicMaterial({
+        color: 0x88eeff,
+        transparent: true,
+        opacity: 0.25,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+      });
+      const coreGeo = new THREE.SphereGeometry(0.008, 8, 8);
+      const haloGeo = new THREE.SphereGeometry(0.022, 8, 8);
+
+      for (const side of ['left', 'right']) {
+        const core = new THREE.Mesh(coreGeo, coreMat.clone());
+        const halo = new THREE.Mesh(haloGeo, haloMat.clone());
+        core.add(halo);
+        core.visible = false;
+        scene.add(core);
+        _ptrDots[side] = {
+          mesh:       core,
+          lazyPos:    new THREE.Vector3(),
+          isPointing: false,
+        };
+      }
+    }
+
+    function _detectPointing(j) {
+      if (!j.valid) return false;
+      const wrist = j.wrist.pos;
+      return j.indexTip.distanceTo(wrist)  > INDEX_EXTEND_MIN &&
+             j.middleTip.distanceTo(wrist) < CURL_MAX &&
+             j.ringTip.distanceTo(wrist)   < CURL_MAX &&
+             j.pinkyTip.distanceTo(wrist)  < CURL_MAX;
+    }
+
+    function updatePointerDot() {
+      for (const side of ['left', 'right']) {
+        const dot = _ptrDots[side];
+        if (!dot) continue;
+        const j = ctx.handJoints[side];
+
+        dot.isPointing = _detectPointing(j);
+
+        if (dot.isPointing) {
+          dot.lazyPos.lerp(j.indexTip, LAZY_LERP);
+          dot.mesh.position.copy(dot.lazyPos);
+          dot.mesh.visible = true;
+        } else {
+          dot.mesh.visible = false;
+          if (j.valid) dot.lazyPos.copy(j.indexTip);
+        }
+      }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // C03 — HAND TRAIL
+    // ─────────────────────────────────────────────────────────────
+
+    const TRAIL_MAX_PTS = 600;
+
+    const _trailVert = `
+      attribute float age;
+      varying float vAge;
+      void main() {
+        vAge = age;
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        float norm = clamp(age / ${TRAIL_LIFETIME.toFixed(1)}, 0.0, 1.0);
+        gl_PointSize = max(1.5, 8.0 * (1.0 - norm) * (300.0 / -mv.z));
+        gl_Position  = projectionMatrix * mv;
+      }
+    `;
+    const _trailFrag = `
+      varying float vAge;
+      void main() {
+        float r = length(gl_PointCoord - vec2(0.5));
+        if (r > 0.5) discard;
+        float norm = clamp(vAge / ${TRAIL_LIFETIME.toFixed(1)}, 0.0, 1.0);
+        float a    = pow(1.0 - norm, 2.0) * 0.85;
+        vec3  col  = mix(vec3(0.4, 0.85, 1.0), vec3(1.0), 1.0 - norm);
+        gl_FragColor = vec4(col, a);
+      }
+    `;
+
+    const _trails = {};
+
+    function initHandTrail() {
+      const mat = new THREE.ShaderMaterial({
+        vertexShader:   _trailVert,
+        fragmentShader: _trailFrag,
+        transparent:    true,
+        depthWrite:     false,
+        blending:       THREE.AdditiveBlending,
+      });
+
+      for (const side of ['left', 'right']) {
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(TRAIL_MAX_PTS * 3), 3));
+        geo.setAttribute('age',      new THREE.BufferAttribute(new Float32Array(TRAIL_MAX_PTS),     1));
+        geo.setDrawRange(0, 0);
+
+        const mesh = new THREE.Points(geo, mat.clone());
+        mesh.frustumCulled = false;
+        scene.add(mesh);
+
+        _trails[side] = { mesh, pts: [], lastAddT: 0 };
+      }
+    }
+
+    function updateHandTrail(timestamp) {
+      const now = timestamp / 1000;
+
+      for (const side of ['left', 'right']) {
+        const trail = _trails[side];
+        if (!trail) continue;
+        const dot = _ptrDots[side];
+        const j   = ctx.handJoints[side];
+
+        // 새 점 추가
+        if (dot?.isPointing && j.valid && (now - trail.lastAddT) >= TRAIL_ADD_INTERVAL) {
+          const p    = dot.lazyPos;
+          const prev = trail.pts[trail.pts.length - 1];
+          if (prev) {
+            const d = Math.hypot(p.x - prev.x, p.y - prev.y, p.z - prev.z);
+            ctx.counters.trailLength += d;
+            onTrailLengthUpdate();
+          }
+          trail.pts.push({ x: p.x, y: p.y, z: p.z, t: now });
+          trail.lastAddT = now;
+        }
+
+        // 수명 만료 제거
+        trail.pts = trail.pts.filter(pt => (now - pt.t) < TRAIL_LIFETIME);
+
+        // 버퍼 갱신
+        const geo    = trail.mesh.geometry;
+        const posArr = geo.attributes.position.array;
+        const ageArr = geo.attributes.age.array;
+        const count  = Math.min(trail.pts.length, TRAIL_MAX_PTS);
+
+        for (let i = 0; i < count; i++) {
+          const pt = trail.pts[i];
+          posArr[i * 3]     = pt.x;
+          posArr[i * 3 + 1] = pt.y;
+          posArr[i * 3 + 2] = pt.z;
+          ageArr[i]         = now - pt.t;
+        }
+        geo.attributes.position.needsUpdate = true;
+        geo.attributes.age.needsUpdate      = true;
+        geo.setDrawRange(0, count);
+      }
+
+      // 글로벌 trailPoints 갱신 (C12에서 소비)
+      ctx.trailPoints = [];
+      for (const side of ['left', 'right']) {
+        if (_trails[side]) {
+          for (const pt of _trails[side].pts) ctx.trailPoints.push(pt);
+        }
+      }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // C04 — FIST RELEASE
+    // ─────────────────────────────────────────────────────────────
+
+    const _fist = {
+      left:  { wasFist: false, prevWrist: new THREE.Vector3(), speed: 0 },
+      right: { wasFist: false, prevWrist: new THREE.Vector3(), speed: 0 },
+    };
+    const _fistTmp = new THREE.Vector3();
+
+    function _isFistClosed(j) {
+      if (!j.valid) return false;
+      const w = j.wrist.pos;
+      return j.thumbTip.distanceTo(w)  < FIST_CURL_MAX &&
+             j.indexTip.distanceTo(w)  < FIST_CURL_MAX &&
+             j.middleTip.distanceTo(w) < FIST_CURL_MAX &&
+             j.ringTip.distanceTo(w)   < FIST_CURL_MAX &&
+             j.pinkyTip.distanceTo(w)  < FIST_CURL_MAX;
+    }
+
+    function updateFistRelease(dt) {
+      for (const side of ['left', 'right']) {
+        const j     = ctx.handJoints[side];
+        const state = _fist[side];
+        if (!j.valid) continue;
+
+        // 손목 이동 속도 추정
+        if (dt > 0) {
+          _fistTmp.subVectors(j.wrist.pos, state.prevWrist);
+          state.speed = _fistTmp.length() / dt;
+        }
+        state.prevWrist.copy(j.wrist.pos);
+
+        const closed = _isFistClosed(j);
+        const open   = j.indexTip.distanceTo(j.wrist.pos) > INDEX_EXTEND_MIN;
+
+        if (state.wasFist && open && state.speed > 0.4) {
+          const p = j.wrist.pos;
+          triggerBubbleBurst(p.x, p.y, p.z);
+          if (DEBUG) console.log(`[fistRelease] ${side}`);
+        }
+
+        if (closed)     state.wasFist = true;
+        else if (open)  state.wasFist = false;
+      }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // C05 — WRIST ROTATION
+    // ─────────────────────────────────────────────────────────────
+
+    const _wristRot = {
+      left:  { rotAccum: 0, prevQuat: new THREE.Quaternion(), triggered: false },
+      right: { rotAccum: 0, prevQuat: new THREE.Quaternion(), triggered: false },
+    };
+    const _rotTmp = new THREE.Quaternion();
+
+    function updateWristRotation() {
+      for (const side of ['left', 'right']) {
+        const j     = ctx.handJoints[side];
+        const state = _wristRot[side];
+        if (!j.valid) continue;
+
+        // delta quaternion = prevQuat_inv * currQuat
+        _rotTmp.copy(state.prevQuat).invert().multiply(j.wrist.quat);
+        const angle = 2 * Math.acos(Math.min(1, Math.abs(_rotTmp.w)));
+        state.prevQuat.copy(j.wrist.quat);
+
+        if (angle < 0.01) {
+          state.rotAccum *= 0.97;
+          if (state.rotAccum < 0.1) { state.rotAccum = 0; state.triggered = false; }
+        } else {
+          state.rotAccum += angle;
+        }
+
+        if (state.rotAccum >= VORTEX_ROT_THRESH && !state.triggered) {
+          state.triggered = true;
+          const p = j.wrist.pos;
+          triggerVortex(p.x, p.y, p.z);
+          state.rotAccum = 0;
+          if (DEBUG) console.log(`[wristRotation] ${side}`);
+        }
+      }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // C06 — TWO HAND GESTURE
+    // ─────────────────────────────────────────────────────────────
+
+    const _twoHand = { cupActive: false, cupHoldTime: 0, prevDist: 0 };
+    const _twoHandMid = new THREE.Vector3();
+
+    function updateTwoHandGesture(dt) {
+      const lj = ctx.handJoints.left;
+      const rj = ctx.handJoints.right;
+
+      if (!lj.valid || !rj.valid) {
+        if (_twoHand.cupActive) { _twoHand.cupActive = false; deactivateGlowOrb(); }
+        _twoHand.prevDist    = 0;
+        _twoHand.cupHoldTime = 0;
+        return;
+      }
+
+      const dist = lj.wrist.pos.distanceTo(rj.wrist.pos);
+      _twoHandMid.addVectors(lj.wrist.pos, rj.wrist.pos).multiplyScalar(0.5);
+
+      // Cup 감지: 양손 간격 좁고 높이 유사
+      const heightDiff = Math.abs(lj.wrist.pos.y - rj.wrist.pos.y);
+      const isCupPose  = dist < CUP_HAND_MAX_DIST && heightDiff < 0.12;
+
+      if (isCupPose) {
+        _twoHand.cupHoldTime += dt;
+        if (_twoHand.cupHoldTime >= 0.3 && !_twoHand.cupActive) {
+          _twoHand.cupActive = true;
+          activateGlowOrb(_twoHandMid.x, _twoHandMid.y, _twoHandMid.z);
+          if (DEBUG) console.log('[twoHand] cup active');
+        }
+      } else {
+        _twoHand.cupHoldTime = 0;
+        if (_twoHand.cupActive) {
+          _twoHand.cupActive = false;
+          deactivateGlowOrb();
+          if (DEBUG) console.log('[twoHand] cup inactive');
+        }
+      }
+      if (_twoHand.cupActive) {
+        updateGlowOrbPosition(_twoHandMid.x, _twoHandMid.y, _twoHandMid.z);
+      }
+
+      // Spread 감지: 가까이 있다가 빠르게 벌어짐
+      if (dt > 0 && _twoHand.prevDist > 0 && _twoHand.prevDist < 0.3) {
+        const speed = (dist - _twoHand.prevDist) / dt;
+        if (speed > SPREAD_VELOCITY) {
+          triggerShockwaveRing(_twoHandMid.x, _twoHandMid.y, _twoHandMid.z);
+          if (DEBUG) console.log('[twoHand] spread trigger');
+        }
+      }
+
+      _twoHand.prevDist = dist;
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // C18 — AMBIENT ENVIRONMENT
+    // ─────────────────────────────────────────────────────────────
+
+    const _ambVert = `
+      attribute float alpha;
+      varying float vA;
+      void main() {
+        vA = alpha;
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        gl_PointSize = max(1.5, 5.0*(200.0/-mv.z));
+        gl_Position  = projectionMatrix * mv;
+      }
+    `;
+    const _ambFrag = `
+      varying float vA;
+      void main() {
+        float r = length(gl_PointCoord - vec2(0.5));
+        if (r > 0.5) discard;
+        gl_FragColor = vec4(0.85, 0.95, 1.0, vA*(1.0-r*1.8));
+      }
+    `;
+
+    const AMB_MAX   = 200;
+    const _ambBubs  = [];
+    let   _ambMesh  = null;
+    let   _ambPosA, _ambAlpA;
+    let   _bubTimer = 0;
+    const _godRays  = [];
+
+    function initAmbientEnvironment() {
+      const geo = new THREE.BufferGeometry();
+      _ambPosA = new Float32Array(AMB_MAX * 3);
+      _ambAlpA = new Float32Array(AMB_MAX);
+      geo.setAttribute('position', new THREE.BufferAttribute(_ambPosA, 3));
+      geo.setAttribute('alpha',    new THREE.BufferAttribute(_ambAlpA, 1));
+      geo.setDrawRange(0, 0);
+      _ambMesh = new THREE.Points(geo, new THREE.ShaderMaterial({
+        vertexShader: _ambVert, fragmentShader: _ambFrag,
+        transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+      }));
+      _ambMesh.frustumCulled = false;
+      scene.add(_ambMesh);
+
+      const rayMat = new THREE.MeshBasicMaterial({
+        color: 0xaaddff, transparent: true, opacity: GODRAY_OPACITY_BASE,
+        side: THREE.DoubleSide, depthWrite: false, blending: THREE.AdditiveBlending,
+      });
+      const rayGeo = new THREE.ConeGeometry(0.25, 4.0, 4, 1, true);
+      for (let i = 0; i < GODRAY_COUNT; i++) {
+        const m = new THREE.Mesh(rayGeo, rayMat.clone());
+        m.rotation.z = Math.PI;
+        _godRays.push(m);
+        scene.add(m);
+      }
+    }
+
+    function updateAmbientEnvironment(timestamp, dt) {
+      if (!_ambMesh) return;
+      const t   = timestamp / 1000;
+      const lvl = { silence:0, whisper:1, call:2, sing:3 }[ctx.voiceHeld] ?? 0;
+
+      // Bubble emission
+      const rate = BUBBLE_RATE_BASE + (BUBBLE_RATE_SING - BUBBLE_RATE_BASE) * (lvl / 3);
+      _bubTimer += dt;
+      while (_bubTimer >= 1.0 / rate) {
+        _bubTimer -= 1.0 / rate;
+        if (_ambBubs.length < AMB_MAX) {
+          const r = SPAWN_RADIUS_XZ * Math.sqrt(Math.random());
+          const a = Math.random() * Math.PI * 2;
+          _ambBubs.push({
+            x: ctx.headPos.x + r*Math.cos(a), y: FISH_FLOOR_Y,
+            z: ctx.headPos.z + r*Math.sin(a),
+            vx: (Math.random()-0.5)*0.04, vz: (Math.random()-0.5)*0.04,
+            age: 0, lt: 3.0 + Math.random()*3.0,
+          });
+        }
+      }
+
+      // Update bubbles
+      for (let i = _ambBubs.length - 1; i >= 0; i--) {
+        const b = _ambBubs[i];
+        b.age += dt;
+        if (b.age >= b.lt || b.y > FISH_CEIL_Y + 0.5) { _ambBubs.splice(i, 1); continue; }
+        b.y += BUBBLE_RISE_SPEED * dt * (0.7 + Math.sin(b.age*2 + b.x)*0.3);
+        b.x += b.vx * dt;  b.z += b.vz * dt;
+      }
+      const count = Math.min(_ambBubs.length, AMB_MAX);
+      for (let i = 0; i < count; i++) {
+        const b = _ambBubs[i], n = b.age / b.lt;
+        _ambPosA[i*3] = b.x; _ambPosA[i*3+1] = b.y; _ambPosA[i*3+2] = b.z;
+        _ambAlpA[i]   = n < 0.1 ? n*10 : n > 0.8 ? (1-n)*5 : 0.5;
+      }
+      _ambMesh.geometry.attributes.position.needsUpdate = true;
+      _ambMesh.geometry.attributes.alpha.needsUpdate    = true;
+      _ambMesh.geometry.setDrawRange(0, count);
+
+      // God rays: orbit head, opacity follows voice
+      const targetOp = GODRAY_OPACITY_BASE + (GODRAY_OPACITY_SING - GODRAY_OPACITY_BASE) * (lvl/3);
+      for (let i = 0; i < _godRays.length; i++) {
+        const ray = _godRays[i];
+        ray.material.opacity += (targetOp - ray.material.opacity) * 0.05;
+        const ang = (i / GODRAY_COUNT) * Math.PI * 2 + t * 0.08;
+        ray.position.set(
+          ctx.headPos.x + Math.cos(ang) * 1.2,
+          ctx.spawnEyeY + 1.5,
+          ctx.headPos.z + Math.sin(ang) * 1.2
+        );
+      }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // PHASE 4 HELPERS
+    // ─────────────────────────────────────────────────────────────
+
+    const FISH_S_ORBIT_R = 0.6;
+    const FISH_M_ORBIT_R = 0.9;
+    const FISH_L_ORBIT_R = 1.5;
+
+    // 재사용 임시 변수 (GC 방지)
+    const _iMat  = new THREE.Matrix4();
+    const _iPos  = new THREE.Vector3();
+    const _iQuat = new THREE.Quaternion();
+    const _iScl  = new THREE.Vector3(1, 1, 1);
+    const _iEul  = new THREE.Euler();
+    const _jScl  = new THREE.Vector3();
+
+    function _randomSpawnPos() {
+      const r = SPAWN_RADIUS_XZ * 0.6 * Math.sqrt(Math.random());
+      const a = Math.random() * Math.PI * 2;
+      return [
+        ctx.headPos.x + r * Math.cos(a),
+        ctx.spawnEyeY + (Math.random() - 0.5) * 0.8,
+        ctx.headPos.z + r * Math.sin(a),
+      ];
+    }
+
+    function _steerToward(f, tx, ty, tz, str, dt) {
+      const dx = tx-f.x, dy = ty-f.y, dz = tz-f.z;
+      const d  = Math.sqrt(dx*dx+dy*dy+dz*dz) + 0.001;
+      f.vx += (dx/d)*str*dt; f.vy += (dy/d)*str*dt; f.vz += (dz/d)*str*dt;
+    }
+
+    function _clampSpeed(f, max) {
+      const s = Math.sqrt(f.vx*f.vx+f.vy*f.vy+f.vz*f.vz);
+      if (s > max) { const k=max/s; f.vx*=k; f.vy*=k; f.vz*=k; }
+    }
+
+    function _constrainVolume(f) {
+      const dx=f.x-ctx.headPos.x, dz=f.z-ctx.headPos.z;
+      const r = Math.sqrt(dx*dx+dz*dz);
+      if (r > SPAWN_RADIUS_XZ) { f.vx -= (dx/r)*0.5; f.vz -= (dz/r)*0.5; }
+      if (f.y < FISH_FLOOR_Y+0.05) f.vy += 1.5;
+      if (f.y > FISH_CEIL_Y -0.05) f.vy -= 1.5;
+    }
+
+    function _boidsForce(f, flock, sepR, aliR, cohR, dt) {
+      let sx=0,sy=0,sz=0,sc=0, ax=0,ay=0,az=0,ac=0, cx=0,cy=0,cz=0,cc=0;
+      for (const o of flock) {
+        if (o===f) continue;
+        const dx=f.x-o.x, dy=f.y-o.y, dz=f.z-o.z;
+        const d2=dx*dx+dy*dy+dz*dz;
+        if (d2<sepR*sepR&&d2>0){const d=Math.sqrt(d2);sx+=dx/d;sy+=dy/d;sz+=dz/d;sc++;}
+        if (d2<aliR*aliR){ax+=o.vx;ay+=o.vy;az+=o.vz;ac++;}
+        if (d2<cohR*cohR){cx+=o.x;cy+=o.y;cz+=o.z;cc++;}
+      }
+      if (sc>0){f.vx+=sx/sc*1.5*dt;f.vy+=sy/sc*1.5*dt;f.vz+=sz/sc*1.5*dt;}
+      if (ac>0){f.vx+=ax/ac*dt;    f.vy+=ay/ac*dt;    f.vz+=az/ac*dt;}
+      if (cc>0){const tx=cx/cc-f.x,ty=cy/cc-f.y,tz=cz/cc-f.z;
+                f.vx+=tx*0.8*dt;f.vy+=ty*0.8*dt;f.vz+=tz*0.8*dt;}
+    }
+
+    function _applyScatterImpulse(f, sx, sy, sz, r) {
+      const dx=f.x-sx, dy=f.y-sy, dz=f.z-sz;
+      const d=Math.sqrt(dx*dx+dy*dy+dz*dz);
+      if (d<r) {
+        const force=(r-d)/r*2.5;
+        const nx=d>0.01?dx/d:(Math.random()-0.5);
+        const nz=d>0.01?dz/d:(Math.random()-0.5);
+        f.vx+=nx*force; f.vy+=0.2*force; f.vz+=nz*force;
+        f.scatterTimer=1.5;
+      }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // C12 — FISH SCHOOL  (소형 + 중형 InstancedMesh)
+    // ─────────────────────────────────────────────────────────────
+
+    const _fishSData = [];
+    const _fishMData = [];
+    let   _fishSMesh = null;
+    let   _fishMMesh = null;
+
+    function initFishSchool() {
+      if (!models.fishS) return;
+
+      // ConeGeometry는 기본적으로 +Y 방향 → +Z로 회전 베이크
+      const bakeMat4 = new THREE.Matrix4().makeRotationX(Math.PI / 2);
+
+      const sGeo = models.fishS.children[0].geometry.clone();
+      sGeo.applyMatrix4(bakeMat4);
+      _fishSMesh = new THREE.InstancedMesh(sGeo, models.fishS.children[0].material.clone(), 15);
+      _fishSMesh.count = 0; _fishSMesh.frustumCulled = false;
+      scene.add(_fishSMesh);
+
+      const mGeo = models.fishM.children[0].geometry.clone();
+      mGeo.applyMatrix4(bakeMat4);
+      _fishMMesh = new THREE.InstancedMesh(mGeo, models.fishM.children[0].material.clone(), 6);
+      _fishMMesh.count = 0; _fishMMesh.frustumCulled = false;
+      scene.add(_fishMMesh);
+    }
+
+    function spawnFishS(x, y, z) {
+      if (_fishSData.length >= 15) return;
+      _fishSData.push({ x, y, z, vx:(Math.random()-0.5)*0.2, vy:0, vz:(Math.random()-0.5)*0.2,
+        ry:Math.random()*Math.PI*2, phase:Math.random()*Math.PI*2, scatterTimer:0 });
+      ctx.spawnState.fishSCount = _fishSData.length;
+    }
+
+    function spawnFishM(x, y, z) {
+      if (_fishMData.length >= 6) return;
+      _fishMData.push({ x, y, z, vx:(Math.random()-0.5)*0.1, vy:0, vz:(Math.random()-0.5)*0.1,
+        ry:Math.random()*Math.PI*2, phase:Math.random()*Math.PI*2, scatterTimer:0 });
+      ctx.spawnState.fishMCount = _fishMData.length;
+    }
+
+    function scatterFishAt(x, y, z) {
+      for (const f of _fishSData) _applyScatterImpulse(f, x, y, z, BURST_SCATTER_R);
+      for (const f of _fishMData) _applyScatterImpulse(f, x, y, z, BURST_SCATTER_R);
+    }
+
+    function _updateFishGroup(flock, mesh, maxSpd, freq, amp, bob, sepR, aliR, cohR, orbitR, dt) {
+      if (!mesh || flock.length === 0) return;
+      const now = performance.now() / 1000;
+      const lvl = { silence:0, whisper:1, call:2, sing:3 }[ctx.voiceHeld] ?? 0;
+
+      for (let i = 0; i < flock.length; i++) {
+        const f = flock[i];
+        if (f.scatterTimer > 0) f.scatterTimer -= dt;
+
+        // 우선순위 상태 결정
+        let state = 'swim';
+        if (f.scatterTimer > 0)                   state = 'scattered';
+        else if (ctx.foodParticles.length > 0 && lvl < 2) state = 'food';
+        else if (lvl === 3)                        state = 'orbit';
+        else if (lvl === 2)                        state = 'gather';
+        else if (ctx.trailPoints.length > 0)       state = 'trail';
+
+        // 상태별 조종력
+        if (state === 'food') {
+          let near=null, nd=FOOD_ATTRACT_R*FOOD_ATTRACT_R;
+          for (const p of ctx.foodParticles) {
+            const d2=(p.x-f.x)**2+(p.y-f.y)**2+(p.z-f.z)**2;
+            if (d2<nd){nd=d2;near=p;}
+          }
+          if (near) _steerToward(f, near.x, near.y, near.z, 4.0, dt);
+        } else if (state === 'gather') {
+          _steerToward(f, ctx.headPos.x, ctx.spawnEyeY*0.85, ctx.headPos.z-USER_NEAR_DIST, 3.5, dt);
+        } else if (state === 'orbit') {
+          const ang = Math.atan2(f.z-ctx.headPos.z, f.x-ctx.headPos.x) + 0.8*dt;
+          _steerToward(f,
+            ctx.headPos.x + Math.cos(ang)*orbitR,
+            ctx.spawnEyeY*0.85,
+            ctx.headPos.z + Math.sin(ang)*orbitR, 4.0, dt);
+        } else if (state === 'trail') {
+          let near=null, nd=TRAIL_FISH_FOLLOW_R*TRAIL_FISH_FOLLOW_R;
+          const n2 = performance.now()/1000;
+          for (const pt of ctx.trailPoints) {
+            if (n2-pt.t > TRAIL_LIFETIME*0.5) continue;
+            const d2=(pt.x-f.x)**2+(pt.y-f.y)**2+(pt.z-f.z)**2;
+            if (d2<nd){nd=d2;near=pt;}
+          }
+          if (near) _steerToward(f, near.x, near.y, near.z, 3.0, dt);
+        }
+
+        // 보이드 (swim 상태에서 100%, 다른 상태에서 30%)
+        _boidsForce(f, flock, sepR, aliR, cohR, dt * (state==='swim'?1.0:0.3));
+
+        f.vy *= 0.95;
+        _constrainVolume(f);
+        _clampSpeed(f, maxSpd);
+        f.x += f.vx*dt; f.y += f.vy*dt; f.z += f.vz*dt;
+
+        // 진행 방향으로 회전
+        const spd2d = Math.sqrt(f.vx*f.vx + f.vz*f.vz);
+        if (spd2d > 0.02) f.ry = Math.atan2(f.vx, f.vz);
+
+        // InstancedMesh 행렬 갱신
+        const yaw = f.ry + Math.sin(now*freq+f.phase)*amp;
+        _iPos.set(f.x, f.y + Math.sin(now*1.5+f.phase)*bob, f.z);
+        _iEul.set(0, yaw, 0);
+        _iQuat.setFromEuler(_iEul);
+        _iMat.compose(_iPos, _iQuat, _iScl);
+        mesh.setMatrixAt(i, _iMat);
+      }
+      mesh.instanceMatrix.needsUpdate = true;
+      mesh.count = flock.length;
+    }
+
+    function updateFishSchool(timestamp, dt) {
+      _updateFishGroup(_fishSData, _fishSMesh, FISH_S_SPEED, 4.0, 0.20, 0.015,
+        FISH_S_SEP_R, FISH_S_ALIGN_R, FISH_S_COH_R, FISH_S_ORBIT_R, dt);
+      _updateFishGroup(_fishMData, _fishMMesh, FISH_M_SPEED, 2.8, 0.14, 0.015,
+        FISH_S_SEP_R*1.5, FISH_S_ALIGN_R*1.5, FISH_S_COH_R*1.5, FISH_M_ORBIT_R, dt);
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // C13 — FISH LARGE  (개별 Mesh, 최대 2마리)
+    // ─────────────────────────────────────────────────────────────
+
+    const _fishLData = [];
+
+    function spawnFishL(x, y, z) {
+      if (_fishLData.length >= 2) return;
+      const mesh = models.fishL.clone();
+      scene.add(mesh);
+      const [wx, wy, wz] = _randomSpawnPos();
+      _fishLData.push({ x, y, z, vx:0, vy:0, vz:0,
+        ry:Math.random()*Math.PI*2, phase:Math.random()*Math.PI*2,
+        scatterTimer:0, wpx:wx, wpy:wy, wpz:wz, wpTimer:0, mesh });
+      ctx.spawnState.fishLCount = _fishLData.length;
+    }
+
+    function updateFishLarge(timestamp, dt) {
+      const now = timestamp / 1000;
+      const lvl = { silence:0, whisper:1, call:2, sing:3 }[ctx.voiceHeld] ?? 0;
+
+      for (const f of _fishLData) {
+        f.scatterTimer = Math.max(f.scatterTimer-dt, 0);
+        f.wpTimer      = Math.max(f.wpTimer-dt, 0);
+
+        const distWp = Math.hypot(f.x-f.wpx, f.y-f.wpy, f.z-f.wpz);
+        if (f.wpTimer <= 0 || distWp < 0.15) {
+          const [wx,wy,wz] = _randomSpawnPos();
+          f.wpx=wx; f.wpy=wy; f.wpz=wz; f.wpTimer = 6+Math.random()*6;
+        }
+
+        let tx=f.wpx, ty=f.wpy, tz=f.wpz;
+        if (f.scatterTimer <= 0) {
+          if (lvl === 3) {
+            const ang = Math.atan2(f.z-ctx.headPos.z, f.x-ctx.headPos.x) + 0.3*dt;
+            tx=ctx.headPos.x+Math.cos(ang)*FISH_L_ORBIT_R;
+            ty=ctx.spawnEyeY*0.85;
+            tz=ctx.headPos.z+Math.sin(ang)*FISH_L_ORBIT_R;
+          } else if (lvl === 2) {
+            tx=ctx.headPos.x; ty=ctx.spawnEyeY*0.85; tz=ctx.headPos.z-2.0;
+          }
+        }
+
+        _steerToward(f, tx, ty, tz, FISH_L_SPRING_K, dt);
+        f.vx *= (1-FISH_L_SPRING_D*dt*2); f.vy *= 0.95; f.vz *= (1-FISH_L_SPRING_D*dt*2);
+        _constrainVolume(f);
+        _clampSpeed(f, FISH_L_SPEED);
+        f.x+=f.vx*dt; f.y+=f.vy*dt; f.z+=f.vz*dt;
+
+        const s2d = Math.sqrt(f.vx*f.vx+f.vz*f.vz);
+        if (s2d > 0.01) f.ry = Math.atan2(f.vx, f.vz);
+
+        f.mesh.position.set(f.x, f.y+Math.sin(now*0.8+f.phase)*0.02, f.z);
+        f.mesh.rotation.y = f.ry + Math.sin(now*1.8+f.phase)*0.10;
+      }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // C14 — JELLYFISH  (InstancedMesh, 최대 8개)
+    // ─────────────────────────────────────────────────────────────
+
+    const _jellyData = [];
+    let   _jellyMesh = null;
+
+    function initJellyfish() {
+      if (!models.jellyfish) return;
+      const child = models.jellyfish.children[0];
+      const mat   = child.material.clone();
+      mat.emissive          = new THREE.Color(0x334488);
+      mat.emissiveIntensity = 0.1;
+      _jellyMesh = new THREE.InstancedMesh(child.geometry, mat, 8);
+      _jellyMesh.count = 0; _jellyMesh.frustumCulled = false;
+      scene.add(_jellyMesh);
+    }
+
+    function spawnJellyfish(x, y, z) {
+      if (_jellyData.length >= 8) return;
+      _jellyData.push({ x, y, z, vx:0, vy:0, vz:0,
+        phase:Math.random()*Math.PI*2, scatterTimer:0 });
+      ctx.spawnState.jellyCount = _jellyData.length;
+    }
+
+    function scatterJellyfishAt(x, y, z, r) {
+      for (const j of _jellyData) _applyScatterImpulse(j, x, y, z, r);
+    }
+
+    function getActiveVortexPositions() {
+      return _vortexPool.filter(v => v.active).map(v => ({ x:v.cx, y:v.cy, z:v.cz }));
+    }
+
+    function updateJellyfish(timestamp, dt) {
+      if (!_jellyMesh || _jellyData.length === 0) return;
+      const now = timestamp / 1000;
+      const lvl = { silence:0, whisper:1, call:2, sing:3 }[ctx.voiceHeld] ?? 0;
+
+      const targetEmissive = [0.1, 0.22, 0.38, 0.60][lvl];
+      _jellyMesh.material.emissiveIntensity +=
+        (targetEmissive - _jellyMesh.material.emissiveIntensity) * 0.05;
+
+      const vortexPos = getActiveVortexPositions();
+
+      for (let i = 0; i < _jellyData.length; i++) {
+        const j = _jellyData[i];
+        j.scatterTimer = Math.max(j.scatterTimer-dt, 0);
+
+        if (j.scatterTimer <= 0) {
+          if (lvl >= 1) {
+            const dx=ctx.headPos.x-j.x, dz=ctx.headPos.z-j.z;
+            const d=Math.sqrt(dx*dx+dz*dz)+0.01;
+            j.vx += (dx/d)*lvl*0.08*dt; j.vz += (dz/d)*lvl*0.08*dt;
+          }
+          for (const vp of vortexPos) {
+            const d=Math.hypot(vp.x-j.x, vp.y-j.y, vp.z-j.z);
+            if (d < JELLY_VORTEX_DIST) _steerToward(j, vp.x, vp.y, vp.z, 2.0, dt);
+          }
+        }
+
+        j.vy += Math.sin(now*1.2+j.phase)*0.02*dt;
+        j.vx *= 0.98; j.vy *= 0.98; j.vz *= 0.98;
+        _constrainVolume(j);
+        _clampSpeed(j, JELLY_DRIFT_SPEED*(1+lvl*0.3));
+        j.x+=j.vx*dt; j.y+=j.vy*dt; j.z+=j.vz*dt;
+
+        const pulse = 1.0 + 0.15*Math.sin(now*2*Math.PI/JELLY_PULSE_PERIOD+j.phase);
+        _iPos.set(j.x, j.y, j.z); _iQuat.identity(); _jScl.set(1, pulse, 1);
+        _iMat.compose(_iPos, _iQuat, _jScl);
+        _jellyMesh.setMatrixAt(i, _iMat);
+      }
+      _jellyMesh.instanceMatrix.needsUpdate = true;
+      _jellyMesh.count = _jellyData.length;
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // C15 — WHALE  (세션 1회 클라이맥스 시퀀스)
+    // ─────────────────────────────────────────────────────────────
+
+    const _whale = { phase:'idle', timer:0, mesh:null, sx:0,sy:0,sz:0, ex:0,ey:0,ez:0 };
+
+    function _triggerWhale() {
+      if (_whale.phase !== 'idle') return;
+      const dir = Math.random()*Math.PI*2;
+      _whale.sx = ctx.headPos.x + Math.cos(dir)*WHALE_SPAWN_DIST;
+      _whale.sy = ctx.spawnEyeY*0.9;
+      _whale.sz = ctx.headPos.z + Math.sin(dir)*WHALE_SPAWN_DIST;
+      _whale.ex = ctx.headPos.x - Math.cos(dir)*WHALE_SPAWN_DIST;
+      _whale.ey = ctx.spawnEyeY*0.9;
+      _whale.ez = ctx.headPos.z - Math.sin(dir)*WHALE_SPAWN_DIST;
+      _whale.timer = 0;
+      _whale.phase = 'spawning';
+      _whale.mesh  = models.whale.clone();
+      _whale.mesh.traverse(c => {
+        if (c.isMesh && c.material) {
+          c.material = c.material.clone();
+          c.material.transparent = true;
+          c.material.opacity = 0;
+        }
+      });
+      scene.add(_whale.mesh);
+      ctx.spawnState.whaleSpawned = true;
+      if (DEBUG) console.log('[whale] 시퀀스 시작');
+    }
+
+    function updateWhale(timestamp, dt) {
+      const now = timestamp / 1000;
+
+      // 조건 충족 시 자동 트리거 (Phase 5 SpawnManager에서 위임받음)
+      if (_whale.phase === 'idle' && !ctx.spawnState.whaleSpawned &&
+          ctx.sessionTime >= SPAWN_WHALE_TIME &&
+          ctx.counters.singSec >= SPAWN_WHALE_SING) {
+        _triggerWhale();
+      }
+
+      if (_whale.phase === 'idle' || _whale.phase === 'done' || !_whale.mesh) return;
+      _whale.timer += dt;
+
+      const totalDist = Math.hypot(_whale.ex-_whale.sx, _whale.ey-_whale.sy, _whale.ez-_whale.sz);
+      const travelTime = totalDist / WHALE_SPEED;
+
+      if (_whale.phase === 'spawning') {
+        const op = Math.min(_whale.timer/WHALE_FADE_DUR, 1.0);
+        _whale.mesh.traverse(c => { if (c.isMesh&&c.material) c.material.opacity = op; });
+        if (_whale.timer >= WHALE_FADE_DUR) { _whale.phase='passing'; _whale.timer=0; }
+
+      } else if (_whale.phase === 'passing') {
+        const p = Math.min(_whale.timer/travelTime, 1.0);
+        _whale.mesh.position.set(
+          _whale.sx+(_whale.ex-_whale.sx)*p,
+          _whale.sy + Math.sin(now*0.5)*0.05,
+          _whale.sz+(_whale.ez-_whale.sz)*p
+        );
+        _whale.mesh.rotation.y =
+          Math.atan2(_whale.ex-_whale.sx, _whale.ez-_whale.sz) + Math.sin(now*0.8)*0.05;
+        if (p >= 1.0) { _whale.phase='fading'; _whale.timer=0; }
+
+      } else if (_whale.phase === 'fading') {
+        const op = Math.max(1.0-_whale.timer/WHALE_FADE_DUR, 0);
+        _whale.mesh.traverse(c => { if (c.isMesh&&c.material) c.material.opacity = op; });
+        if (_whale.timer >= WHALE_FADE_DUR) {
+          scene.remove(_whale.mesh); _whale.mesh=null; _whale.phase='done';
+          if (DEBUG) console.log('[whale] 시퀀스 종료');
+        }
+      }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // C16 — SPAWN MANAGER
+    // ─────────────────────────────────────────────────────────────
+
+    const _spawnThr = {
+      fishMNextPinch: SPAWN_PINCH_FIRST,
+      fishSNextTrail: SPAWN_TRAIL_STEP,
+      jellyNextVoice: SPAWN_VOICE_FIRST,
+      fishLTriggered: false,
+    };
+
+    function _resetSpawnThresholds() {
+      _spawnThr.fishMNextPinch = SPAWN_PINCH_FIRST;
+      _spawnThr.fishSNextTrail = SPAWN_TRAIL_STEP;
+      _spawnThr.jellyNextVoice = SPAWN_VOICE_FIRST;
+      _spawnThr.fishLTriggered = false;
+    }
+
+    function _queueSpawn(type, extraDelay = 0) {
+      const delay = SPAWN_DELAY_MIN + Math.random()*(SPAWN_DELAY_MAX-SPAWN_DELAY_MIN) + extraDelay;
+      ctx.spawnState.pendingQueue.push({ type, triggerTime: ctx.sessionTime + delay });
+      if (DEBUG) console.log(`[spawn] ${type} 예약 (+${delay.toFixed(0)}s)`);
+    }
+
+    // C01에서 핀치마다 호출
+    function onPinchEvent() {
+      if (ctx.counters.pinchTotal >= _spawnThr.fishMNextPinch && ctx.spawnState.fishMCount < 6) {
+        _queueSpawn('fishM');
+        _spawnThr.fishMNextPinch += SPAWN_PINCH_STEP;
+      }
+    }
+
+    // C03에서 궤적 누적마다 호출
+    function onTrailLengthUpdate() {
+      if (ctx.counters.trailLength >= _spawnThr.fishSNextTrail && ctx.spawnState.fishSCount < 15) {
+        _queueSpawn('fishS');
+        _spawnThr.fishSNextTrail += SPAWN_TRAIL_STEP;
+      }
+    }
+
+    function updateSpawnManager() {
+      const now = ctx.sessionTime;
+
+      // 음성 누적 → 해파리
+      if (ctx.counters.voiceSec >= _spawnThr.jellyNextVoice && ctx.spawnState.jellyCount < 8) {
+        _queueSpawn('jellyfish');
+        _spawnThr.jellyNextVoice += SPAWN_VOICE_STEP;
+      }
+
+      // 핀치×15 + 중형×3 → 대형 물고기 (매 프레임 체크 — 두 조건 동시 만족 시점)
+      if (!_spawnThr.fishLTriggered &&
+          ctx.counters.pinchTotal >= SPAWN_LARGE_PINCH &&
+          ctx.spawnState.fishMCount >= SPAWN_LARGE_MED) {
+        _queueSpawn('fishL');
+        _queueSpawn('fishL', 25 + Math.random()*25);  // 두 번째 대형은 더 늦게
+        _spawnThr.fishLTriggered = true;
+      }
+
+      // 대기 큐 처리
+      for (let i = ctx.spawnState.pendingQueue.length - 1; i >= 0; i--) {
+        const item = ctx.spawnState.pendingQueue[i];
+        if (now < item.triggerTime) continue;
+        const [x, y, z] = _randomSpawnPos();
+        if      (item.type === 'fishS')     spawnFishS(x, y, z);
+        else if (item.type === 'fishM')     spawnFishM(x, y, z);
+        else if (item.type === 'fishL')     spawnFishL(x, y, z);
+        else if (item.type === 'jellyfish') spawnJellyfish(x, y, z);
+        ctx.spawnState.pendingQueue.splice(i, 1);
+        if (DEBUG) console.log(`[spawn] ${item.type} 등장 (t=${now.toFixed(0)}s)`);
+      }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // C19 — SPATIAL AUDIO  (Web Audio API — 파일 없이 합성음)
+    // ─────────────────────────────────────────────────────────────
+
+    // _audioCtx 는 C17 VoiceAnalyzer에서 초기화됨 (공유)
+
+    function _updateAudioListenerPos() {
+      if (!_audioCtx) return;
+      const p = ctx.headPos;
+      // 브라우저 호환: AudioParam 방식과 구형 setPosition 방식 모두 처리
+      if (_audioCtx.listener.positionX) {
+        _audioCtx.listener.positionX.value = p.x;
+        _audioCtx.listener.positionY.value = p.y;
+        _audioCtx.listener.positionZ.value = p.z;
+      } else {
+        try { _audioCtx.listener.setPosition(p.x, p.y, p.z); } catch(_) {}
+      }
+    }
+
+    function playPinchSound(x, y, z) {
+      if (!_audioCtx || _audioCtx.state !== 'running') return;
+      try {
+        const osc  = _audioCtx.createOscillator();
+        const gain = _audioCtx.createGain();
+        const pan  = _audioCtx.createPanner();
+        pan.panningModel    = 'HRTF';
+        pan.positionX.value = x;
+        pan.positionY.value = y;
+        pan.positionZ.value = z;
+        pan.refDistance     = 0.3;
+        pan.rolloffFactor   = 2;
+        osc.connect(gain);
+        gain.connect(pan);
+        pan.connect(_audioCtx.destination);
+        osc.type = 'sine';
+        const t = _audioCtx.currentTime;
+        osc.frequency.setValueAtTime(880, t);
+        osc.frequency.exponentialRampToValueAtTime(440, t + 0.3);
+        gain.gain.setValueAtTime(0.22, t);
+        gain.gain.exponentialRampToValueAtTime(0.001, t + 0.45);
+        osc.start(t);
+        osc.stop(t + 0.45);
+      } catch(_) {}
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // HAND TRACKING  (WebXR Hand Tracking API)
+    // ─────────────────────────────────────────────────────────────
+
+    const _JOINT_MAP = [
+      ['thumb-tip',         'thumbTip'],
+      ['index-finger-tip',  'indexTip'],
+      ['middle-finger-tip', 'middleTip'],
+      ['ring-finger-tip',   'ringTip'],
+      ['pinky-finger-tip',  'pinkyTip'],
+    ];
+
+    function updateHandTracking(frame) {
+      const refSpace = renderer.xr.getReferenceSpace();
+      if (!refSpace) return;
+      const session = renderer.xr.getSession();
+      if (!session) return;
+
+      ctx.handJoints.left.valid  = false;
+      ctx.handJoints.right.valid = false;
+
+      for (const src of session.inputSources) {
+        if (!src.hand) continue;
+        const side   = src.handedness;
+        const joints = ctx.handJoints[side];
+        if (!joints) continue;
+
+        const wristSpace = src.hand.get('wrist');
+        if (wristSpace) {
+          const wp = frame.getJointPose(wristSpace, refSpace);
+          if (wp) {
+            const { position: p, orientation: o } = wp.transform;
+            joints.wrist.pos.set(p.x, p.y, p.z);
+            joints.wrist.quat.set(o.x, o.y, o.z, o.w);
+          }
+        }
+
+        let allValid = true;
+        for (const [xrName, key] of _JOINT_MAP) {
+          const jSpace = src.hand.get(xrName);
+          if (!jSpace) { allValid = false; continue; }
+          const jp = frame.getJointPose(jSpace, refSpace);
+          if (!jp)    { allValid = false; continue; }
+          const p = jp.transform.position;
+          joints[key].set(p.x, p.y, p.z);
+        }
+        joints.valid = allValid;
+      }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // RENDER LOOP
+    // ─────────────────────────────────────────────────────────────
+
+    let prevTimestamp = 0;
+
+    renderer.setAnimationLoop((timestamp, frame) => {
+      const dt = prevTimestamp === 0
+        ? 0
+        : Math.min((timestamp - prevTimestamp) / 1000, 0.05);
+      prevTimestamp = timestamp;
+
+      if (frame) {
+        ctx.sessionTime += dt;
+
+        const refSpace = renderer.xr.getReferenceSpace();
+        if (refSpace) {
+          const vp = frame.getViewerPose(refSpace);
+          if (vp) {
+            const p = vp.transform.position;
+            ctx.headPos.set(p.x, p.y, p.z);
+            if (!ctx.calibrated && p.y > 0.3) {
+              ctx.spawnEyeY  = p.y;
+              ctx.calibrated = true;
+              if (DEBUG) console.log(`[calibrated] eyeY=${p.y.toFixed(2)}`);
+            }
+          }
+        }
+
+        updateHandTracking(frame);
+
+        // ── Phase 2: 입력 레이어 ─────────────────────────────────
+        updateVoiceAnalyzer(dt);
+        updatePinchGesture();
+        updatePointerDot();
+        updateHandTrail(timestamp);
+        updateFistRelease(dt);
+        updateWristRotation();
+        updateTwoHandGesture(dt);
+
+        // ── Phase 3: VFX 레이어 ──────────────────────────────────
+        updateFoodParticle(timestamp, dt);
+        updateBubbleBurst(timestamp, dt);
+        updateVortex(timestamp, dt);
+        updateGlowOrb(timestamp, dt);
+        updateRingEffect(timestamp, dt);
+        updateAmbientEnvironment(timestamp, dt);
+
+        // ── Phase 4: 크리처 레이어 ───────────────────────────────
+        updateFishSchool(timestamp, dt);
+        updateFishLarge(timestamp, dt);
+        updateJellyfish(timestamp, dt);
+        updateWhale(timestamp, dt);
+
+        // ── Phase 5: 시스템 레이어 ───────────────────────────────
+        updateSpawnManager();
+        _updateAudioListenerPos();
+
+        if (DEBUG) {
+          const lj = ctx.handJoints.left;
+          const rj = ctx.handJoints.right;
+          dbgEl.innerHTML =
+            `t=${ctx.sessionTime.toFixed(1)}s  voice:<b>${ctx.voiceHeld}</b><br>` +
+            `L: ${lj.valid ? `✓ idx(${lj.indexTip.x.toFixed(2)},${lj.indexTip.y.toFixed(2)},${lj.indexTip.z.toFixed(2)})` : '–'}<br>` +
+            `R: ${rj.valid ? `✓ idx(${rj.indexTip.x.toFixed(2)},${rj.indexTip.y.toFixed(2)},${rj.indexTip.z.toFixed(2)})` : '–'}<br>` +
+            `pinch:${ctx.counters.pinchTotal}  trail:${ctx.counters.trailLength.toFixed(1)}m<br>` +
+            `voice:${ctx.counters.voiceSec.toFixed(0)}s  sing:${ctx.counters.singSec.toFixed(0)}s<br>` +
+            `fishS:${ctx.spawnState.fishSCount} M:${ctx.spawnState.fishMCount} L:${ctx.spawnState.fishLCount} jelly:${ctx.spawnState.jellyCount}<br>` +
+            `queue:${ctx.spawnState.pendingQueue.length}  whale:${_whale.phase}  t:${ctx.sessionTime.toFixed(0)}s`;
+        }
+      }
+
+      renderer.render(scene, camera);
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // AR SESSION INIT
+    // ─────────────────────────────────────────────────────────────
+
+    let _phase2Inited = false;
+    async function initPhase2() {
+      if (_phase2Inited) return;
+      _phase2Inited = true;
+      initPointerDot();
+      initHandTrail();
+      await initVoiceAnalyzer();
+      if (DEBUG) console.log('[phase2] 입력 레이어 초기화 완료');
+    }
+
+    let _phase3Inited = false;
+    function initPhase3() {
+      if (_phase3Inited) return;
+      _phase3Inited = true;
+      initFoodParticle();
+      initBubbleBurst();
+      initVortex();
+      initGlowOrb();
+      initRingEffect();
+      initAmbientEnvironment();
+      if (DEBUG) console.log('[phase3] VFX 레이어 초기화 완료');
+    }
+
+    let _phase4Inited = false;
+    function initPhase4() {
+      if (_phase4Inited) return;
+      _phase4Inited = true;
+      initFishSchool();
+      initJellyfish();
+      // 소형 물고기 5마리 ambient 스폰
+      const offsets = [[-0.5,-0.2,-1.0],[0.3,-0.1,-0.8],[-0.2,0.1,-1.2],[0.6,-0.3,-1.0],[-0.4,0,-1.4]];
+      for (const [ox,oy,oz] of offsets)
+        spawnFishS(ctx.headPos.x+ox, ctx.spawnEyeY+oy, ctx.headPos.z+oz);
+      if (DEBUG) console.log('[phase4] 크리처 레이어 초기화 완료');
+    }
+
+    renderer.xr.addEventListener('sessionstart', async () => {
+      document.getElementById('overlay').classList.add('hidden');
+      await initModels();
+      await initPhase2();
+      initPhase3();
+      initPhase4();
+      _resetSpawnThresholds();
+      if (DEBUG) console.log('[phase5] SpawnManager + SpatialAudio 준비 완료');
+    });
+
+    renderer.xr.addEventListener('sessionend', () => {
+      document.getElementById('overlay').classList.remove('hidden');
+      prevTimestamp        = 0;
+      ctx.sessionTime      = 0;
+      ctx.calibrated       = false;
+      ctx.voiceHeld        = 'silence';
+      _smoothedRms         = 0;
+      _voiceHoldTimer      = 0;
+      ctx.counters.pinchTotal  = 0;
+      ctx.counters.trailLength = 0;
+      ctx.counters.voiceSec    = 0;
+      ctx.counters.singSec     = 0;
+      ctx.spawnState.fishSCount   = 0;
+      ctx.spawnState.fishMCount   = 0;
+      ctx.spawnState.fishLCount   = 0;
+      ctx.spawnState.jellyCount   = 0;
+      ctx.spawnState.whaleSpawned = false;
+      ctx.spawnState.pendingQueue = [];
+      ctx.foodParticles = [];
+      ctx.trailPoints   = [];
+      _foodParts.length = 0;
+      _ambBubs.length   = 0;
+      _bubTimer         = 0;
+      _burstPool.forEach(b => { b.active = false; if (b.mesh) b.mesh.visible = false; });
+      _vortexPool.forEach(v => { v.active = false; if (v.mesh) v.mesh.visible = false; });
+      _ringPool.forEach(r => { r.active = false; r.meshes?.forEach(m => m.visible = false); });
+      if (_orb.group) { _orb.state = 'inactive'; _orb.group.visible = false; }
+      _fishSData.length = 0; _fishMData.length = 0;
+      _fishLData.forEach(f => { if (f.mesh) scene.remove(f.mesh); });
+      _fishLData.length = 0;
+      _jellyData.length = 0;
+      if (_jellyMesh) _jellyMesh.count = 0;
+      if (_fishSMesh) _fishSMesh.count = 0;
+      if (_fishMMesh) _fishMMesh.count = 0;
+      if (_whale.mesh) { scene.remove(_whale.mesh); _whale.mesh=null; }
+      _whale.phase = 'idle';
+      _phase4Inited = false;
+      _resetSpawnThresholds();
+    });
+
+    document.getElementById('btnAR').addEventListener('click', async () => {
+      const errEl = document.getElementById('errMsg');
+      errEl.textContent = '';
+
+      if (!navigator.xr) {
+        errEl.textContent = 'WebXR를 지원하지 않는 기기입니다.';
+        return;
+      }
+
+      try {
+        const supported = await navigator.xr.isSessionSupported('immersive-ar');
+        if (!supported) {
+          errEl.textContent = 'AR 모드 미지원 — Meta Quest 3에서 실행해주세요.';
+          return;
+        }
+
+        const session = await navigator.xr.requestSession('immersive-ar', {
+          requiredFeatures: ['local-floor'],
+          optionalFeatures: ['hand-tracking'],
+        });
+
+        await renderer.xr.setSession(session);
+
+      } catch (e) {
+        errEl.textContent = `오류: ${e.message}`;
+        console.error('[XR session]', e);
+      }
+    });
+
+  </script>
+</body>
+</html>
