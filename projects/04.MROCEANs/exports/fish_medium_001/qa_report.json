@@ -1,0 +1,93 @@
+{
+  "asset_id": "fish_medium_001",
+  "asset_name": "FishMedium Reef Lowpoly",
+  "status": "pass",
+  "output": {
+    "glb": "/Users/rafaela/01_PROJECT_NOW/05.MR_LABS/PROJECTS/projects/04.MROCEANs/exports/fish_medium_001/fish_medium_001.glb",
+    "renders": {
+      "front": "/Users/rafaela/01_PROJECT_NOW/05.MR_LABS/PROJECTS/projects/04.MROCEANs/exports/fish_medium_001/renders/front.png",
+      "side": "/Users/rafaela/01_PROJECT_NOW/05.MR_LABS/PROJECTS/projects/04.MROCEANs/exports/fish_medium_001/renders/side.png",
+      "back": "/Users/rafaela/01_PROJECT_NOW/05.MR_LABS/PROJECTS/projects/04.MROCEANs/exports/fish_medium_001/renders/back.png",
+      "three_quarter": "/Users/rafaela/01_PROJECT_NOW/05.MR_LABS/PROJECTS/projects/04.MROCEANs/exports/fish_medium_001/renders/three_quarter.png",
+      "silhouette": "/Users/rafaela/01_PROJECT_NOW/05.MR_LABS/PROJECTS/projects/04.MROCEANs/exports/fish_medium_001/renders/silhouette.png"
+    }
+  },
+  "spec": {
+    "dimensions_m": {
+      "length": 0.18,
+      "height": 0.075,
+      "width": 0.045
+    },
+    "proportion_ratio": {
+      "head": 2,
+      "body": 5,
+      "tail": 3
+    },
+    "triangle_target": {
+      "min": 300,
+      "ideal": 800,
+      "max": 2000
+    },
+    "node_name": "fishM_body"
+  },
+  "object_validation": {
+    "checks": {
+      "node_name": true,
+      "single_mesh_object": true,
+      "triangle_count_within_limit": true,
+      "length_close": true,
+      "height_close": true,
+      "width_close": true,
+      "no_armature": true,
+      "no_shape_keys": true,
+      "no_animation": true,
+      "no_camera_before_export": true,
+      "no_light_before_export": true,
+      "flat_shading": true
+    },
+    "metrics": {
+      "triangle_count": 308,
+      "dimensions_m": {
+        "width": 0.044737618416547775,
+        "height": 0.07500000298023224,
+        "length": 0.18000000715255737
+      },
+      "materials": [
+        "mat_fishM_main_body",
+        "mat_fishM_belly",
+        "mat_fishM_fins_tail",
+        "mat_fishM_eye_band",
+        "mat_fishM_rear_accents",
+        "mat_fishM_eye_white",
+        "mat_fishM_eye_black"
+      ]
+    }
+  },
+  "glb_validation": {
+    "checks": {
+      "glb_file_exists": true,
+      "node_exists": true,
+      "binary_glb": true,
+      "draco_extension_used": true,
+      "all_primitives_draco": true,
+      "no_animations": true,
+      "no_cameras": true,
+      "no_lights": true,
+      "materials_embedded": true,
+      "no_external_images": true
+    },
+    "file_size_bytes": 11284
+  },
+  "visual_features": {
+    "deep_body_silhouette": true,
+    "wide_fork_tail": true,
+    "continuous_dorsal_fin": true,
+    "broad_triangular_pectoral_fin": true,
+    "cream_belly_region_attached": true,
+    "navy_eye_band_surface_attached": true,
+    "rear_stripes_surface_attached": true,
+    "flat_low_poly_style": true,
+    "manual_visual_review_recommended": true
+  },
+  "failures": []
+}

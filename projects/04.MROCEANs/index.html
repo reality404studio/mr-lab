@@ -182,8 +182,17 @@
     const SPAWN_LARGE_MED    = 3;
     const SPAWN_WHALE_TIME   = 180;
     const SPAWN_WHALE_SING   = 8;
-    const SPAWN_DELAY_MIN    = 30;
-    const SPAWN_DELAY_MAX    = 60;
+
+    const EGG_HATCH_DUR   = 10;   // 부화까지 걸리는 시간 (초)
+    const EGG_SPAWN_DIST  = 1.2;  // 사용자 정면으로부터의 거리 (m)
+    const EGG_MAX         = 8;    // 동시 존재 가능한 알 최대 수
+
+    const EGG_COLORS = {
+      fishS:    0x44ffcc,
+      fishM:    0x88ff44,
+      fishL:    0xff8844,
+      jellyfish: 0xcc44ff,
+    };
 
     // ─────────────────────────────────────────────────────────────
     // GLOBAL CONTEXT
@@ -209,7 +218,6 @@
         fishLCount:   0,
         jellyCount:   0,
         whaleSpawned: false,
-        pendingQueue: [],
       },
 
       foodParticles: [],
@@ -1601,7 +1609,7 @@
     }
 
     // ─────────────────────────────────────────────────────────────
-    // C16 — SPAWN MANAGER
+    // C16 — SPAWN MANAGER + EGG SYSTEM
     // ─────────────────────────────────────────────────────────────
 
     const _spawnThr = {
@@ -1618,16 +1626,99 @@
       _spawnThr.fishLTriggered = false;
     }
 
-    function _queueSpawn(type, extraDelay = 0) {
-      const delay = SPAWN_DELAY_MIN + Math.random()*(SPAWN_DELAY_MAX-SPAWN_DELAY_MIN) + extraDelay;
-      ctx.spawnState.pendingQueue.push({ type, triggerTime: ctx.sessionTime + delay });
-      if (DEBUG) console.log(`[spawn] ${type} 예약 (+${delay.toFixed(0)}s)`);
+    // ── 알(Egg) 시스템 ───────────────────────────────────────────
+
+    const _eggs = [];
+    const _eggFwd = new THREE.Vector3();
+
+    function _makeEggGroup(col) {
+      const g = new THREE.Group();
+      const mk = (r, opacity) => {
+        const m = new THREE.Mesh(
+          new THREE.SphereGeometry(r, 12, 12),
+          new THREE.MeshBasicMaterial({
+            color: col, transparent: true, opacity,
+            blending: THREE.AdditiveBlending, depthWrite: false,
+          })
+        );
+        g.add(m);
+        return m;
+      };
+      g.userData.core  = mk(0.035, 0.9);
+      g.userData.mid   = mk(0.070, 0.35);
+      g.userData.outer = mk(0.120, 0.10);
+      return g;
     }
+
+    function _spawnEgg(type, hatchDur = EGG_HATCH_DUR) {
+      if (_eggs.length >= EGG_MAX) return;
+
+      camera.getWorldDirection(_eggFwd);
+      // 수평 방향만 사용, 수직 성분 제거
+      _eggFwd.y = 0;
+      if (_eggFwd.lengthSq() < 0.001) _eggFwd.set(0, 0, -1);
+      _eggFwd.normalize();
+
+      // 살짝 랜덤 옆 오프셋 — 여러 알이 겹치지 않게
+      const spread = (Math.random() - 0.5) * 0.5;
+      const ex = ctx.headPos.x + _eggFwd.x * EGG_SPAWN_DIST - _eggFwd.z * spread;
+      const ey = ctx.headPos.y;
+      const ez = ctx.headPos.z + _eggFwd.z * EGG_SPAWN_DIST + _eggFwd.x * spread;
+
+      const col   = EGG_COLORS[type] ?? 0xffffff;
+      const group = _makeEggGroup(col);
+      group.scale.setScalar(0);
+      group.position.set(ex, ey, ez);
+      scene.add(group);
+
+      _eggs.push({ type, x: ex, y: ey, z: ez, timer: 0, hatchDur, group });
+      if (DEBUG) console.log(`[egg] ${type} 소환 (${ex.toFixed(2)}, ${ey.toFixed(2)}, ${ez.toFixed(2)})`);
+    }
+
+    function updateEggs(dt) {
+      for (let i = _eggs.length - 1; i >= 0; i--) {
+        const e = _eggs[i];
+        e.timer += dt;
+        const prog = Math.min(e.timer / e.hatchDur, 1.0);
+
+        // 부화 처리
+        if (prog >= 1.0) {
+          triggerBubbleBurst(e.x, e.y, e.z);
+          if      (e.type === 'fishS')     spawnFishS(e.x, e.y, e.z);
+          else if (e.type === 'fishM')     spawnFishM(e.x, e.y, e.z);
+          else if (e.type === 'fishL')     spawnFishL(e.x, e.y, e.z);
+          else if (e.type === 'jellyfish') spawnJellyfish(e.x, e.y, e.z);
+          scene.remove(e.group);
+          _eggs.splice(i, 1);
+          if (DEBUG) console.log(`[egg] ${e.type} 부화`);
+          continue;
+        }
+
+        // 크기: 처음에 빠르게 등장, 이후 유지
+        const baseScale = 0.3 + 0.7 * Math.min(prog * 5, 1.0);
+
+        // 맥박 속도가 부화에 가까울수록 빨라짐
+        const pulseSpeed = 2.0 + prog * 8.0;
+        const pulseAmp   = 0.08 + prog * 0.12;
+        const pulse = 1.0 + Math.sin(e.timer * pulseSpeed) * pulseAmp;
+
+        e.group.scale.setScalar(baseScale * pulse);
+
+        // 부화 직전(85%) — 외부 껍질 강하게 깜빡임
+        if (prog > 0.85) {
+          const flash = 0.5 + 0.5 * Math.sin(e.timer * 20);
+          e.group.userData.outer.material.opacity = 0.10 + flash * 0.35;
+          e.group.userData.mid.material.opacity   = 0.35 + flash * 0.30;
+        }
+      }
+    }
+
+    // ── 임계값 이벤트 핸들러 ─────────────────────────────────────
 
     // C01에서 핀치마다 호출
     function onPinchEvent() {
       if (ctx.counters.pinchTotal >= _spawnThr.fishMNextPinch && ctx.spawnState.fishMCount < 6) {
-        _queueSpawn('fishM');
+        _spawnEgg('fishM');
         _spawnThr.fishMNextPinch += SPAWN_PINCH_STEP;
       }
     }
@@ -1635,40 +1726,25 @@
     // C03에서 궤적 누적마다 호출
     function onTrailLengthUpdate() {
       if (ctx.counters.trailLength >= _spawnThr.fishSNextTrail && ctx.spawnState.fishSCount < 15) {
-        _queueSpawn('fishS');
+        _spawnEgg('fishS');
         _spawnThr.fishSNextTrail += SPAWN_TRAIL_STEP;
       }
     }
 
     function updateSpawnManager() {
-      const now = ctx.sessionTime;
-
-      // 음성 누적 → 해파리
+      // 음성 누적 → 해파리 알
       if (ctx.counters.voiceSec >= _spawnThr.jellyNextVoice && ctx.spawnState.jellyCount < 8) {
-        _queueSpawn('jellyfish');
+        _spawnEgg('jellyfish');
         _spawnThr.jellyNextVoice += SPAWN_VOICE_STEP;
       }
 
-      // 핀치×15 + 중형×3 → 대형 물고기 (매 프레임 체크 — 두 조건 동시 만족 시점)
+      // 핀치×15 + 중형×3 → 대형 물고기 알 2개 (두 번째는 부화 시간이 더 길어 순차 등장)
       if (!_spawnThr.fishLTriggered &&
           ctx.counters.pinchTotal >= SPAWN_LARGE_PINCH &&
           ctx.spawnState.fishMCount >= SPAWN_LARGE_MED) {
-        _queueSpawn('fishL');
-        _queueSpawn('fishL', 25 + Math.random()*25);  // 두 번째 대형은 더 늦게
+        _spawnEgg('fishL');
+        _spawnEgg('fishL', EGG_HATCH_DUR * 2.5);
         _spawnThr.fishLTriggered = true;
-      }
-
-      // 대기 큐 처리
-      for (let i = ctx.spawnState.pendingQueue.length - 1; i >= 0; i--) {
-        const item = ctx.spawnState.pendingQueue[i];
-        if (now < item.triggerTime) continue;
-        const [x, y, z] = _randomSpawnPos();
-        if      (item.type === 'fishS')     spawnFishS(x, y, z);
-        else if (item.type === 'fishM')     spawnFishM(x, y, z);
-        else if (item.type === 'fishL')     spawnFishL(x, y, z);
-        else if (item.type === 'jellyfish') spawnJellyfish(x, y, z);
-        ctx.spawnState.pendingQueue.splice(i, 1);
-        if (DEBUG) console.log(`[spawn] ${item.type} 등장 (t=${now.toFixed(0)}s)`);
       }
     }
 
@@ -1814,6 +1890,7 @@
         updateGlowOrb(timestamp, dt);
         updateRingEffect(timestamp, dt);
         updateAmbientEnvironment(timestamp, dt);
+        updateEggs(dt);
 
         // ── Phase 4: 크리처 레이어 ───────────────────────────────
         updateFishSchool(timestamp, dt);
@@ -1835,7 +1912,7 @@
             `pinch:${ctx.counters.pinchTotal}  trail:${ctx.counters.trailLength.toFixed(1)}m<br>` +
             `voice:${ctx.counters.voiceSec.toFixed(0)}s  sing:${ctx.counters.singSec.toFixed(0)}s<br>` +
             `fishS:${ctx.spawnState.fishSCount} M:${ctx.spawnState.fishMCount} L:${ctx.spawnState.fishLCount} jelly:${ctx.spawnState.jellyCount}<br>` +
-            `queue:${ctx.spawnState.pendingQueue.length}  whale:${_whale.phase}  t:${ctx.sessionTime.toFixed(0)}s`;
+            `eggs:${_eggs.length}  whale:${_whale.phase}  t:${ctx.sessionTime.toFixed(0)}s`;
         }
       }
 
@@ -1909,7 +1986,8 @@
       ctx.spawnState.fishLCount   = 0;
       ctx.spawnState.jellyCount   = 0;
       ctx.spawnState.whaleSpawned = false;
-      ctx.spawnState.pendingQueue = [];
+      _eggs.forEach(e => scene.remove(e.group));
+      _eggs.length = 0;
       ctx.foodParticles = [];
       ctx.trailPoints   = [];
       _foodParts.length = 0;
