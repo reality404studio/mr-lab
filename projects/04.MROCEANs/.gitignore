@@ -1,4 +1,12 @@
 .venv/
+
+# Blender source / export files
+*.blend
 *.blend1
 *.blend2
+
+# Render outputs and previews (assets/textures/ is excluded from this)
+exports/*/renders/
+exports/previews/
+exports/*_preview.png
 
