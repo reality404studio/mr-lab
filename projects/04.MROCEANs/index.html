@@ -337,7 +337,7 @@
       void main() {
         vAlpha = alpha;
         vec4 mv = modelViewMatrix * vec4(position, 1.0);
-        gl_PointSize = max(3.0, 14.0 * (300.0 / -mv.z));
+        gl_PointSize = max(3.0, 5.0 / max(0.1, -mv.z));
         gl_Position  = projectionMatrix * mv;
       }
     `;
@@ -411,7 +411,7 @@
       void main() {
         vA = uAlpha;
         vec4 mv = modelViewMatrix * vec4(position, 1.0);
-        gl_PointSize = max(2.0, (10.0 - 6.0*uProgress) * (300.0/-mv.z));
+        gl_PointSize = max(2.0, (5.0 - 3.0*uProgress) / max(0.1, -mv.z));
         gl_Position  = projectionMatrix * mv;
       }
     `;
@@ -493,7 +493,7 @@
       void main() {
         vA = uAlpha;
         vec4 mv = modelViewMatrix * vec4(position, 1.0);
-        gl_PointSize = max(2.0, 6.0*(300.0/-mv.z));
+        gl_PointSize = max(2.0, 3.0 / max(0.1, -mv.z));
         gl_Position  = projectionMatrix * mv;
       }
     `;
@@ -856,7 +856,7 @@
         vAge = age;
         vec4 mv = modelViewMatrix * vec4(position, 1.0);
         float norm = clamp(age / ${TRAIL_LIFETIME.toFixed(1)}, 0.0, 1.0);
-        gl_PointSize = max(1.5, 8.0 * (1.0 - norm) * (300.0 / -mv.z));
+        gl_PointSize = max(1.5, 6.0 * (1.0 - norm));
         gl_Position  = projectionMatrix * mv;
       }
     `;
@@ -1100,7 +1100,7 @@
       void main() {
         vA = alpha;
         vec4 mv = modelViewMatrix * vec4(position, 1.0);
-        gl_PointSize = max(1.5, 5.0*(200.0/-mv.z));
+        gl_PointSize = max(1.5, 2.5 / max(0.1, -mv.z));
         gl_Position  = projectionMatrix * mv;
       }
     `;
