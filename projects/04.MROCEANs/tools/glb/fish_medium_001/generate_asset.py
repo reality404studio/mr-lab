@@ -6,7 +6,7 @@ import struct
 from pathlib import Path
 
 import bpy
-from mathutils import Vector
+from mathutils import Matrix, Vector
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -26,19 +26,20 @@ TRIANGLE_MIN = 300
 TRIANGLE_IDEAL = 800
 TRIANGLE_MAX = 2000
 
-Z_MIN = -LENGTH * 0.5
-Z_MAX = LENGTH * 0.5
-Y_MIN = -HEIGHT * 0.5
-Y_MAX = HEIGHT * 0.5
-X_MAX = WIDTH * 0.5
+# FishMedium coordinate convention for this asset:
+#   head/front: +X, tail/rear: -X, top/dorsal: +Z, visible side: -Y.
+X_MIN = -LENGTH * 0.5
+X_MAX = LENGTH * 0.5
+Z_MIN = -HEIGHT * 0.5
+Z_MAX = HEIGHT * 0.5
+Y_HALF = WIDTH * 0.49
 
-BODY_Z_MIN = -0.038
-BODY_Z_MAX = Z_MAX
-TAIL_ROOT_Z = BODY_Z_MIN
+TAIL_ROOT_X = -0.036
+BODY_X_MAX = X_MAX
 
-SURFACE_OFFSET = 0.00012
-PATCH_OFFSET = 0.00028
-EYE_OFFSET = 0.00075
+SURFACE_OFFSET = 0.00010
+PATCH_OFFSET = 0.00022
+EYE_OFFSET = 0.00045
 
 RENDER_W = 1200
 RENDER_H = 800
@@ -147,9 +148,13 @@ class MeshBuilder:
             poly.use_smooth = False
         obj = bpy.data.objects.new(name, mesh)
         bpy.context.collection.objects.link(obj)
-        obj.location = (0.0, 0.0, 0.0)
-        obj.rotation_euler = (0.0, 0.0, 0.0)
-        obj.scale = (1.0, 1.0, 1.0)
+        bpy.context.view_layer.objects.active = obj
+        obj.select_set(True)
+        bpy.ops.object.mode_set(mode="EDIT")
+        bpy.ops.mesh.select_all(action="SELECT")
+        bpy.ops.mesh.normals_make_consistent(inside=False)
+        bpy.ops.object.mode_set(mode="OBJECT")
+        obj.select_set(False)
         return obj
 
 
@@ -157,74 +162,74 @@ def material_slots():
     return {key: index for index, key in enumerate(MAT_ORDER)}
 
 
-def body_radius_at(z: float):
-    # Z profile follows Head:Body:Tail = 2:5:3. Head is the compact +Z wedge.
+def body_radius_at(x: float):
+    # Lengthwise hull: small tail root, deep oval mid body, compact pointed head.
     points = [
-        (BODY_Z_MIN, 0.0045, 0.0100),
-        (-0.025, 0.0155, 0.0300),
-        (-0.008, 0.0220, 0.0340),
-        (0.018, 0.0222, 0.0320),
-        (0.045, 0.0175, 0.0260),
-        (0.065, 0.0115, 0.0180),
-        (0.083, 0.0050, 0.0075),
-        (Z_MAX, 0.0015, 0.0025),
+        (TAIL_ROOT_X, 0.0055, 0.0100),
+        (-0.028, 0.0145, 0.0240),
+        (-0.012, 0.0208, 0.0315),
+        (0.012, 0.0220, 0.0322),
+        (0.036, 0.0195, 0.0285),
+        (0.058, 0.0140, 0.0210),
+        (0.075, 0.0070, 0.0115),
+        (0.086, 0.0025, 0.0042),
     ]
-    if z <= points[0][0]:
+    if x <= points[0][0]:
         return points[0][1], points[0][2]
-    if z >= points[-1][0]:
+    if x >= points[-1][0]:
         return points[-1][1], points[-1][2]
     for index in range(len(points) - 1):
-        z0, rx0, ry0 = points[index]
-        z1, rx1, ry1 = points[index + 1]
-        if z0 <= z <= z1:
-            t = (z - z0) / (z1 - z0)
-            return rx0 + (rx1 - rx0) * t, ry0 + (ry1 - ry0) * t
+        x0, ry0, rz0 = points[index]
+        x1, ry1, rz1 = points[index + 1]
+        if x0 <= x <= x1:
+            t = (x - x0) / (x1 - x0)
+            return ry0 + (ry1 - ry0) * t, rz0 + (rz1 - rz0) * t
     return points[-1][1], points[-1][2]
 
 
-def body_top_y_at(z: float) -> float:
-    _, ry = body_radius_at(z)
-    return ry
+def body_top_z_at(x: float) -> float:
+    _, rz = body_radius_at(x)
+    return rz
 
 
-def body_bottom_y_at(z: float) -> float:
-    _, ry = body_radius_at(z)
-    return -ry
+def body_bottom_z_at(x: float) -> float:
+    _, rz = body_radius_at(x)
+    return -rz
 
 
-def body_surface_x(side: float, y: float, z: float, offset: float = SURFACE_OFFSET) -> float:
-    rx, ry = body_radius_at(z)
-    safe_ry = max(ry, 0.0001)
-    local_y = max(min(y, safe_ry * 0.985), -safe_ry * 0.985)
-    ellipse_factor = math.sqrt(max(0.0, 1.0 - (local_y / safe_ry) ** 2))
-    return side * min(X_MAX, rx * ellipse_factor + offset)
+def body_surface_y(side: float, z: float, x: float, offset: float = SURFACE_OFFSET) -> float:
+    ry, rz = body_radius_at(x)
+    safe_rz = max(rz, 0.0001)
+    local_z = max(min(z, safe_rz * 0.985), -safe_rz * 0.985)
+    ellipse_factor = math.sqrt(max(0.0, 1.0 - (local_z / safe_rz) ** 2))
+    return side * (ry * ellipse_factor + offset)
 
 
-def surface_point(side: float, y: float, z: float, offset: float = SURFACE_OFFSET):
-    return (body_surface_x(side, y, z, offset), y, z)
+def surface_point(side: float, z: float, x: float, offset: float = SURFACE_OFFSET):
+    return (x, body_surface_y(side, z, x, offset), z)
 
 
 def add_body_hull(builder: MeshBuilder, slots: dict[str, int]) -> None:
-    segments = 10
-    z_rings = [-0.038, -0.025, -0.008, 0.010, 0.030, 0.050, 0.070, 0.086]
+    segments = 12
+    x_rings = [-0.036, -0.026, -0.012, 0.006, 0.024, 0.044, 0.064, 0.082]
     rings = []
-    for z in z_rings:
-        rx, ry = body_radius_at(z)
+    for x in x_rings:
+        ry, rz = body_radius_at(x)
         ring = []
         for index in range(segments):
             angle = math.tau * index / segments
-            x = math.cos(angle) * rx
-            y = math.sin(angle) * ry
+            y = math.cos(angle) * ry
+            z = math.sin(angle) * rz
             ring.append(builder.v((x, y, z)))
         rings.append(ring)
 
-    rear = builder.v((0.0, 0.0, BODY_Z_MIN - 0.003))
-    nose = builder.v((0.0, 0.0, Z_MAX))
+    rear = builder.v((TAIL_ROOT_X - 0.0035, 0.0, 0.0))
+    nose = builder.v((BODY_X_MAX, 0.0, 0.0))
 
     first = rings[0]
     for index in range(segments):
         nxt = (index + 1) % segments
-        builder.tri(rear, first[nxt], first[index], slots["main_body"])
+        builder.tri(rear, first[index], first[nxt], slots["main_body"])
 
     for ring_index in range(len(rings) - 1):
         for index in range(segments):
@@ -233,103 +238,96 @@ def add_body_hull(builder: MeshBuilder, slots: dict[str, int]) -> None:
             b = rings[ring_index][nxt]
             c = rings[ring_index + 1][nxt]
             d = rings[ring_index + 1][index]
-            avg_y = sum(builder.verts[i][1] for i in (a, b, c, d)) / 4.0
             avg_z = sum(builder.verts[i][2] for i in (a, b, c, d)) / 4.0
-            belly_line = -0.012
-            mat = slots["belly"] if avg_y < belly_line else slots["main_body"]
+            mat = slots["belly"] if avg_z < -0.014 else slots["main_body"]
             builder.quad(a, b, c, d, mat)
 
     last = rings[-1]
     for index in range(segments):
         nxt = (index + 1) % segments
-        avg_y = (builder.verts[last[index]][1] + builder.verts[last[nxt]][1]) * 0.5
-        mat = slots["belly"] if avg_y < -0.006 else slots["main_body"]
-        builder.tri(nose, last[index], last[nxt], mat)
+        avg_z = (builder.verts[last[index]][2] + builder.verts[last[nxt]][2]) * 0.5
+        mat = slots["belly"] if avg_z < -0.006 else slots["main_body"]
+        builder.tri(nose, last[nxt], last[index], mat)
 
 
-def add_surface_disc(builder: MeshBuilder, side: float, y: float, z: float, radius: float, mat: int,
-                     segments: int = 10, offset: float = PATCH_OFFSET, y_scale: float = 1.0):
-    center = builder.v(surface_point(side, y, z, offset))
+def add_surface_disc(builder: MeshBuilder, side: float, z: float, x: float, radius: float, mat: int,
+                     segments: int = 10, offset: float = PATCH_OFFSET, z_scale: float = 1.0):
+    center = builder.v(surface_point(side, z, x, offset))
     ring = []
     for index in range(segments):
         angle = math.tau * index / segments
-        py = y + math.sin(angle) * radius * y_scale
-        pz = z + math.cos(angle) * radius
-        ring.append(builder.v(surface_point(side, py, pz, offset)))
+        px = x + math.cos(angle) * radius
+        pz = z + math.sin(angle) * radius * z_scale
+        ring.append(builder.v(surface_point(side, pz, px, offset)))
     for index in range(segments):
         a = ring[index]
         b = ring[(index + 1) % segments]
         if side > 0:
-            builder.tri(center, a, b, mat)
-        else:
             builder.tri(center, b, a, mat)
+        else:
+            builder.tri(center, a, b, mat)
 
 
-def add_surface_polygon(builder: MeshBuilder, side: float, yz_points, mat: int, offset: float):
-    center_y = sum(point[0] for point in yz_points) / len(yz_points)
-    center_z = sum(point[1] for point in yz_points) / len(yz_points)
-    center = builder.v(surface_point(side, center_y, center_z, offset))
-    verts = [builder.v(surface_point(side, y, z, offset)) for y, z in yz_points]
+def add_surface_polygon(builder: MeshBuilder, side: float, xz_points, mat: int, offset: float):
+    center_x = sum(point[0] for point in xz_points) / len(xz_points)
+    center_z = sum(point[1] for point in xz_points) / len(xz_points)
+    center = builder.v(surface_point(side, center_z, center_x, offset))
+    verts = [builder.v(surface_point(side, z, x, offset)) for x, z in xz_points]
     for index in range(len(verts)):
         a = verts[index]
         b = verts[(index + 1) % len(verts)]
         if side > 0:
-            builder.tri(center, a, b, mat)
-        else:
             builder.tri(center, b, a, mat)
+        else:
+            builder.tri(center, a, b, mat)
 
 
-def add_surface_strip(builder: MeshBuilder, side: float, z_center: float, width: float, y_min: float, y_max: float,
-                      slant: float, mat: int, offset: float, steps: int = 5):
+def add_surface_strip(builder: MeshBuilder, side: float, x_center: float, width: float,
+                      z_min: float, z_max: float, slant: float, mat: int,
+                      offset: float, steps: int = 5):
     left = []
     right = []
     for step in range(steps + 1):
         t = step / steps
-        y = y_min + (y_max - y_min) * t
-        curve = math.sin((t - 0.5) * math.pi) * 0.002
-        z = z_center + slant * (t - 0.5) + curve
-        left.append(builder.v(surface_point(side, y, z - width * 0.5, offset)))
-        right.append(builder.v(surface_point(side, y, z + width * 0.5, offset)))
+        z = z_min + (z_max - z_min) * t
+        curve = math.sin((t - 0.5) * math.pi) * 0.0015
+        x = x_center + slant * (t - 0.5) + curve
+        left.append(builder.v(surface_point(side, z, x - width * 0.5, offset)))
+        right.append(builder.v(surface_point(side, z, x + width * 0.5, offset)))
     for step in range(steps):
         if side > 0:
-            builder.quad(left[step], right[step], right[step + 1], left[step + 1], mat)
-        else:
             builder.quad(right[step], left[step], left[step + 1], right[step + 1], mat)
+        else:
+            builder.quad(left[step], right[step], right[step + 1], left[step + 1], mat)
 
 
-def add_tail(builder: MeshBuilder, slots: dict[str, int]) -> None:
+def add_tail_fork(builder: MeshBuilder, slots: dict[str, int]) -> None:
     mat = slots["fins_tail"]
-    root_top = builder.v((0.0, 0.012, TAIL_ROOT_Z))
-    root_bottom = builder.v((0.0, -0.012, TAIL_ROOT_Z))
-    hub = builder.v((0.0, 0.0, -0.058))
-    upper_tip = builder.v((0.0, 0.036, Z_MIN))
-    lower_tip = builder.v((0.0, -0.036, Z_MIN))
-    outer_notch = builder.v((0.0, 0.0, -0.080))
+    root_top = builder.v((TAIL_ROOT_X, 0.0, 0.014))
+    root_bottom = builder.v((TAIL_ROOT_X, 0.0, -0.014))
+    hub = builder.v((-0.055, 0.0, 0.0))
+    upper_tip = builder.v((X_MIN, 0.0, 0.035))
+    lower_tip = builder.v((X_MIN, 0.0, -0.035))
+    fork_notch = builder.v((-0.083, 0.0, 0.0))
     builder.tri(root_top, root_bottom, hub, mat)
     builder.tri(root_top, hub, upper_tip, mat)
-    builder.tri(hub, outer_notch, upper_tip, mat)
-    builder.tri(hub, lower_tip, outer_notch, mat)
+    builder.tri(hub, fork_notch, upper_tip, mat)
     builder.tri(root_bottom, lower_tip, hub, mat)
+    builder.tri(hub, lower_tip, fork_notch, mat)
 
 
 def add_dorsal_fin(builder: MeshBuilder, slots: dict[str, int]) -> None:
     mat = slots["fins_tail"]
-    base = [
-        (-0.037, body_top_y_at(-0.037) - 0.0008),
-        (-0.020, body_top_y_at(-0.020) - 0.0008),
-        (0.010, body_top_y_at(0.010) - 0.0008),
-        (0.040, body_top_y_at(0.040) - 0.0008),
-        (0.064, body_top_y_at(0.064) - 0.0008),
+    base_x = [-0.028, -0.010, 0.014, 0.038, 0.060]
+    base_ids = [builder.v((x, 0.0, body_top_z_at(x) - 0.0012)) for x in base_x]
+    crest_points = [
+        (-0.034, 0.024),
+        (-0.014, Z_MAX),
+        (0.018, 0.0360),
+        (0.045, 0.0315),
+        (0.066, 0.0225),
     ]
-    crest = [
-        (-0.045, 0.031),
-        (-0.020, Y_MAX),
-        (0.016, 0.0365),
-        (0.047, 0.031),
-        (0.069, 0.023),
-    ]
-    base_ids = [builder.v((0.0, y, z)) for z, y in base]
-    crest_ids = [builder.v((0.0, y, z)) for z, y in crest]
+    crest_ids = [builder.v((x, 0.0, z)) for x, z in crest_points]
     for index in range(len(base_ids) - 1):
         builder.quad(base_ids[index], base_ids[index + 1], crest_ids[index + 1], crest_ids[index], mat)
 
@@ -337,52 +335,46 @@ def add_dorsal_fin(builder: MeshBuilder, slots: dict[str, int]) -> None:
 def add_pectoral_and_pelvic_fins(builder: MeshBuilder, slots: dict[str, int]) -> None:
     mat = slots["fins_tail"]
     for side in (-1.0, 1.0):
-        p0 = builder.v(surface_point(side, -0.001, 0.030, 0.00035))
-        p1 = builder.v(surface_point(side, -0.026, -0.020, 0.00035))
-        p2 = builder.v(surface_point(side, -0.007, -0.002, 0.00035))
+        p0 = builder.v(surface_point(side, 0.003, 0.034, 0.00018))
+        p1 = builder.v(surface_point(side, -0.026, 0.004, 0.00018))
+        p2 = builder.v(surface_point(side, -0.007, 0.058, 0.00018))
         if side > 0:
-            builder.tri(p0, p1, p2, mat)
-        else:
             builder.tri(p0, p2, p1, mat)
+        else:
+            builder.tri(p0, p1, p2, mat)
 
-    pelvic = [
-        (0.0, body_bottom_y_at(0.006) + 0.001, 0.006),
-        (0.0, Y_MIN, -0.010),
-        (0.0, body_bottom_y_at(-0.012) + 0.001, -0.012),
-    ]
-    ids = [builder.v(point) for point in pelvic]
-    builder.tri(ids[0], ids[1], ids[2], mat)
+    base_a = builder.v((0.000, 0.0, body_bottom_z_at(0.000) + 0.0015))
+    base_b = builder.v((0.030, 0.0, body_bottom_z_at(0.030) + 0.0015))
+    tip = builder.v((0.014, 0.0, Z_MIN))
+    builder.tri(base_a, tip, base_b, mat)
 
 
 def add_patterns_and_eyes(builder: MeshBuilder, slots: dict[str, int]) -> None:
     for side in (-1.0, 1.0):
-        # Navy diagonal eye band around the compact head.
         add_surface_polygon(
             builder,
             side,
-            [(0.030, 0.053), (0.026, 0.067), (-0.019, 0.081), (-0.023, 0.066), (-0.004, 0.056)],
+            [(0.052, 0.032), (0.069, 0.034), (0.087, -0.006), (0.070, -0.024)],
             slots["eye_band"],
             PATCH_OFFSET,
         )
 
-        # Rear coral accent bands, surface-attached and slightly curved.
-        for z_center, width, slant in [(-0.020, 0.0045, 0.004), (-0.006, 0.0040, 0.003), (0.008, 0.0035, 0.002)]:
+        for x_center, width, slant in [(-0.026, 0.0050, -0.003), (-0.012, 0.0046, -0.002), (0.003, 0.0042, -0.0015)]:
             add_surface_strip(
                 builder,
                 side,
-                z_center,
+                x_center,
                 width,
                 -0.020,
-                0.025,
+                0.027,
                 slant,
                 slots["rear_accents"],
                 PATCH_OFFSET,
             )
 
-        # Layered cute eye above the eye band.
-        add_surface_disc(builder, side, 0.0035, 0.070, 0.0068, slots["eye_white"], 12, EYE_OFFSET)
-        add_surface_disc(builder, side, 0.0035, 0.071, 0.0042, slots["eye_black"], 12, EYE_OFFSET + 0.00018)
-        add_surface_disc(builder, side, 0.0068, 0.0734, 0.00110, slots["eye_white"], 8, EYE_OFFSET + 0.00035)
+        add_surface_disc(builder, side, 0.004, 0.071, 0.0085, slots["eye_white"], 14, EYE_OFFSET)
+        add_surface_disc(builder, side, 0.004, 0.072, 0.0054, slots["eye_black"], 12, EYE_OFFSET + 0.00012)
+        add_surface_disc(builder, side, 0.0085, 0.0748, 0.0013, slots["eye_white"], 8, EYE_OFFSET + 0.00024)
 
 
 def create_fish_medium():
@@ -390,13 +382,14 @@ def create_fish_medium():
     slots = material_slots()
     builder = MeshBuilder()
     add_body_hull(builder, slots)
-    add_tail(builder, slots)
+    add_tail_fork(builder, slots)
     add_dorsal_fin(builder, slots)
     add_pectoral_and_pelvic_fins(builder, slots)
     add_patterns_and_eyes(builder, slots)
     obj = builder.make_object(NODE_NAME, materials)
     obj["asset_id"] = ASSET_ID
     obj["asset_name"] = ASSET_NAME
+    obj["coordinate_convention"] = "head +X, tail -X, top +Z, visible side -Y"
     obj["spec_length_m"] = LENGTH
     obj["spec_height_m"] = HEIGHT
     obj["spec_width_m"] = WIDTH
@@ -419,19 +412,19 @@ def mesh_bounds(objects):
 
 def dimensions(obj):
     _, _, _, size = mesh_bounds([obj])
-    return size.x, size.y, size.z
+    return size.x, size.z, size.y
 
 
 def validate_object(obj) -> tuple[dict, list[str]]:
-    width, height, length = dimensions(obj)
+    length, height, width = dimensions(obj)
     tri = triangle_count(obj)
     checks = {
         "node_name": obj.name == NODE_NAME,
         "single_mesh_object": len([o for o in bpy.context.scene.objects if o.type == "MESH"]) == 1,
         "triangle_count_within_limit": TRIANGLE_MIN <= tri <= TRIANGLE_MAX,
-        "length_close": abs(length - LENGTH) <= 0.003,
-        "height_close": abs(height - HEIGHT) <= 0.003,
-        "width_close": abs(width - WIDTH) <= 0.003,
+        "length_close_x_axis": abs(length - LENGTH) <= 0.003,
+        "height_close_z_axis": abs(height - HEIGHT) <= 0.003,
+        "width_close_y_axis": abs(width - WIDTH) <= 0.003,
         "no_armature": not bpy.data.armatures,
         "no_shape_keys": obj.data.shape_keys is None,
         "no_animation": not bpy.data.actions,
@@ -442,7 +435,8 @@ def validate_object(obj) -> tuple[dict, list[str]]:
     failures = [key for key, ok in checks.items() if not ok]
     metrics = {
         "triangle_count": tri,
-        "dimensions_m": {"width": width, "height": height, "length": length},
+        "dimensions_m": {"length": length, "height": height, "width": width},
+        "axis_mapping": {"length": "X", "height": "Z", "width": "Y"},
         "materials": [mat.name for mat in obj.data.materials],
     }
     return {"checks": checks, "metrics": metrics}, failures
@@ -529,16 +523,16 @@ def set_render_engine() -> None:
         scene.view_settings.look = "None"
     except TypeError:
         pass
-    scene.view_settings.exposure = -0.20
+    scene.view_settings.exposure = -0.05
     scene.view_settings.gamma = 1.0
     scene.world = scene.world or bpy.data.worlds.new("World")
-    scene.world.color = (0.18, 0.18, 0.18)
+    scene.world.color = (0.20, 0.20, 0.20)
 
 
 def add_lighting(center: Vector) -> None:
     for index, (rotation, energy) in enumerate([
-        ((math.radians(55), 0.0, math.radians(35)), 0.95),
-        ((math.radians(120), 0.0, math.radians(-130)), 0.30),
+        ((math.radians(55), 0.0, math.radians(30)), 1.10),
+        ((math.radians(115), 0.0, math.radians(-145)), 0.40),
     ]):
         bpy.ops.object.light_add(type="SUN", location=center)
         light = bpy.context.object
@@ -556,22 +550,30 @@ def create_camera():
     return camera
 
 
-def look_at(camera, target: Vector, up_axis: str = "Y") -> None:
-    direction = target - camera.location
-    camera.rotation_euler = direction.to_track_quat("-Z", up_axis).to_euler()
+def look_at(camera, target: Vector, world_up=Vector((0.0, 0.0, 1.0))) -> None:
+    forward = (target - camera.location).normalized()
+    right = forward.cross(world_up)
+    if right.length < 0.00001:
+        right = forward.cross(Vector((0.0, 1.0, 0.0)))
+    right.normalize()
+    up = right.cross(forward).normalized()
+    rotation = Matrix((
+        (right.x, up.x, -forward.x),
+        (right.y, up.y, -forward.y),
+        (right.z, up.z, -forward.z),
+    ))
+    camera.rotation_euler = rotation.to_euler()
 
 
-def ortho_scale(horizontal: float, vertical: float, margin: float = 1.75) -> float:
+def ortho_scale(horizontal: float, vertical: float, margin: float = 1.42) -> float:
     return max(vertical, horizontal / (RENDER_W / RENDER_H)) * margin
 
 
-def render_view(name: str, camera, center: Vector, size: Vector, direction, up_axis: str,
-                horizontal: float, vertical: float, roll_degrees: float = 0.0):
+def render_view(name: str, camera, center: Vector, size: Vector, direction,
+                horizontal: float, vertical: float):
     direction = Vector(direction).normalized()
-    camera.location = center + direction * (max(size.x, size.y, size.z) * 9.0 + 0.45)
-    look_at(camera, center, up_axis)
-    if roll_degrees:
-        camera.rotation_euler.rotate_axis("Z", math.radians(roll_degrees))
+    camera.location = center + direction * (max(size.x, size.y, size.z) * 8.0 + 0.45)
+    look_at(camera, center)
     camera.data.ortho_scale = ortho_scale(horizontal, vertical)
     path = RENDER_DIR / f"{name}.png"
     bpy.context.scene.render.filepath = str(path)
@@ -585,17 +587,17 @@ def render_previews(obj) -> dict[str, str]:
     add_lighting(center)
     camera = create_camera()
     paths = {
-        "front": render_view("front", camera, center, size, (0, 0, 1), "Y", size.x, size.y),
-        "side": render_view("side", camera, center, size, (1, 0, 0), "Y", size.z, size.y, 90.0),
-        "back": render_view("back", camera, center, size, (0, 0, -1), "Y", size.x, size.y),
-        "three_quarter": render_view("three_quarter", camera, center, size, (1, -0.55, 1.15), "Y", max(size.x, size.z), size.y + size.z * 0.20),
+        "front": render_view("front", camera, center, size, (1, 0, 0), size.y, size.z),
+        "side": render_view("side", camera, center, size, (0, -1, 0), size.x, size.z),
+        "back": render_view("back", camera, center, size, (-1, 0, 0), size.y, size.z),
+        "three_quarter": render_view("three_quarter", camera, center, size, (1.0, -0.62, 0.38), size.x, size.z + size.y * 0.24),
     }
 
     original_colors = [(mat, tuple(mat.diffuse_color)) for mat in obj.data.materials]
     for mat in obj.data.materials:
         set_material_color(mat, "#050505")
     bpy.context.scene.world.color = (1.0, 1.0, 1.0)
-    paths["silhouette"] = render_view("silhouette", camera, center, size, (1, 0, 0), "Y", size.z, size.y, 90.0)
+    paths["silhouette"] = render_view("silhouette", camera, center, size, (0, -1, 0), size.x, size.z)
     for mat, color in original_colors:
         mat.diffuse_color = color
         if mat.use_nodes:
@@ -605,7 +607,8 @@ def render_previews(obj) -> dict[str, str]:
     return {name: str(path) for name, path in paths.items()}
 
 
-def write_qa_report(object_report: dict, object_failures: list[str], glb_report: dict, glb_failures: list[str], renders: dict[str, str]):
+def write_qa_report(object_report: dict, object_failures: list[str], glb_report: dict,
+                    glb_failures: list[str], renders: dict[str, str]):
     failures = object_failures + glb_failures
     report = {
         "asset_id": ASSET_ID,
@@ -617,6 +620,14 @@ def write_qa_report(object_report: dict, object_failures: list[str], glb_report:
         },
         "spec": {
             "dimensions_m": {"length": LENGTH, "height": HEIGHT, "width": WIDTH},
+            "axis_mapping": {"length": "X", "height": "Z", "width": "Y"},
+            "coordinate_convention": {
+                "head_front": "+X",
+                "tail_rear": "-X",
+                "dorsal_top": "+Z",
+                "belly": "-Z",
+                "visible_side": "-Y",
+            },
             "proportion_ratio": {"head": 2, "body": 5, "tail": 3},
             "triangle_target": {"min": TRIANGLE_MIN, "ideal": TRIANGLE_IDEAL, "max": TRIANGLE_MAX},
             "node_name": NODE_NAME,
@@ -624,13 +635,14 @@ def write_qa_report(object_report: dict, object_failures: list[str], glb_report:
         "object_validation": object_report,
         "glb_validation": glb_report,
         "visual_features": {
+            "horizontal_x_axis_body": True,
             "deep_body_silhouette": True,
-            "wide_fork_tail": True,
-            "continuous_dorsal_fin": True,
-            "broad_triangular_pectoral_fin": True,
-            "cream_belly_region_attached": True,
-            "navy_eye_band_surface_attached": True,
-            "rear_stripes_surface_attached": True,
+            "wide_fork_tail_at_negative_x": True,
+            "continuous_dorsal_fin_on_positive_z": True,
+            "broad_triangular_pectoral_fin_on_side": True,
+            "cream_belly_region_lower_z_faces": True,
+            "navy_eye_band_single_surface_patch": True,
+            "rear_stripes_vertical_on_rear_body": True,
             "flat_low_poly_style": True,
             "manual_visual_review_recommended": True,
         },
@@ -655,7 +667,7 @@ def main() -> None:
     print(f"  status: {report['status']}")
     print(f"  triangles: {object_report['metrics']['triangle_count']}")
     dims = object_report["metrics"]["dimensions_m"]
-    print(f"  dimensions: width={dims['width']:.5f}m height={dims['height']:.5f}m length={dims['length']:.5f}m")
+    print(f"  dimensions: length(X)={dims['length']:.5f}m height(Z)={dims['height']:.5f}m width(Y)={dims['width']:.5f}m")
     for name, path in renders.items():
         print(f"  render {name}: {path}")
     if report["failures"]:

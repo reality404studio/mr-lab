@@ -592,6 +592,7 @@
     }
 
     function updateHandRing(timestamp, dt) {
+      if (!_handRing.left) return;
       const t = timestamp / 1000;
       for (const side of ['left', 'right']) {
         const ring = _handRing[side];
