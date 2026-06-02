@@ -327,12 +327,61 @@
     }
 
     async function initModels() {
-      models.fishS     = _dummyFish(FISH_S_LENGTH, 0x66ccff);
-      models.fishM     = _dummyFish(FISH_M_LENGTH, 0x33aadd);
-      models.fishL     = _dummyFish(FISH_L_LENGTH, 0x1177aa);
+      // clown_fish.glb 1개로 fishS/M/L 모두 처리 (길이만 차별화)
+      let baseMesh = null;
+      try {
+        const fishScene = await loadGLB('./clown_fish.glb');
+        fishScene.traverse(o => { if (!baseMesh && o.isMesh) baseMesh = o; });
+      } catch (e) {
+        if (DEBUG) console.warn('[models] clown_fish.glb 로드 실패, 더미 사용', e);
+      }
+
+      if (baseMesh) {
+        const baseGeo = baseMesh.geometry.clone();
+        // 본 없이 정적으로 쓸 거라 스킨 어트리뷰트 제거
+        baseGeo.deleteAttribute('JOINTS_0');
+        baseGeo.deleteAttribute('WEIGHTS_0');
+        baseGeo.computeBoundingBox();
+        const bb = baseGeo.boundingBox;
+        const baseLen = Math.max(
+          bb.max.x - bb.min.x,
+          bb.max.y - bb.min.y,
+          bb.max.z - bb.min.z
+        );
+        // 원점을 메시 중심으로 (피쉬가 위치의 정중앙을 기준으로 회전하도록)
+        const cx = (bb.max.x + bb.min.x) * 0.5;
+        const cy = (bb.max.y + bb.min.y) * 0.5;
+        const cz = (bb.max.z + bb.min.z) * 0.5;
+        baseGeo.applyMatrix4(new THREE.Matrix4().makeTranslation(-cx, -cy, -cz));
+
+        const baseMat = baseMesh.material.clone();
+        // GLB의 alphaMode=BLEND → 바디는 불투명으로 (정렬·성능)
+        baseMat.transparent = false;
+        baseMat.depthWrite  = true;
+        baseMat.side        = THREE.DoubleSide;
+
+        const makeFish = (targetLen) => {
+          const g = baseGeo.clone();
+          const k = targetLen / baseLen;
+          g.applyMatrix4(new THREE.Matrix4().makeScale(k, k, k));
+          const m = new THREE.Mesh(g, baseMat.clone());
+          const grp = new THREE.Group();
+          grp.add(m);
+          return grp;
+        };
+
+        models.fishS = makeFish(FISH_S_LENGTH);
+        models.fishM = makeFish(FISH_M_LENGTH);
+        models.fishL = makeFish(FISH_L_LENGTH);
+      } else {
+        models.fishS = _dummyFish(FISH_S_LENGTH, 0x66ccff);
+        models.fishM = _dummyFish(FISH_M_LENGTH, 0x33aadd);
+        models.fishL = _dummyFish(FISH_L_LENGTH, 0x1177aa);
+      }
+
       models.jellyfish = _dummyJellyfish();
       models.whale     = _dummyWhale();
-      if (DEBUG) console.log('[models] 더미 초기화 완료');
+      if (DEBUG) console.log('[models] init 완료 (clown_fish:', !!baseMesh, ')');
     }
 
     // onPinchEvent / onTrailLengthUpdate / playPinchSound → C16·C19에서 정의
@@ -1430,18 +1479,14 @@
     function initFishSchool() {
       if (!models.fishS) return;
 
-      // ConeGeometry는 기본적으로 +Y 방향 → +Z로 회전 베이크
-      const bakeMat4 = new THREE.Matrix4().makeRotationX(Math.PI / 2);
-
-      const sGeo = models.fishS.children[0].geometry.clone();
-      sGeo.applyMatrix4(bakeMat4);
-      _fishSMesh = new THREE.InstancedMesh(sGeo, models.fishS.children[0].material.clone(), 15);
+      // clown_fish.glb는 이미 +Z forward로 베이크되어 있다고 가정 (틀리면 makeRotationY(Math.PI) 등으로 보정)
+      const sChild = models.fishS.children[0];
+      _fishSMesh = new THREE.InstancedMesh(sChild.geometry, sChild.material.clone(), 15);
       _fishSMesh.count = 0; _fishSMesh.frustumCulled = false;
       scene.add(_fishSMesh);
 
-      const mGeo = models.fishM.children[0].geometry.clone();
-      mGeo.applyMatrix4(bakeMat4);
-      _fishMMesh = new THREE.InstancedMesh(mGeo, models.fishM.children[0].material.clone(), 6);
+      const mChild = models.fishM.children[0];
+      _fishMMesh = new THREE.InstancedMesh(mChild.geometry, mChild.material.clone(), 6);
       _fishMMesh.count = 0; _fishMMesh.frustumCulled = false;
       scene.add(_fishMMesh);
     }
