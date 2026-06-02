@@ -174,9 +174,6 @@
     const BUBBLE_RATE_SING    = 15;
     const BUBBLE_RISE_SPEED   = 0.35;
     const BUBBLE_LIFETIME     = 5.0;
-    const GODRAY_OPACITY_BASE = 0.06;
-    const GODRAY_OPACITY_SING = 0.22;
-    const GODRAY_COUNT        = 3;
 
     const SPAWN_PINCH_FIRST  = 5;
     const SPAWN_PINCH_STEP   = 3;
@@ -1292,7 +1289,6 @@
     let   _ambMesh  = null;
     let   _ambPosA, _ambAlpA;
     let   _bubTimer = 0;
-    const _godRays  = [];
 
     function initAmbientEnvironment() {
       const geo = new THREE.BufferGeometry();
@@ -1307,23 +1303,10 @@
       }));
       _ambMesh.frustumCulled = false;
       scene.add(_ambMesh);
-
-      const rayMat = new THREE.MeshBasicMaterial({
-        color: 0xaaddff, transparent: true, opacity: GODRAY_OPACITY_BASE,
-        side: THREE.DoubleSide, depthWrite: false, blending: THREE.AdditiveBlending,
-      });
-      const rayGeo = new THREE.ConeGeometry(0.25, 4.0, 4, 1, true);
-      for (let i = 0; i < GODRAY_COUNT; i++) {
-        const m = new THREE.Mesh(rayGeo, rayMat.clone());
-        m.rotation.z = Math.PI;
-        _godRays.push(m);
-        scene.add(m);
-      }
     }
 
     function updateAmbientEnvironment(timestamp, dt) {
       if (!_ambMesh) return;
-      const t   = timestamp / 1000;
       const lvl = { silence:0, whisper:1, call:2, sing:3 }[ctx.voiceHeld] ?? 0;
 
       // Bubble emission
@@ -1360,19 +1343,6 @@
       _ambMesh.geometry.attributes.position.needsUpdate = true;
       _ambMesh.geometry.attributes.alpha.needsUpdate    = true;
       _ambMesh.geometry.setDrawRange(0, count);
-
-      // God rays: orbit head, opacity follows voice
-      const targetOp = GODRAY_OPACITY_BASE + (GODRAY_OPACITY_SING - GODRAY_OPACITY_BASE) * (lvl/3);
-      for (let i = 0; i < _godRays.length; i++) {
-        const ray = _godRays[i];
-        ray.material.opacity += (targetOp - ray.material.opacity) * 0.05;
-        const ang = (i / GODRAY_COUNT) * Math.PI * 2 + t * 0.08;
-        ray.position.set(
-          ctx.headPos.x + Math.cos(ang) * 1.2,
-          ctx.spawnEyeY + 1.5,
-          ctx.headPos.z + Math.sin(ang) * 1.2
-        );
-      }
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -1805,8 +1775,7 @@
         g.add(m);
         return m;
       };
-      g.userData.core = mk(0.055, 'vol', 0.80);  // 볼류메트릭 내부 발광
-      g.userData.rim  = mk(0.095, 'rim', 0.50);  // 외곽 림 글로우
+      g.userData.rim  = mk(0.095, 'rim', 0.50);  // 외곽 림 글로우 (비눗방울)
       return g;
     }
 
@@ -1868,7 +1837,6 @@
         if (prog > 0.85) {
           const flash = 0.5 + 0.5 * Math.sin(e.timer * 20);
           e.group.userData.rim.material.uniforms.uAlpha.value  = 0.55 + flash * 0.45;
-          e.group.userData.core.material.uniforms.uAlpha.value = 0.90 + flash * 0.10;
         }
       }
     }
@@ -1877,7 +1845,7 @@
 
     // C01에서 핀치마다 호출
     function onPinchEvent() {
-      if (ctx.counters.pinchTotal >= _spawnThr.fishMNextPinch && ctx.spawnState.fishMCount < 6) {
+      if (ctx.counters.pinchTotal >= _spawnThr.fishMNextPinch && ctx.spawnState.fishMCount < 3) {
         _spawnEgg('fishM');
         _spawnThr.fishMNextPinch += SPAWN_PINCH_STEP;
       }
@@ -1885,7 +1853,7 @@
 
     // C03에서 궤적 누적마다 호출
     function onTrailLengthUpdate() {
-      if (ctx.counters.trailLength >= _spawnThr.fishSNextTrail && ctx.spawnState.fishSCount < 15) {
+      if (ctx.counters.trailLength >= _spawnThr.fishSNextTrail && ctx.spawnState.fishSCount < 7) {
         _spawnEgg('fishS');
         _spawnThr.fishSNextTrail += SPAWN_TRAIL_STEP;
       }
@@ -1893,17 +1861,16 @@
 
     function updateSpawnManager() {
       // 음성 누적 → 해파리 알
-      if (ctx.counters.voiceSec >= _spawnThr.jellyNextVoice && ctx.spawnState.jellyCount < 8) {
+      if (ctx.counters.voiceSec >= _spawnThr.jellyNextVoice && ctx.spawnState.jellyCount < 4) {
         _spawnEgg('jellyfish');
         _spawnThr.jellyNextVoice += SPAWN_VOICE_STEP;
       }
 
-      // 핀치×15 + 중형×3 → 대형 물고기 알 2개 (두 번째는 부화 시간이 더 길어 순차 등장)
+      // 핀치×15 + 중형×3 → 대형 물고기 알 1개
       if (!_spawnThr.fishLTriggered &&
           ctx.counters.pinchTotal >= SPAWN_LARGE_PINCH &&
           ctx.spawnState.fishMCount >= SPAWN_LARGE_MED) {
         _spawnEgg('fishL');
-        _spawnEgg('fishL', EGG_HATCH_DUR * 2.5);
         _spawnThr.fishLTriggered = true;
       }
     }
