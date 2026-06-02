@@ -1261,6 +1261,13 @@
 
     const _twoHand = { cupActive: false, cupHoldTime: 0, prevDist: 0 };
     const _twoHandMid = new THREE.Vector3();
+    const _palmL      = new THREE.Vector3();
+    const _palmR      = new THREE.Vector3();
+
+    // 손바닥 중앙 근사: 손목과 중지 끝 사이의 약 40% 지점
+    function _palmPos(j, out) {
+      return out.copy(j.wrist.pos).lerp(j.middleTip, 0.4);
+    }
 
     function updateTwoHandGesture(dt) {
       const lj = ctx.handJoints.left;
@@ -1274,7 +1281,9 @@
       }
 
       const dist = lj.wrist.pos.distanceTo(rj.wrist.pos);
-      _twoHandMid.addVectors(lj.wrist.pos, rj.wrist.pos).multiplyScalar(0.5);
+      _palmPos(lj, _palmL);
+      _palmPos(rj, _palmR);
+      _twoHandMid.addVectors(_palmL, _palmR).multiplyScalar(0.5);
 
       // Cup 감지: 양손 간격 좁고 높이 유사
       const heightDiff = Math.abs(lj.wrist.pos.y - rj.wrist.pos.y);
