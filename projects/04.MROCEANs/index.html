@@ -1245,6 +1245,7 @@
         if (state.wasFist && open && state.speed > 0.4) {
           const p = j.wrist.pos;
           triggerBubbleBurst(p.x, p.y, p.z);
+          playBurstSound(p.x, p.y, p.z);
           if (DEBUG) console.log(`[fistRelease] ${side}`);
         }
 
@@ -1303,6 +1304,7 @@
         const speed = (dist - _twoHand.prevDist) / dt;
         if (speed > SPREAD_VELOCITY) {
           triggerShockwaveRing(_twoHandMid.x, _twoHandMid.y, _twoHandMid.z);
+          playShockwaveSound(_twoHandMid.x, _twoHandMid.y, _twoHandMid.z);
           if (DEBUG) console.log('[twoHand] spread trigger');
         }
       }
@@ -1742,6 +1744,7 @@
       });
       scene.add(_whale.mesh);
       ctx.spawnState.whaleSpawned = true;
+      playWhaleSound(_whale.sx, _whale.sy, _whale.sz);
       if (DEBUG) console.log('[whale] 시퀀스 시작');
     }
 
@@ -1858,6 +1861,7 @@
         // 부화 처리
         if (prog >= 1.0) {
           triggerBubbleBurst(e.x, e.y, e.z);
+          playHatchSound(e.x, e.y, e.z);
           if      (e.type === 'fishS')     spawnFishS(e.x, e.y, e.z);
           else if (e.type === 'fishM')     spawnFishM(e.x, e.y, e.z);
           else if (e.type === 'fishL')     spawnFishL(e.x, e.y, e.z);
@@ -1939,29 +1943,175 @@
       }
     }
 
+    function _audioReady() { return _audioCtx && _audioCtx.state === 'running'; }
+
+    function _makePanner(x, y, z, refDist, rolloff) {
+      const pan = _audioCtx.createPanner();
+      pan.panningModel    = 'HRTF';
+      pan.positionX.value = x;
+      pan.positionY.value = y;
+      pan.positionZ.value = z;
+      pan.refDistance     = refDist;
+      pan.rolloffFactor   = rolloff;
+      return pan;
+    }
+
+    function _makeNoiseBuffer(durSec, shape) {
+      const len = Math.max(1, Math.floor(_audioCtx.sampleRate * durSec));
+      const buf = _audioCtx.createBuffer(1, len, _audioCtx.sampleRate);
+      const d   = buf.getChannelData(0);
+      for (let i = 0; i < len; i++) {
+        const n = Math.random() * 2 - 1;
+        d[i] = shape ? n * shape(i / len) : n;
+      }
+      return buf;
+    }
+
     function playPinchSound(x, y, z) {
-      if (!_audioCtx || _audioCtx.state !== 'running') return;
+      if (!_audioReady()) return;
       try {
+        const t    = _audioCtx.currentTime;
         const osc  = _audioCtx.createOscillator();
         const gain = _audioCtx.createGain();
-        const pan  = _audioCtx.createPanner();
-        pan.panningModel    = 'HRTF';
-        pan.positionX.value = x;
-        pan.positionY.value = y;
-        pan.positionZ.value = z;
-        pan.refDistance     = 0.3;
-        pan.rolloffFactor   = 2;
-        osc.connect(gain);
-        gain.connect(pan);
-        pan.connect(_audioCtx.destination);
+        const pan  = _makePanner(x, y, z, 0.3, 2);
+        osc.connect(gain); gain.connect(pan); pan.connect(_audioCtx.destination);
         osc.type = 'sine';
-        const t = _audioCtx.currentTime;
         osc.frequency.setValueAtTime(880, t);
         osc.frequency.exponentialRampToValueAtTime(440, t + 0.3);
         gain.gain.setValueAtTime(0.22, t);
         gain.gain.exponentialRampToValueAtTime(0.001, t + 0.45);
-        osc.start(t);
-        osc.stop(t + 0.45);
+        osc.start(t); osc.stop(t + 0.45);
+      } catch(_) {}
+    }
+
+    // ── Event 2: Fist release → bubble burst ──
+    // 짧고 폭발적인 노이즈 버스트(밴드패스 스윕)로 거품이 터지는 느낌
+    function playBurstSound(x, y, z) {
+      if (!_audioReady()) return;
+      try {
+        const t   = _audioCtx.currentTime;
+        const dur = 0.35;
+        const src = _audioCtx.createBufferSource();
+        src.buffer = _makeNoiseBuffer(dur);
+        const bp = _audioCtx.createBiquadFilter();
+        bp.type  = 'bandpass';
+        bp.frequency.setValueAtTime(400, t);
+        bp.frequency.exponentialRampToValueAtTime(2400, t + 0.15);
+        bp.Q.value = 6;
+        const gain = _audioCtx.createGain();
+        gain.gain.setValueAtTime(0.0001, t);
+        gain.gain.exponentialRampToValueAtTime(0.5, t + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.001, t + dur);
+        const pan = _makePanner(x, y, z, 0.4, 2);
+        src.connect(bp); bp.connect(gain); gain.connect(pan); pan.connect(_audioCtx.destination);
+        src.start(t); src.stop(t + dur);
+      } catch(_) {}
+    }
+
+    // ── Event 4: Two-hand spread → shockwave ring ──
+    // 저주파 sine 슬라이드(180→50Hz)로 '쿵' + 고역 노이즈 테일로 확산감
+    function playShockwaveSound(x, y, z) {
+      if (!_audioReady()) return;
+      try {
+        const t   = _audioCtx.currentTime;
+        const pan = _makePanner(x, y, z, 0.5, 1.5);
+
+        const osc = _audioCtx.createOscillator();
+        osc.type  = 'sine';
+        osc.frequency.setValueAtTime(180, t);
+        osc.frequency.exponentialRampToValueAtTime(50, t + 0.5);
+        const g1 = _audioCtx.createGain();
+        g1.gain.setValueAtTime(0.0001, t);
+        g1.gain.exponentialRampToValueAtTime(0.55, t + 0.02);
+        g1.gain.exponentialRampToValueAtTime(0.001, t + 0.7);
+        osc.connect(g1); g1.connect(pan);
+
+        const src = _audioCtx.createBufferSource();
+        src.buffer = _makeNoiseBuffer(0.6);
+        const hp = _audioCtx.createBiquadFilter();
+        hp.type = 'highpass';
+        hp.frequency.value = 3000;
+        const g2 = _audioCtx.createGain();
+        g2.gain.setValueAtTime(0.0001, t);
+        g2.gain.exponentialRampToValueAtTime(0.15, t + 0.1);
+        g2.gain.exponentialRampToValueAtTime(0.001, t + 0.55);
+        src.connect(hp); hp.connect(g2); g2.connect(pan);
+
+        pan.connect(_audioCtx.destination);
+        osc.start(t); osc.stop(t + 0.7);
+        src.start(t); src.stop(t + 0.6);
+      } catch(_) {}
+    }
+
+    // ── Event 8: Egg hatch ──
+    // 부드러운 트라이앵글 chime(1320→880Hz) + 짧은 밴드패스 노이즈 pop
+    function playHatchSound(x, y, z) {
+      if (!_audioReady()) return;
+      try {
+        const t   = _audioCtx.currentTime;
+        const pan = _makePanner(x, y, z, 0.4, 2);
+
+        const osc = _audioCtx.createOscillator();
+        osc.type  = 'triangle';
+        osc.frequency.setValueAtTime(1320, t);
+        osc.frequency.exponentialRampToValueAtTime(880, t + 0.3);
+        const g = _audioCtx.createGain();
+        g.gain.setValueAtTime(0.0001, t);
+        g.gain.exponentialRampToValueAtTime(0.32, t + 0.01);
+        g.gain.exponentialRampToValueAtTime(0.001, t + 0.4);
+        osc.connect(g); g.connect(pan);
+
+        const src = _audioCtx.createBufferSource();
+        src.buffer = _makeNoiseBuffer(0.1, n => Math.exp(-n * 30));
+        const bp = _audioCtx.createBiquadFilter();
+        bp.type = 'bandpass';
+        bp.frequency.value = 1800;
+        bp.Q.value = 3;
+        const g2 = _audioCtx.createGain();
+        g2.gain.value = 0.2;
+        src.connect(bp); bp.connect(g2); g2.connect(pan);
+
+        pan.connect(_audioCtx.destination);
+        osc.start(t); osc.stop(t + 0.45);
+        src.start(t); src.stop(t + 0.1);
+      } catch(_) {}
+    }
+
+    // ── Event 9: Whale arrival ──
+    // 저음 sine(65Hz) + 2배음(130Hz), 느린 LFO 바이브라토, 긴 어택·릴리스로 4초 지속
+    function playWhaleSound(x, y, z) {
+      if (!_audioReady()) return;
+      try {
+        const t   = _audioCtx.currentTime;
+        const dur = 4.0;
+        const pan = _makePanner(x, y, z, 1.0, 0.8);
+
+        const o1 = _audioCtx.createOscillator();
+        o1.type = 'sine'; o1.frequency.value = 65;
+        const lfo = _audioCtx.createOscillator();
+        lfo.type = 'sine'; lfo.frequency.value = 0.3;
+        const lfoGain = _audioCtx.createGain();
+        lfoGain.gain.value = 6;
+        lfo.connect(lfoGain); lfoGain.connect(o1.frequency);
+
+        const o2 = _audioCtx.createOscillator();
+        o2.type = 'sine'; o2.frequency.value = 130;
+
+        const g1 = _audioCtx.createGain();
+        g1.gain.setValueAtTime(0.0001, t);
+        g1.gain.exponentialRampToValueAtTime(0.5, t + 1.2);
+        g1.gain.exponentialRampToValueAtTime(0.001, t + dur);
+        const g2 = _audioCtx.createGain();
+        g2.gain.setValueAtTime(0.0001, t);
+        g2.gain.exponentialRampToValueAtTime(0.15, t + 1.5);
+        g2.gain.exponentialRampToValueAtTime(0.001, t + dur);
+
+        o1.connect(g1); g1.connect(pan);
+        o2.connect(g2); g2.connect(pan);
+        pan.connect(_audioCtx.destination);
+
+        o1.start(t); o2.start(t); lfo.start(t);
+        o1.stop(t + dur); o2.stop(t + dur); lfo.stop(t + dur);
       } catch(_) {}
     }
 
