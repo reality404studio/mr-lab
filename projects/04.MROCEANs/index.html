@@ -891,7 +891,10 @@
 
     async function initVoiceAnalyzer() {
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        const stream = await Promise.race([
+          navigator.mediaDevices.getUserMedia({ audio: true, video: false }),
+          new Promise((_, rej) => setTimeout(() => rej(new Error('mic timeout')), 3000)),
+        ]);
         _audioCtx = new AudioContext();
         _analyser = _audioCtx.createAnalyser();
         _analyser.fftSize = 2048;
@@ -2361,6 +2364,13 @@
       if (!navigator.xr) {
         errEl.textContent = 'WebXR를 지원하지 않는 기기입니다.';
         return;
+      }
+
+      // 마이크 권한을 2D 화면에서 미리 요청 — XR 진입 후엔 다이얼로그가 안 보임
+      try {
+        await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      } catch (e) {
+        console.warn('[mic pre-check] 권한 없음, 음성 기능 비활성화:', e.message);
       }
 
       try {
