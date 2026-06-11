@@ -13,13 +13,17 @@
       position: fixed; inset: 0; z-index: 10;
       display: flex; flex-direction: column;
       align-items: center; justify-content: center;
-      background: rgba(0, 8, 18, 0.92);
+      background:
+        radial-gradient(ellipse at 50% 115%, rgba(30, 110, 160, 0.40), transparent 62%),
+        radial-gradient(ellipse at 50% -15%, rgba(70, 170, 230, 0.16), transparent 55%),
+        #021019;
     }
     #overlay.hidden { display: none; }
     #overlay h1 {
       color: #88eeff; font-size: 2.4rem;
       letter-spacing: 0.18em; font-weight: 300;
       margin-bottom: 0.6rem;
+      text-shadow: 0 0 28px rgba(90, 210, 255, 0.55), 0 0 80px rgba(60, 140, 220, 0.35);
     }
     #overlay p {
       color: rgba(136, 238, 255, 0.5);
@@ -73,6 +77,7 @@
     import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 
     const DEBUG = location.search.includes('debug');
+    const FLAT  = location.search.includes('flat');   // XR 없이 데스크톱 비주얼 프리뷰
     const dbgEl = document.getElementById('dbg');
     if (DEBUG) dbgEl.style.display = 'block';
 
@@ -248,6 +253,15 @@
     };
 
     // ─────────────────────────────────────────────────────────────
+    // SHARED VISUAL UNIFORMS
+    // 모든 커스텀 셰이더가 같은 객체를 참조 → 한 곳에서만 갱신
+    // (주의: ShaderMaterial.clone()은 이 참조를 끊으므로 clone 후 재연결 필요)
+    // ─────────────────────────────────────────────────────────────
+
+    const _uTime  = { value: 0 };   // 전역 시간 (초)
+    const _uVoice = { value: 0 };   // 0~1 스무딩된 음성 레벨 (sing=1)
+
+    // ─────────────────────────────────────────────────────────────
     // THREE.JS SCENE
     // ─────────────────────────────────────────────────────────────
 
@@ -264,7 +278,11 @@
     );
     scene.add(camera);
 
-    const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+    // 수중 분위기 라이팅 — 위는 수면광(아쿠아), 아래는 심해 청색
+    // (GLB 로드 실패 시 더미 StandardMaterial 폴백용. 커스텀 셰이더는 자체 라이팅)
+    const hemiLight = new THREE.HemisphereLight(0xbfe8ff, 0x123a5e, 0.9);
+    scene.add(hemiLight);
+    const ambientLight = new THREE.AmbientLight(0x88aacc, 0.35);
     scene.add(ambientLight);
 
     window.addEventListener('resize', () => {
@@ -292,6 +310,62 @@
       );
     }
 
+    // ── 물고기 커스텀 셰이더 ──────────────────────────────────────
+    // GLB 텍스처 유지 + 스타일라이즈드 헤미스피어 라이팅 + 수중 림 글로우
+    // + GPU 꼬리 스웨이 (CPU 요 흔들림과 합산되어 살아있는 느낌)
+    const _fishVert = `
+      attribute float aPhase;
+      uniform float uTime;
+      uniform float uLen;
+      uniform float uPhase;
+      varying vec2 vUv;
+      varying vec3 vNormal;
+      varying vec3 vViewPos;
+      varying vec3 vWorldN;
+      void main() {
+        vUv = uv;
+        float ph = uPhase + aPhase;
+        // 꼬리 스웨이: 머리(+z) 고정, 꼬리(-z)로 갈수록 진폭 증가
+        float zn    = position.z / uLen;            // -1(꼬리) ~ +1(머리)
+        float tailK = smoothstep(0.6, -1.0, zn);
+        vec3 p = position;
+        p.x += sin(uTime * 5.0 + ph + zn * 2.2) * tailK * uLen * 0.22;
+        vec4 mp = vec4(p, 1.0);
+        vec3 n  = normal;
+        #ifdef USE_INSTANCING
+          mp = instanceMatrix * mp;
+          n  = mat3(instanceMatrix) * n;
+        #endif
+        vWorldN  = normalize(mat3(modelMatrix) * n);
+        vec4 mv  = modelViewMatrix * mp;
+        vNormal  = normalMatrix * n;
+        vViewPos = mv.xyz;
+        gl_Position = projectionMatrix * mv;
+      }
+    `;
+    const _fishFrag = `
+      uniform sampler2D map;
+      uniform float uVoice;
+      varying vec2 vUv;
+      varying vec3 vNormal;
+      varying vec3 vViewPos;
+      varying vec3 vWorldN;
+      void main() {
+        vec4 tex  = texture2D(map, vUv);
+        vec3  N   = normalize(vNormal);
+        vec3  V   = normalize(-vViewPos);
+        float ndv = abs(dot(N, V));
+        // 위에서 내려오는 수면광 ↔ 아래의 심해빛 그라데이션
+        float hemi = 0.5 + 0.5 * vWorldN.y;
+        vec3  lit  = tex.rgb * mix(vec3(0.30, 0.45, 0.62), vec3(1.05, 1.12, 1.15), hemi);
+        // 수중 림 글로우 — 음성 레벨이 오르면 강해짐 (SING = 씬 밝아짐)
+        float rim = pow(1.0 - ndv, 2.4);
+        lit += vec3(0.40, 0.85, 1.0) * rim * (0.35 + uVoice * 0.65);
+        gl_FragColor = vec4(lit, 1.0);
+        #include <colorspace_fragment>
+      }
+    `;
+
     function _dummyFish(len, color) {
       const g   = new THREE.Group();
       const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.7 });
@@ -300,24 +374,55 @@
       g.add(body);
       return g;
     }
-    function _dummyJellyfish() {
-      const g   = new THREE.Group();
-      const mat = new THREE.MeshStandardMaterial({
-        color: 0x8899ff, transparent: true, opacity: 0.55, depthWrite: false,
-      });
-      const dome = new THREE.Mesh(
-        new THREE.SphereGeometry(JELLY_UMBRELLA_R, 12, 6, 0, Math.PI * 2, 0, Math.PI / 2),
-        mat
-      );
-      dome.name = 'jelly_umbrella';
-      g.add(dome);
-      return g;
-    }
+    // 스피릿 웨일 — 에테리얼한 발광 실루엣 (캡슐 지오메트리 + 커스텀 셰이더)
+    const _whaleVert = `
+      uniform float uTime;
+      varying vec3  vNormal;
+      varying vec3  vViewPos;
+      varying float vAxis;
+      void main() {
+        // 캡슐 장축 = 로컬 Y. 축을 따라 좌우로 휘는 유영 파동
+        float axis = position.y / ${(WHALE_LENGTH * 0.5).toFixed(2)};
+        vAxis = axis;
+        vec3 p = position;
+        p.x += sin(uTime * 1.4 + axis * 2.5) * 0.06 * (0.3 + abs(axis));
+        vec4 mv  = modelViewMatrix * vec4(p, 1.0);
+        vNormal  = normalMatrix * normal;
+        vViewPos = mv.xyz;
+        gl_Position = projectionMatrix * mv;
+      }
+    `;
+    const _whaleFrag = `
+      uniform float uTime;
+      uniform float uOpacity;
+      varying vec3  vNormal;
+      varying vec3  vViewPos;
+      varying float vAxis;
+      void main() {
+        vec3  N   = normalize(vNormal);
+        vec3  V   = normalize(-vViewPos);
+        float ndv = abs(dot(N, V));
+        float rim = pow(1.0 - ndv, 1.8);
+        vec3 col = vec3(0.10, 0.25, 0.45) * (0.4 + 0.6 * ndv);
+        // 몸을 따라 흐르는 빛의 띠 + 시안 림 글로우
+        float band = 0.5 + 0.5 * sin(vAxis * 6.0 - uTime * 1.5);
+        col += vec3(0.35, 0.80, 1.0) * (rim * 1.1 + band * rim * 0.8);
+        col += vec3(0.70, 0.90, 1.0) * pow(rim, 3.0) * 0.8;
+        float a = (0.18 + rim * 0.85) * uOpacity;
+        gl_FragColor = vec4(col, a);
+      }
+    `;
+
     function _dummyWhale() {
       const g   = new THREE.Group();
-      const mat = new THREE.MeshStandardMaterial({ color: 0x334455, roughness: 0.85 });
+      const mat = new THREE.ShaderMaterial({
+        uniforms: { uTime: _uTime, uOpacity: { value: 0 } },
+        vertexShader: _whaleVert, fragmentShader: _whaleFrag,
+        transparent: true, depthWrite: false,
+        blending: THREE.AdditiveBlending,
+      });
       const body = new THREE.Mesh(
-        new THREE.CapsuleGeometry(WHALE_LENGTH * 0.11, WHALE_LENGTH * 0.68, 4, 10),
+        new THREE.CapsuleGeometry(WHALE_LENGTH * 0.11, WHALE_LENGTH * 0.68, 6, 20),
         mat
       );
       body.rotation.x = Math.PI / 2;
@@ -327,6 +432,7 @@
     }
 
     async function initModels() {
+      if (models.fishS) return;   // 세션 재진입 시 재로드 방지
       // clown_fish.glb 1개로 fishS/M/L 모두 처리 (길이만 차별화)
       let baseMesh = null;
       try {
@@ -354,17 +460,30 @@
         const cz = (bb.max.z + bb.min.z) * 0.5;
         baseGeo.applyMatrix4(new THREE.Matrix4().makeTranslation(-cx, -cy, -cz));
 
-        const baseMat = baseMesh.material.clone();
-        // GLB의 alphaMode=BLEND → 바디는 불투명으로 (정렬·성능)
-        baseMat.transparent = false;
-        baseMat.depthWrite  = true;
-        baseMat.side        = THREE.DoubleSide;
+        let baseTex = baseMesh.material.map;
+        if (!baseTex) {
+          baseTex = new THREE.DataTexture(new Uint8Array([255, 140, 60, 255]), 1, 1);
+          baseTex.needsUpdate = true;
+        }
 
         const makeFish = (targetLen) => {
           const g = baseGeo.clone();
           const k = targetLen / baseLen;
           g.applyMatrix4(new THREE.Matrix4().makeScale(k, k, k));
-          const m = new THREE.Mesh(g, baseMat.clone());
+          // uniforms를 리터럴로 구성 → _uTime/_uVoice 공유 참조 유지
+          const mat = new THREE.ShaderMaterial({
+            uniforms: {
+              map:    { value: baseTex },
+              uTime:  _uTime,
+              uVoice: _uVoice,
+              uLen:   { value: targetLen * 0.5 },
+              uPhase: { value: Math.random() * Math.PI * 2 },
+            },
+            vertexShader:   _fishVert,
+            fragmentShader: _fishFrag,
+            side: THREE.DoubleSide,
+          });
+          const m = new THREE.Mesh(g, mat);
           const grp = new THREE.Group();
           grp.add(m);
           return grp;
@@ -379,8 +498,8 @@
         models.fishL = _dummyFish(FISH_L_LENGTH, 0x1177aa);
       }
 
-      models.jellyfish = _dummyJellyfish();
-      models.whale     = _dummyWhale();
+      // 해파리는 C14에서 셰이더 기반으로 직접 생성 (models 불필요)
+      models.whale = _dummyWhale();
       if (DEBUG) console.log('[models] init 완료 (clown_fish:', !!baseMesh, ')');
     }
 
@@ -1035,14 +1154,33 @@
       }
     `;
 
+    // 이리데센스 — 보는 각도에 따라 무지개빛이 흐르는 비눗방울 막
+    const _glowFragIrid = `
+      uniform vec3  uColor;
+      uniform float uAlpha;
+      uniform float uTime;
+      varying vec3  vNormal;
+      varying vec3  vViewPos;
+      void main() {
+        float ndv = abs(dot(normalize(vNormal), normalize(-vViewPos)));
+        float hue = fract(ndv * 1.4 + uTime * 0.06);
+        vec3 irid = 0.5 + 0.5 * cos(6.28318 * (vec3(0.0, 0.33, 0.67) + hue));
+        float rim = pow(1.0 - ndv, 1.5);
+        vec3 col  = mix(uColor, irid, 0.65) + vec3(0.4) * pow(rim, 3.0);
+        gl_FragColor = vec4(col, (0.10 + rim * 0.9) * uAlpha);
+      }
+    `;
+
     function _makeGlowMat(color, type, alpha) {
-      const frag = type === 'rim' ? _glowFragRim
-                 : type === 'vol' ? _glowFragVol
+      const frag = type === 'rim'  ? _glowFragRim
+                 : type === 'vol'  ? _glowFragVol
+                 : type === 'irid' ? _glowFragIrid
                  : _glowFragCore;
       return new THREE.ShaderMaterial({
         uniforms: {
           uColor: { value: new THREE.Color(color) },
           uAlpha: { value: alpha },
+          uTime:  _uTime,
         },
         vertexShader:   _glowVert,
         fragmentShader: frag,
@@ -1423,6 +1561,198 @@
     }
 
     // ─────────────────────────────────────────────────────────────
+    // C20 — UNDERWATER ATMOSPHERE  (플랑크톤 / 빛기둥 / 바닥 커스틱)
+    // 현실 방을 "물에 잠긴 공간"으로 — 전부 1드로우콜씩, 애니메이션은 GPU
+    // ─────────────────────────────────────────────────────────────
+
+    const PLANKTON_COUNT = 240;
+    const SHAFT_COUNT    = 5;
+
+    let _planktonMesh = null;
+    let _shaftMesh    = null;
+    let _causticMesh  = null;
+
+    // 플랑크톤: 떠다니는 미세 발광 입자. 음성 레벨에 따라 밝아짐 (WHISPER=발광 시작)
+    const _plkVert = `
+      attribute float aSeed;
+      uniform float uTime;
+      varying float vTw;
+      varying float vSeed;
+      void main() {
+        vSeed = aSeed;
+        vec3 p = position;
+        p.x += sin(uTime * 0.13 + aSeed * 7.1)  * 0.18;
+        p.y += sin(uTime * 0.09 + aSeed * 13.7) * 0.12;
+        p.z += cos(uTime * 0.11 + aSeed * 5.3)  * 0.18;
+        vec4 mv = modelViewMatrix * vec4(p, 1.0);
+        vTw = 0.55 + 0.45 * sin(uTime * (1.2 + fract(aSeed) * 1.8) + aSeed * 20.0);
+        // Quest 3 근거리 파티클 규칙: flat 위주 + 원거리 감쇠, 폭주 방지 clamp
+        gl_PointSize = clamp(7.0 / max(0.3, -mv.z), 1.5, 8.0);
+        gl_Position = projectionMatrix * mv;
+      }
+    `;
+    const _plkFrag = `
+      uniform float uVoice;
+      varying float vTw;
+      varying float vSeed;
+      void main() {
+        float r = length(gl_PointCoord - vec2(0.5));
+        if (r > 0.5) discard;
+        float glow = exp(-r * r * 12.0);
+        // 대부분 시안-화이트, 일부는 따뜻한 금빛 입자
+        vec3 col = mix(vec3(0.55, 0.90, 1.0), vec3(1.0, 0.85, 0.55), step(0.87, fract(vSeed * 0.371)));
+        float a = glow * vTw * (0.26 + uVoice * 0.6);
+        gl_FragColor = vec4(col, a);
+      }
+    `;
+
+    // 빛기둥: 수면에서 내려오는 godray. Y축 실린드리컬 빌보드로 항상 면이 보임
+    const _shaftVert = `
+      attribute vec2  aOffset;
+      attribute vec2  aSize;
+      attribute float aSeed;
+      varying vec2  vUv;
+      varying float vSeed;
+      void main() {
+        vec3 r0 = vec3(viewMatrix[0][0], 0.0, viewMatrix[2][0]);
+        vec3 right = normalize(r0 + vec3(1e-4, 0.0, 0.0));
+        vec3 wp = position + right * (aOffset.x * aSize.x) + vec3(0.0, aOffset.y * aSize.y, 0.0);
+        vUv   = vec2(aOffset.x + 0.5, aOffset.y);
+        vSeed = aSeed;
+        gl_Position = projectionMatrix * viewMatrix * vec4(wp, 1.0);
+      }
+    `;
+    const _shaftFrag = `
+      uniform float uTime;
+      uniform float uVoice;
+      varying vec2  vUv;
+      varying float vSeed;
+      void main() {
+        float ex = pow(1.0 - abs(vUv.x * 2.0 - 1.0), 2.2);
+        float ey = smoothstep(0.0, 0.35, vUv.y) * (0.30 + 0.70 * vUv.y);
+        ey *= 1.0 - smoothstep(0.85, 1.0, vUv.y) * 0.6;
+        float flick = 0.7 + 0.3 * sin(uTime * 0.45 + vSeed * 6.0);
+        float a = ex * ey * flick * (0.075 + uVoice * 0.12);
+        gl_FragColor = vec4(vec3(0.55, 0.82, 1.0), a);
+      }
+    `;
+
+    // 바닥 커스틱: 실제 방바닥 위에 일렁이는 물빛 그물 무늬
+    const _causVert = `
+      varying vec2 vUv;
+      varying vec2 vWorld;
+      void main() {
+        vUv = uv;
+        vec4 wp = modelMatrix * vec4(position, 1.0);
+        vWorld = wp.xz;
+        gl_Position = projectionMatrix * viewMatrix * wp;
+      }
+    `;
+    const _causFrag = `
+      uniform float uTime;
+      uniform float uVoice;
+      varying vec2 vUv;
+      varying vec2 vWorld;
+      void main() {
+        vec2 p = vWorld * 3.2;
+        float a1 = sin(p.x * 2.1 + uTime * 0.85) + sin(p.y * 1.9 - uTime * 0.65)
+                 + sin((p.x + p.y) * 1.3 + uTime * 0.45);
+        float a2 = sin(p.x * 1.6 - uTime * 0.55 + p.y * 2.3)
+                 + sin(p.y * 1.4 + uTime * 0.75 - p.x * 2.0);
+        float ca = pow(clamp(1.0 - abs(a1 + a2) * 0.32, 0.0, 1.0), 6.0);
+        float fade = 1.0 - smoothstep(0.55, 1.0, length(vUv * 2.0 - 1.0));
+        float a = ca * fade * (0.20 + uVoice * 0.18);
+        gl_FragColor = vec4(vec3(0.50, 0.85, 1.0), a);
+      }
+    `;
+
+    function initAtmosphere() {
+      if (_planktonMesh) return;
+
+      // 플랑크톤
+      {
+        const pos  = new Float32Array(PLANKTON_COUNT * 3);
+        const seed = new Float32Array(PLANKTON_COUNT);
+        for (let i = 0; i < PLANKTON_COUNT; i++) {
+          const r = 0.7 + Math.sqrt(Math.random()) * 2.5;
+          const a = Math.random() * Math.PI * 2;
+          pos[i*3]   = Math.cos(a) * r;
+          pos[i*3+1] = 0.25 + Math.random() * 2.45;
+          pos[i*3+2] = Math.sin(a) * r;
+          seed[i]    = Math.random() * 100.0;
+        }
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+        geo.setAttribute('aSeed',    new THREE.BufferAttribute(seed, 1));
+        _planktonMesh = new THREE.Points(geo, new THREE.ShaderMaterial({
+          uniforms: { uTime: _uTime, uVoice: _uVoice },
+          vertexShader: _plkVert, fragmentShader: _plkFrag,
+          transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+        }));
+        _planktonMesh.frustumCulled = false;
+        scene.add(_planktonMesh);
+      }
+
+      // 빛기둥 (전부 한 지오메트리에 머지 → 1드로우콜)
+      {
+        const centers = [], offsets = [], sizes = [], seeds = [], idx = [];
+        for (let s = 0; s < SHAFT_COUNT; s++) {
+          const a  = (s / SHAFT_COUNT) * Math.PI * 2 + Math.random() * 0.8;
+          const r  = 1.3 + Math.random() * 1.1;
+          const cx = Math.cos(a) * r, cz = Math.sin(a) * r;
+          const w  = 0.45 + Math.random() * 0.45;
+          const h  = 2.6 + Math.random() * 0.6;
+          const sd = Math.random() * 10;
+          for (const [u, v] of [[-0.5,0],[0.5,0],[0.5,1],[-0.5,1]]) {
+            centers.push(cx, 0.25, cz);
+            offsets.push(u, v);
+            sizes.push(w, h);
+            seeds.push(sd);
+          }
+          const b = s * 4;
+          idx.push(b, b+1, b+2, b, b+2, b+3);
+        }
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute('position', new THREE.Float32BufferAttribute(centers, 3));
+        geo.setAttribute('aOffset',  new THREE.Float32BufferAttribute(offsets, 2));
+        geo.setAttribute('aSize',    new THREE.Float32BufferAttribute(sizes, 2));
+        geo.setAttribute('aSeed',    new THREE.Float32BufferAttribute(seeds, 1));
+        geo.setIndex(idx);
+        _shaftMesh = new THREE.Mesh(geo, new THREE.ShaderMaterial({
+          uniforms: { uTime: _uTime, uVoice: _uVoice },
+          vertexShader: _shaftVert, fragmentShader: _shaftFrag,
+          transparent: true, depthWrite: false, side: THREE.DoubleSide,
+          blending: THREE.AdditiveBlending,
+        }));
+        _shaftMesh.frustumCulled = false;
+        scene.add(_shaftMesh);
+      }
+
+      // 바닥 커스틱 (사용자를 천천히 따라옴)
+      {
+        const geo = new THREE.CircleGeometry(2.6, 48);
+        _causticMesh = new THREE.Mesh(geo, new THREE.ShaderMaterial({
+          uniforms: { uTime: _uTime, uVoice: _uVoice },
+          vertexShader: _causVert, fragmentShader: _causFrag,
+          transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+        }));
+        _causticMesh.rotation.x = -Math.PI / 2;
+        _causticMesh.position.y = 0.01;
+        scene.add(_causticMesh);
+      }
+    }
+
+    function updateAtmosphere(timestamp, dt) {
+      _uTime.value = timestamp / 1000;
+      const lvl = { silence:0, whisper:1, call:2, sing:3 }[ctx.voiceHeld] ?? 0;
+      _uVoice.value += (lvl / 3 - _uVoice.value) * Math.min(1, dt * 1.5);
+      if (_causticMesh) {
+        _causticMesh.position.x += (ctx.headPos.x - _causticMesh.position.x) * 0.02;
+        _causticMesh.position.z += (ctx.headPos.z - _causticMesh.position.z) * 0.02;
+      }
+    }
+
+    // ─────────────────────────────────────────────────────────────
     // PHASE 4 HELPERS
     // ─────────────────────────────────────────────────────────────
 
@@ -1505,16 +1835,26 @@
     let   _fishMMesh = null;
 
     function initFishSchool() {
-      if (!models.fishS) return;
+      if (!models.fishS || _fishSMesh) return;   // 세션 재진입 시 중복 생성 방지
+
+      // 인스턴스별 꼬리 스웨이 위상 (GPU 셰이더 aPhase)
+      const addPhase = (geo, n) => {
+        const arr = new Float32Array(n);
+        for (let i = 0; i < n; i++) arr[i] = Math.random() * Math.PI * 2;
+        geo.setAttribute('aPhase', new THREE.InstancedBufferAttribute(arr, 1));
+      };
 
       // clown_fish.glb는 이미 +Z forward로 베이크되어 있다고 가정 (틀리면 makeRotationY(Math.PI) 등으로 보정)
+      // material.clone() 금지 — clone하면 _uTime/_uVoice 공유 참조가 끊김
       const sChild = models.fishS.children[0];
-      _fishSMesh = new THREE.InstancedMesh(sChild.geometry, sChild.material.clone(), 15);
+      addPhase(sChild.geometry, 15);
+      _fishSMesh = new THREE.InstancedMesh(sChild.geometry, sChild.material, 15);
       _fishSMesh.count = 0; _fishSMesh.frustumCulled = false;
       scene.add(_fishSMesh);
 
       const mChild = models.fishM.children[0];
-      _fishMMesh = new THREE.InstancedMesh(mChild.geometry, mChild.material.clone(), 6);
+      addPhase(mChild.geometry, 6);
+      _fishMMesh = new THREE.InstancedMesh(mChild.geometry, mChild.material, 6);
       _fishMMesh.count = 0; _fishMMesh.frustumCulled = false;
       scene.add(_fishMMesh);
     }
@@ -1671,25 +2011,145 @@
     }
 
     // ─────────────────────────────────────────────────────────────
-    // C14 — JELLYFISH  (InstancedMesh, 최대 8개)
+    // C14 — JELLYFISH  (벨 + 발광 베일, InstancedMesh ×2, 최대 8개)
+    // 맥동·스웨이·발광 전부 GPU 셰이더에서 처리 — CPU는 위치만 관리
     // ─────────────────────────────────────────────────────────────
 
+    const JELLY_MAX = 8;
+    const _JELLY_PULSE_W = (2 * Math.PI / JELLY_PULSE_PERIOD).toFixed(4);   // 맥박 각속도
+
+    const _jellyBellVert = `
+      attribute float aPhase;
+      uniform float uTime;
+      varying vec3  vNormal;
+      varying vec3  vViewPos;
+      varying float vH;
+      varying float vPh;
+      void main() {
+        // 호흡 맥동: 림(아래)이 크게, 정수리(위)는 작게 + 수직 카운터 스쿼시
+        float pulse = sin(uTime * ${_JELLY_PULSE_W} + aPhase);
+        float hN    = position.y / ${JELLY_UMBRELLA_R.toFixed(3)};
+        vec3 p = position;
+        float radial = 1.0 + pulse * 0.13 * (1.0 - clamp(hN, 0.0, 1.0));
+        p.x *= radial;
+        p.z *= radial;
+        p.y *= 1.0 - pulse * 0.07;
+        vec4 mp = vec4(p, 1.0);
+        vec3 n  = normal;
+        #ifdef USE_INSTANCING
+          mp = instanceMatrix * mp;
+          n  = mat3(instanceMatrix) * n;
+        #endif
+        vec4 mv  = modelViewMatrix * mp;
+        vNormal  = normalMatrix * n;
+        vViewPos = mv.xyz;
+        vH  = hN;
+        vPh = aPhase;
+        gl_Position = projectionMatrix * mv;
+      }
+    `;
+    const _jellyBellFrag = `
+      uniform float uTime;
+      uniform float uVoice;
+      varying vec3  vNormal;
+      varying vec3  vViewPos;
+      varying float vH;
+      varying float vPh;
+      void main() {
+        vec3  N   = normalize(vNormal);
+        vec3  V   = normalize(-vViewPos);
+        float ndv = abs(dot(N, V));
+        float rim = pow(1.0 - ndv, 1.6);
+        // 림(시안) → 정수리(마젠타) 그라데이션
+        vec3 col = mix(vec3(0.25, 0.80, 1.0), vec3(0.95, 0.45, 0.85), clamp(vH, 0.0, 1.0));
+        // 맥박에 맞춰 숨쉬는 내부 발광 코어
+        float core = pow(ndv, 2.5) * (0.55 + 0.45 * sin(uTime * ${_JELLY_PULSE_W} + vPh));
+        col += vec3(1.0, 0.60, 0.90) * core * 0.55;
+        float glow = 0.3 + uVoice * 0.7;
+        float a = (0.14 + rim * 0.62) * (0.5 + glow * 0.8);
+        gl_FragColor = vec4(col * (0.7 + glow * 0.6), a);
+      }
+    `;
+    const _jellyTentVert = `
+      attribute float aPhase;
+      uniform float uTime;
+      varying float vDepth;
+      varying float vPh;
+      void main() {
+        float depth = clamp(-position.y / ${(JELLY_UMBRELLA_R * 3.0).toFixed(3)}, 0.0, 1.0);
+        float pulse = sin(uTime * ${_JELLY_PULSE_W} + aPhase);
+        vec3 p = position;
+        // 아래로 갈수록 크게 흔들리는 베일 스웨이
+        p.x += sin(uTime * 1.6 + aPhase + position.y * 5.0)       * depth * ${(JELLY_UMBRELLA_R * 0.85).toFixed(3)};
+        p.z += cos(uTime * 1.3 + aPhase * 1.7 + position.y * 4.0) * depth * ${(JELLY_UMBRELLA_R * 0.85).toFixed(3)};
+        // 벨 맥박과 연동
+        float radial = 1.0 + pulse * 0.10 * (1.0 - depth);
+        p.x *= radial;
+        p.z *= radial;
+        vec4 mp = vec4(p, 1.0);
+        #ifdef USE_INSTANCING
+          mp = instanceMatrix * mp;
+        #endif
+        vDepth = depth;
+        vPh    = aPhase;
+        gl_Position = projectionMatrix * modelViewMatrix * mp;
+      }
+    `;
+    const _jellyTentFrag = `
+      uniform float uTime;
+      uniform float uVoice;
+      varying float vDepth;
+      varying float vPh;
+      void main() {
+        vec3 col = mix(vec3(0.45, 0.85, 1.0), vec3(0.55, 0.30, 0.95), vDepth);
+        // 베일을 따라 흘러내리는 발광 파동
+        float wave = 0.7 + 0.3 * sin(vDepth * 14.0 - uTime * 2.2 + vPh);
+        float a = pow(1.0 - vDepth, 1.8) * wave * (0.22 + uVoice * 0.35);
+        gl_FragColor = vec4(col, a);
+      }
+    `;
+
     const _jellyData = [];
-    let   _jellyMesh = null;
+    let   _jellyBellMesh = null;
+    let   _jellyTentMesh = null;
 
     function initJellyfish() {
-      if (!models.jellyfish) return;
-      const child = models.jellyfish.children[0];
-      const mat   = child.material.clone();
-      mat.emissive          = new THREE.Color(0x334488);
-      mat.emissiveIntensity = 0.1;
-      _jellyMesh = new THREE.InstancedMesh(child.geometry, mat, 8);
-      _jellyMesh.count = 0; _jellyMesh.frustumCulled = false;
-      scene.add(_jellyMesh);
+      if (_jellyBellMesh) return;   // 세션 재진입 시 중복 생성 방지
+      const R = JELLY_UMBRELLA_R;
+
+      const phases = new Float32Array(JELLY_MAX);
+      for (let i = 0; i < JELLY_MAX; i++) phases[i] = Math.random() * Math.PI * 2;
+
+      // 벨: 적도 살짝 아래까지 내려오는 돔 (림이 안쪽으로 말림)
+      const bellGeo = new THREE.SphereGeometry(R, 20, 12, 0, Math.PI * 2, 0, Math.PI * 0.62);
+      bellGeo.setAttribute('aPhase', new THREE.InstancedBufferAttribute(phases, 1));
+      const bellMat = new THREE.ShaderMaterial({
+        uniforms: { uTime: _uTime, uVoice: _uVoice },
+        vertexShader: _jellyBellVert, fragmentShader: _jellyBellFrag,
+        transparent: true, depthWrite: false, side: THREE.DoubleSide,
+        blending: THREE.AdditiveBlending,
+      });
+      _jellyBellMesh = new THREE.InstancedMesh(bellGeo, bellMat, JELLY_MAX);
+      _jellyBellMesh.count = 0; _jellyBellMesh.frustumCulled = false;
+      scene.add(_jellyBellMesh);
+
+      // 베일(촉수 군집): 벨 아래로 길게 늘어진 반투명 원뿔 셸
+      const tentGeo = new THREE.CylinderGeometry(R * 0.5, R * 0.10, R * 3.0, 9, 10, true);
+      tentGeo.translate(0, -R * 1.5, 0);
+      tentGeo.setAttribute('aPhase', new THREE.InstancedBufferAttribute(phases.slice(), 1));
+      const tentMat = new THREE.ShaderMaterial({
+        uniforms: { uTime: _uTime, uVoice: _uVoice },
+        vertexShader: _jellyTentVert, fragmentShader: _jellyTentFrag,
+        transparent: true, depthWrite: false, side: THREE.DoubleSide,
+        blending: THREE.AdditiveBlending,
+      });
+      _jellyTentMesh = new THREE.InstancedMesh(tentGeo, tentMat, JELLY_MAX);
+      _jellyTentMesh.count = 0; _jellyTentMesh.frustumCulled = false;
+      scene.add(_jellyTentMesh);
     }
 
     function spawnJellyfish(x, y, z) {
-      if (_jellyData.length >= 8) return;
+      if (_jellyData.length >= JELLY_MAX) return;
       _jellyData.push({ x, y, z, vx:0, vy:0, vz:0,
         phase:Math.random()*Math.PI*2, scatterTimer:0 });
       ctx.spawnState.jellyCount = _jellyData.length;
@@ -1702,13 +2162,11 @@
     
 
     function updateJellyfish(timestamp, dt) {
-      if (!_jellyMesh || _jellyData.length === 0) return;
+      if (!_jellyBellMesh || _jellyData.length === 0) return;
       const now = timestamp / 1000;
       const lvl = { silence:0, whisper:1, call:2, sing:3 }[ctx.voiceHeld] ?? 0;
 
-      const targetEmissive = [0.1, 0.22, 0.38, 0.60][lvl];
-      _jellyMesh.material.emissiveIntensity +=
-        (targetEmissive - _jellyMesh.material.emissiveIntensity) * 0.05;
+      // 발광 강도는 셰이더의 uVoice 유니폼이 담당 (updateAtmosphere에서 스무딩)
 
       const vortexPos = getActiveRingPositions();
 
@@ -1734,13 +2192,16 @@
         _clampSpeed(j, JELLY_DRIFT_SPEED*(1+lvl*0.3));
         j.x+=j.vx*dt; j.y+=j.vy*dt; j.z+=j.vz*dt;
 
-        const pulse = 1.0 + 0.15*Math.sin(now*2*Math.PI/JELLY_PULSE_PERIOD+j.phase);
-        _iPos.set(j.x, j.y, j.z); _iQuat.identity(); _jScl.set(1, pulse, 1);
-        _iMat.compose(_iPos, _iQuat, _jScl);
-        _jellyMesh.setMatrixAt(i, _iMat);
+        // 맥동은 GPU 셰이더에서 — CPU는 위치만 갱신
+        _iPos.set(j.x, j.y, j.z); _iQuat.identity();
+        _iMat.compose(_iPos, _iQuat, _iScl);
+        _jellyBellMesh.setMatrixAt(i, _iMat);
+        _jellyTentMesh.setMatrixAt(i, _iMat);
       }
-      _jellyMesh.instanceMatrix.needsUpdate = true;
-      _jellyMesh.count = _jellyData.length;
+      _jellyBellMesh.instanceMatrix.needsUpdate = true;
+      _jellyTentMesh.instanceMatrix.needsUpdate = true;
+      _jellyBellMesh.count = _jellyData.length;
+      _jellyTentMesh.count = _jellyData.length;
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -1764,8 +2225,8 @@
       _whale.mesh.traverse(c => {
         if (c.isMesh && c.material) {
           c.material = c.material.clone();
-          c.material.transparent = true;
-          c.material.opacity = 0;
+          c.material.uniforms.uTime = _uTime;   // clone이 끊은 전역 시간 참조 복구
+          c.material.uniforms.uOpacity.value = 0;
         }
       });
       scene.add(_whale.mesh);
@@ -1792,7 +2253,7 @@
 
       if (_whale.phase === 'spawning') {
         const op = Math.min(_whale.timer/WHALE_FADE_DUR, 1.0);
-        _whale.mesh.traverse(c => { if (c.isMesh&&c.material) c.material.opacity = op; });
+        _whale.mesh.traverse(c => { if (c.isMesh&&c.material) c.material.uniforms.uOpacity.value = op; });
         if (_whale.timer >= WHALE_FADE_DUR) { _whale.phase='passing'; _whale.timer=0; }
 
       } else if (_whale.phase === 'passing') {
@@ -1808,7 +2269,7 @@
 
       } else if (_whale.phase === 'fading') {
         const op = Math.max(1.0-_whale.timer/WHALE_FADE_DUR, 0);
-        _whale.mesh.traverse(c => { if (c.isMesh&&c.material) c.material.opacity = op; });
+        _whale.mesh.traverse(c => { if (c.isMesh&&c.material) c.material.uniforms.uOpacity.value = op; });
         if (_whale.timer >= WHALE_FADE_DUR) {
           scene.remove(_whale.mesh); _whale.mesh=null; _whale.phase='done';
           if (DEBUG) console.log('[whale] 시퀀스 종료');
@@ -1849,7 +2310,7 @@
         g.add(m);
         return m;
       };
-      g.userData.rim  = mk(0.095, 'rim', 0.50);  // 외곽 림 글로우 (비눗방울)
+      g.userData.rim  = mk(0.095, 'irid', 0.85);  // 무지개빛 비눗방울 막
       return g;
     }
 
@@ -2204,8 +2665,6 @@
       prevTimestamp = timestamp;
 
       if (frame) {
-        ctx.sessionTime += dt;
-
         const refSpace = renderer.xr.getReferenceSpace();
         if (refSpace) {
           const vp = frame.getViewerPose(refSpace);
@@ -2221,6 +2680,10 @@
         }
 
         updateHandTracking(frame);
+      }
+
+      if (frame || FLAT) {
+        ctx.sessionTime += dt;
 
         // ── Phase 2: 입력 레이어 ─────────────────────────────────
         updateVoiceAnalyzer(dt);
@@ -2231,6 +2694,7 @@
         updateTwoHandGesture(dt);
 
         // ── Phase 3: VFX 레이어 ──────────────────────────────────
+        updateAtmosphere(timestamp, dt);   // 전역 uTime/uVoice 유니폼 갱신 포함
         updateFoodParticle(timestamp, dt);
         updateBubbleBurst(timestamp, dt);
         updateHandRing(timestamp, dt);
@@ -2290,6 +2754,7 @@
       initGlowOrb();
       initRingEffect();
       initAmbientEnvironment();
+      initAtmosphere();
       if (DEBUG) console.log('[phase3] VFX 레이어 초기화 완료');
     }
 
@@ -2348,7 +2813,9 @@
       _fishLData.forEach(f => { if (f.mesh) scene.remove(f.mesh); });
       _fishLData.length = 0;
       _jellyData.length = 0;
-      if (_jellyMesh) _jellyMesh.count = 0;
+      if (_jellyBellMesh) _jellyBellMesh.count = 0;
+      if (_jellyTentMesh) _jellyTentMesh.count = 0;
+      _uVoice.value = 0;
       if (_fishSMesh) _fishSMesh.count = 0;
       if (_fishMMesh) _fishMMesh.count = 0;
       if (_whale.mesh) { scene.remove(_whale.mesh); _whale.mesh=null; }
@@ -2356,6 +2823,39 @@
       _phase4Inited = false;
       _resetSpawnThresholds();
     });
+
+    // ─────────────────────────────────────────────────────────────
+    // FLAT PREVIEW MODE  (?flat) — XR 없이 데스크톱에서 비주얼 확인
+    // 셰이더 컴파일 검증 + 색감/이펙트 튜닝용. 마이크는 요청하지 않음.
+    // ─────────────────────────────────────────────────────────────
+
+    if (FLAT) {
+      (async () => {
+        document.getElementById('overlay').classList.add('hidden');
+        ctx.headPos.set(0, 1.6, 0);
+        ctx.spawnEyeY  = 1.6;
+        ctx.calibrated = true;
+        camera.position.set(0, 1.6, 1.4);
+        await initModels();
+        initPointerDot();
+        initHandTrail();
+        initPhase3();
+        initPhase4();
+        // 모든 셰이더가 한 번씩 렌더되도록 크리쳐/이펙트 샘플 소환
+        spawnFishM( 0.2, 1.5, -1.0);
+        spawnFishL(-0.5, 1.4, -1.2);
+        spawnJellyfish(0.6, 1.5, -0.9);
+        spawnJellyfish(-0.7, 1.8, -1.1);
+        _spawnEgg('fishS');
+        emitFoodParticles(0.3, 1.5, -0.6);
+        triggerBubbleBurst(-0.3, 1.5, -0.8);
+        triggerShockwaveRing(0, 1.4, -1.0);
+        activateGlowOrb(0, 1.2, -0.7);
+        _triggerWhale();
+        window._dbg = { ctx, whale: _whale, scene, camera, renderer };   // 콘솔 검사용
+        console.log('[flat] preview ready');
+      })();
+    }
 
     document.getElementById('btnAR').addEventListener('click', async () => {
       const errEl = document.getElementById('errMsg');
