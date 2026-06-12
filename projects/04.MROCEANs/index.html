@@ -138,15 +138,31 @@
     const BURST_DURATION   = 1.2;
     const BURST_SCATTER_R  = 0.60;
 
-    const RING_R           = 0.09;   // 9cm 반지름 → 18cm 지름
-    const RING_PART_COUNT  = 120;
-    const RING_STILL_SPEED = 0.10;   // m/s 이하 = 정지
-    const RING_GATHER_RATE = 0.50;   // 초당 gatherProgress 증가 (2초에 완성)
-    const RING_DECAY_RATE  = 1.20;   // 손 움직일 때 초당 감소
-    const RING_SCATTER_ROT = 1.0;    // 흩어짐 트리거 누적 회전량 (rad)
-    const RING_ROT_DECAY   = 0.85;   // 프레임당 회전 누적 감쇠
-    const RING_SCATTER_DUR = 1.0;    // 흩어짐 지속 시간 (초)
-    const RING_SPREAD_R    = 0.28;   // 초기 산포 반지름
+    // 오브 응집 파티클 (구 와류 토큰 대체 — 공간의 빛이 손 사이로 모임)
+    const ORB_ACC_COUNT  = 80;     // 응집 파티클 수
+    const ORB_ACC_RMIN   = 0.30;   // 응집 시작 반경 (오브 중심 기준)
+    const ORB_ACC_RMAX   = 0.65;
+    const ORB_ORBIT_MAX  = 28;     // 오브 완성 후 궤도에 남는 파티클 수
+
+    // 물고기 터치 & 빛 알갱이 (잡기 욕구 → 터치 보상)
+    const TOUCH_R_S      = 0.07;   // 터치 판정 반경 (소형)
+    const TOUCH_R_M      = 0.10;
+    const TOUCH_R_L      = 0.18;
+    const TOUCH_COOLDOWN = 1.5;    // 같은 물고기 재터치 간격 (초)
+    const MOTE_MAX       = 40;
+    const MOTE_LIFETIME  = 12.0;
+    const MOTE_COLLECT_R = 0.13;   // 손으로 수집되는 반경
+    const MOTE_FLY_DUR   = 0.7;    // 수집 후 게이지로 날아가는 시간
+
+    // 고래 게이지 (공중의 빛 고리 — 눈에 보이는 목표)
+    const GAUGE_PTS   = 96;
+    const GAUGE_R     = 0.35;
+    const GAUGE_DIST  = 1.6;       // 사용자 전방 거리
+    const GAIN_MOTE   = 0.05;      // 빛 알갱이 1개 수집
+    const GAIN_ORB    = 0.10;      // 오브 완성
+    const GAIN_PINCH  = 0.01;      // 핀치(먹이주기) 1회
+    const GAIN_TRAIL  = 0.01;      // 트레일 0.5m당
+    const GAIN_SING   = 0.012;     // SING 1초당
 
     const RING_COUNT       = 3;
     const RING_STAGGER     = 0.13;
@@ -315,21 +331,28 @@
     // + GPU 꼬리 스웨이 (CPU 요 흔들림과 합산되어 살아있는 느낌)
     const _fishVert = `
       attribute float aPhase;
+      attribute float aFlash;
       uniform float uTime;
       uniform float uLen;
       uniform float uPhase;
+      uniform float uFlashT;
       varying vec2 vUv;
       varying vec3 vNormal;
       varying vec3 vViewPos;
       varying vec3 vWorldN;
+      varying float vFlash;
       void main() {
         vUv = uv;
         float ph = uPhase + aPhase;
+        // 터치 플래시: 터치 시각(aFlash/uFlashT) 후 0.6초간 감쇠
+        float fT = max(aFlash, uFlashT);
+        vFlash = clamp(1.0 - (uTime - fT) / 0.6, 0.0, 1.0);
         // 꼬리 스웨이: 머리(+z) 고정, 꼬리(-z)로 갈수록 진폭 증가
         float zn    = position.z / uLen;            // -1(꼬리) ~ +1(머리)
         float tailK = smoothstep(0.6, -1.0, zn);
         vec3 p = position;
         p.x += sin(uTime * 5.0 + ph + zn * 2.2) * tailK * uLen * 0.22;
+        p *= 1.0 + vFlash * 0.08;                   // 터치 순간 살짝 부풂
         vec4 mp = vec4(p, 1.0);
         vec3 n  = normal;
         #ifdef USE_INSTANCING
@@ -346,10 +369,12 @@
     const _fishFrag = `
       uniform sampler2D map;
       uniform float uVoice;
+      uniform vec3  uTint;
       varying vec2 vUv;
       varying vec3 vNormal;
       varying vec3 vViewPos;
       varying vec3 vWorldN;
+      varying float vFlash;
       void main() {
         vec4 tex  = texture2D(map, vUv);
         vec3  N   = normalize(vNormal);
@@ -358,9 +383,11 @@
         // 위에서 내려오는 수면광 ↔ 아래의 심해빛 그라데이션
         float hemi = 0.5 + 0.5 * vWorldN.y;
         vec3  lit  = tex.rgb * mix(vec3(0.30, 0.45, 0.62), vec3(1.05, 1.12, 1.15), hemi);
+        lit *= uTint;                               // 가이드 물고기 황금 틴트용
         // 수중 림 글로우 — 음성 레벨이 오르면 강해짐 (SING = 씬 밝아짐)
         float rim = pow(1.0 - ndv, 2.4);
         lit += vec3(0.40, 0.85, 1.0) * rim * (0.35 + uVoice * 0.65);
+        lit += vec3(0.90, 1.0, 1.0) * vFlash * 1.2; // 터치 플래시
         gl_FragColor = vec4(lit, 1.0);
         #include <colorspace_fragment>
       }
@@ -478,6 +505,8 @@
               uVoice: _uVoice,
               uLen:   { value: targetLen * 0.5 },
               uPhase: { value: Math.random() * Math.PI * 2 },
+              uFlashT:{ value: -1000 },
+              uTint:  { value: new THREE.Color(1, 1, 1) },
             },
             vertexShader:   _fishVert,
             fragmentShader: _fishFrag,
@@ -663,222 +692,171 @@
     }
 
     // ─────────────────────────────────────────────────────────────
-    // C09 — HAND RING  (정지 → 수렴, 손목 회전 → 흩어짐)
+    // C09 — ORB ACCRETION  (공간의 빛이 손 사이로 모여 오브가 된다)
+    // 구 와류 토큰(손목 링) 대체 — 손목 부착형 가상 오브제는 패스스루에서
+    // 오클루전이 없어 입체감이 죽는다. 양손 사이 공간을 채우는 연출로 교체.
     // ─────────────────────────────────────────────────────────────
 
-    const _ringVert = `
-      attribute float aPhase;
-      uniform float uAlpha;
-      varying float vPhase;
+    const _accVert = `
+      attribute float aSeed;
+      attribute float aAlpha;
+      varying float vSeed;
+      varying float vA;
       void main() {
-        vPhase = aPhase;
+        vSeed = aSeed; vA = aAlpha;
         vec4 mv = modelViewMatrix * vec4(position, 1.0);
-        gl_PointSize = max(4.0, 14.0 / max(0.1, -mv.z));
-        gl_Position  = projectionMatrix * mv;
+        gl_PointSize = clamp(9.0 / max(0.25, -mv.z), 3.0, 12.0);
+        gl_Position = projectionMatrix * mv;
       }
     `;
-    const _ringFrag = `
-      varying float vPhase;
-      uniform float uAlpha;
+    const _accFrag = `
+      uniform float uTime;
+      varying float vSeed;
+      varying float vA;
       void main() {
         float r = length(gl_PointCoord - vec2(0.5));
         if (r > 0.5) discard;
-        vec3 cyan   = vec3(0.3, 0.9, 1.0);
-        vec3 purple = vec3(0.75, 0.4, 1.0);
-        vec3 col = mix(cyan, purple, 0.5 + 0.5 * sin(vPhase));
-        col = mix(col, vec3(1.0), pow(max(0.0, 1.0 - r * 2.2), 3.0));
-        float a = uAlpha * (1.0 - smoothstep(0.2, 0.5, r));
-        gl_FragColor = vec4(col, a);
+        float glow = exp(-r * r * 10.0);
+        float tw   = 0.8 + 0.2 * sin(uTime * 5.0 + vSeed * 23.0);
+        vec3 cyan  = vec3(0.45, 0.85, 1.0);
+        vec3 white = vec3(0.95, 1.0, 1.0);
+        gl_FragColor = vec4(mix(cyan, white, glow), glow * tw * vA);
       }
     `;
 
-    const _handRing  = {};
-    const _hrTmpQ    = new THREE.Quaternion();
-    const _hrAxisX   = new THREE.Vector3();
-    const _hrAxisY   = new THREE.Vector3();
+    const _accParts = [];
+    let   _accMesh  = null;
 
-    function initHandRing() {
-      for (const side of ['left', 'right']) {
-        const posArr    = new Float32Array(RING_PART_COUNT * 3);
-        const phaseArr  = new Float32Array(RING_PART_COUNT);
-        const offsetArr = new Float32Array(RING_PART_COUNT * 3);
-        const velArr    = new Float32Array(RING_PART_COUNT * 3);
-        const startArr  = new Float32Array(RING_PART_COUNT * 3);
-        for (let i = 0; i < RING_PART_COUNT; i++) {
-          phaseArr[i] = (i / RING_PART_COUNT) * Math.PI * 2;
-        }
-        const geo = new THREE.BufferGeometry();
-        geo.setAttribute('position', new THREE.BufferAttribute(posArr, 3));
-        geo.setAttribute('aPhase',   new THREE.BufferAttribute(phaseArr, 1));
-        geo.setDrawRange(0, RING_PART_COUNT);
-        const mat = new THREE.ShaderMaterial({
-          uniforms: { uAlpha: { value: 0 } },
-          vertexShader: _ringVert, fragmentShader: _ringFrag,
-          transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
-        });
-        const mesh = new THREE.Points(geo, mat);
-        mesh.frustumCulled = false; mesh.visible = false;
-        scene.add(mesh);
-        _handRing[side] = {
-          phase: 'idle',
-          gatherProgress: 0,
-          scatterTimer: 0,
-          rotAccum: 0,
-          offsetsReady: false,
-          prevPos:  new THREE.Vector3(),
-          prevQuat: new THREE.Quaternion(),
-          posArr, offsetArr, velArr, startArr, mesh,
-        };
-      }
+    function initOrbAccretion() {
+      if (_accMesh) return;
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(ORB_ACC_COUNT * 3), 3));
+      geo.setAttribute('aSeed',    new THREE.BufferAttribute(new Float32Array(ORB_ACC_COUNT), 1));
+      geo.setAttribute('aAlpha',   new THREE.BufferAttribute(new Float32Array(ORB_ACC_COUNT), 1));
+      geo.setDrawRange(0, 0);
+      _accMesh = new THREE.Points(geo, new THREE.ShaderMaterial({
+        uniforms: { uTime: _uTime },
+        vertexShader: _accVert, fragmentShader: _accFrag,
+        transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+      }));
+      _accMesh.frustumCulled = false;
+      scene.add(_accMesh);
     }
 
-    function _initRingOffsets(ring) {
-      for (let i = 0; i < RING_PART_COUNT; i++) {
-        const r  = RING_SPREAD_R * (0.5 + Math.random() * 0.5);
-        const th = Math.random() * Math.PI * 2;
-        const ph = (Math.random() - 0.5) * Math.PI;
-        ring.offsetArr[i*3]   = r * Math.cos(th) * Math.cos(ph);
-        ring.offsetArr[i*3+1] = r * Math.sin(ph);
-        ring.offsetArr[i*3+2] = r * Math.sin(th) * Math.cos(ph);
-      }
-      ring.offsetsReady = true;
+    // 파티클을 '나선 진입' 상태로 (재)초기화
+    function _accSpawnIn(p) {
+      const th = Math.random() * Math.PI * 2;
+      const ph = (Math.random() - 0.5) * Math.PI;
+      const r  = ORB_ACC_RMIN + Math.random() * (ORB_ACC_RMAX - ORB_ACC_RMIN);
+      p.mode = 'in';
+      p.r0   = r;
+      p.a0   = th;
+      p.y0   = Math.sin(ph) * r * 0.6;
+      p.t    = 0;
+      p.dur  = 0.55 + Math.random() * 0.6;
+      p.spin = 2.0 + Math.random() * 2.0;     // 나선 감김량 (rad)
+      p.seed = Math.random() * 100;
     }
 
-    function getActiveRingPositions() {
-      const result = [];
-      for (const side of ['left', 'right']) {
-        const ring = _handRing[side];
-        if (ring && (ring.phase === 'formed' || ring.phase === 'gathering') && ring.gatherProgress > 0.5) {
-          const j = ctx.handJoints[side];
-          if (j.valid) result.push({ x: j.wrist.pos.x, y: j.wrist.pos.y, z: j.wrist.pos.z });
-        }
+    // 해파리 와류 끌림의 대상 — 활성화된 오브 (등롱 문법)
+    function getOrbVortexPositions() {
+      if (_orb.group && (_orb.state === 'growing' || _orb.state === 'active')) {
+        const p = _orb.group.position;
+        return [{ x: p.x, y: p.y, z: p.z }];
       }
-      return result;
+      return [];
     }
 
-    function updateHandRing(timestamp, dt) {
-      if (!_handRing.left) return;
-      const t = timestamp / 1000;
-      for (const side of ['left', 'right']) {
-        const ring = _handRing[side];
-        const j    = ctx.handJoints[side];
+    function updateOrbAccretion(timestamp, dt) {
+      if (!_accMesh) return;
+      const active = _orb.state === 'growing' || _orb.state === 'active';
 
-        if (!j.valid) {
-          if (ring.phase !== 'idle') {
-            ring.phase = 'idle'; ring.gatherProgress = 0;
-            ring.rotAccum = 0;   ring.offsetsReady = false;
-            ring.mesh.visible = false;
-          }
-          ring.prevPos.copy(j.wrist.pos);
-          ring.prevQuat.copy(j.wrist.quat);
-          continue;
+      // 활성 시 파티클 충원 (첫 충원은 위상 분산 — 한꺼번에 쏟아지지 않게)
+      if (active) {
+        while (_accParts.length < ORB_ACC_COUNT) {
+          const p = {};
+          _accSpawnIn(p);
+          p.t = Math.random();
+          _accParts.push(p);
+        }
+      }
+
+      if (_accParts.length === 0) { _accMesh.geometry.setDrawRange(0, 0); return; }
+
+      const c = _orb.group ? _orb.group.position : ctx.headPos;
+      let orbiters = 0;
+      for (const p of _accParts) if (p.mode === 'orbit') orbiters++;
+
+      for (let i = _accParts.length - 1; i >= 0; i--) {
+        const p = _accParts[i];
+
+        // 오브 해제 → 흩어지며 소멸
+        if (!active && p.mode !== 'out') {
+          p.mode = 'out'; p.t = 0;
+          const a = Math.random() * Math.PI * 2;
+          p.vx = Math.cos(a) * (0.8 + Math.random());
+          p.vy = 0.3 + Math.random() * 0.7;
+          p.vz = Math.sin(a) * (0.8 + Math.random());
+          p.x = p.cx ?? c.x; p.y = p.cy ?? c.y; p.z = p.cz ?? c.z;
         }
 
-        const speed   = dt > 0 ? ring.prevPos.distanceTo(j.wrist.pos) / dt : 0;
-        const isStill = speed < RING_STILL_SPEED;
-
-        _hrTmpQ.copy(ring.prevQuat).invert().multiply(j.wrist.quat);
-        const rotDelta = 2 * Math.acos(Math.min(1, Math.abs(_hrTmpQ.w)));
-        ring.prevPos.copy(j.wrist.pos);
-        ring.prevQuat.copy(j.wrist.quat);
-
-        _hrTmpQ.copy(j.wrist.quat);
-        _hrAxisX.set(1, 0, 0).applyQuaternion(_hrTmpQ);
-        _hrAxisY.set(0, 1, 0).applyQuaternion(_hrTmpQ);
-        const ax = _hrAxisX, ay = _hrAxisY;
-        const wx = j.wrist.pos.x, wy = j.wrist.pos.y, wz = j.wrist.pos.z;
-
-        // 흩어짐 애니메이션
-        if (ring.phase === 'scattering') {
-          ring.scatterTimer += dt;
-          const p3      = Math.min(ring.scatterTimer / RING_SCATTER_DUR, 1.0);
-          const easeOut = 1.0 - (1.0 - p3) * (1.0 - p3);
-          for (let i = 0; i < RING_PART_COUNT; i++) {
-            ring.posArr[i*3]   = ring.startArr[i*3]   + ring.velArr[i*3]   * easeOut;
-            ring.posArr[i*3+1] = ring.startArr[i*3+1] + ring.velArr[i*3+1] * easeOut;
-            ring.posArr[i*3+2] = ring.startArr[i*3+2] + ring.velArr[i*3+2] * easeOut;
-          }
-          ring.mesh.material.uniforms.uAlpha.value = (1.0 - p3) * 0.9;
-          ring.mesh.geometry.attributes.position.needsUpdate = true;
-          if (p3 >= 1.0) {
-            ring.phase = 'idle'; ring.gatherProgress = 0;
-            ring.rotAccum = 0;   ring.offsetsReady = false;
-            ring.mesh.visible = false;
-          }
-          continue;
-        }
-
-        // 손목 회전 → 흩어짐 트리거
-        if (ring.phase === 'formed' || ring.phase === 'gathering') {
-          ring.rotAccum = ring.rotAccum * RING_ROT_DECAY + rotDelta;
-          if (ring.rotAccum >= RING_SCATTER_ROT && ring.gatherProgress > 0.3) {
-            ring.phase = 'scattering'; ring.scatterTimer = 0;
-            for (let i = 0; i < RING_PART_COUNT; i++) {
-              ring.startArr[i*3]   = ring.posArr[i*3];
-              ring.startArr[i*3+1] = ring.posArr[i*3+1];
-              ring.startArr[i*3+2] = ring.posArr[i*3+2];
-              const dx = ring.posArr[i*3]   - wx;
-              const dy = ring.posArr[i*3+1] - wy;
-              const dz = ring.posArr[i*3+2] - wz;
-              const len = Math.sqrt(dx*dx+dy*dy+dz*dz) || 0.001;
-              const spd = 1.0 + Math.random() * 1.5;
-              ring.velArr[i*3]   = (dx/len + (Math.random()-0.5)*0.4) * spd;
-              ring.velArr[i*3+1] = (dy/len + (Math.random()-0.5)*0.4 + 0.3) * spd;
-              ring.velArr[i*3+2] = (dz/len + (Math.random()-0.5)*0.4) * spd;
+        if (p.mode === 'in') {
+          p.t += dt / p.dur;
+          if (p.t >= 1.0) {
+            // 도착: 오브 완성 후엔 일부가 궤도(강착원반)에 남음
+            if (_orb.state === 'active' && orbiters < ORB_ORBIT_MAX) {
+              p.mode = 'orbit'; orbiters++;
+              p.oa   = Math.random() * Math.PI * 2;
+              p.or   = ORB_MAX_R * (1.4 + Math.random() * 0.6);
+              p.oy   = (Math.random() - 0.5) * ORB_MAX_R * 0.8;
+              p.ospd = 2.0 + Math.random() * 1.5;
+            } else {
+              _accSpawnIn(p);
             }
-            ring.mesh.geometry.attributes.position.needsUpdate = true;
-            if (DEBUG) console.log(`[ring] ${side} scatter`);
             continue;
           }
+          const e = p.t * p.t * (3.0 - 2.0 * p.t);          // smoothstep
+          const r = p.r0 * (1.0 - e) + 0.02;
+          const a = p.a0 + e * p.spin;
+          p.cx = c.x + Math.cos(a) * r;
+          p.cy = c.y + p.y0 * (1.0 - e);
+          p.cz = c.z + Math.sin(a) * r;
+
+        } else if (p.mode === 'orbit') {
+          p.oa += p.ospd * dt;
+          p.cx = c.x + Math.cos(p.oa) * p.or;
+          p.cy = c.y + p.oy + Math.sin(p.oa * 1.7) * 0.015;
+          p.cz = c.z + Math.sin(p.oa) * p.or;
+
+        } else {  // out
+          p.t += dt;
+          p.x += p.vx * dt; p.y += p.vy * dt; p.z += p.vz * dt;
+          p.cx = p.x; p.cy = p.y; p.cz = p.z;
+          if (p.t >= 0.6) { _accParts.splice(i, 1); continue; }
         }
-
-        // gatherProgress 갱신
-        if (isStill) {
-          if (!ring.offsetsReady) _initRingOffsets(ring);
-          ring.gatherProgress = Math.min(ring.gatherProgress + RING_GATHER_RATE * dt, 1.0);
-          ring.phase = ring.gatherProgress >= 1.0 ? 'formed' : 'gathering';
-        } else {
-          ring.gatherProgress = Math.max(ring.gatherProgress - RING_DECAY_RATE * dt, 0);
-          if (ring.gatherProgress < 0.01) {
-            ring.phase = 'idle'; ring.offsetsReady = false;
-          } else {
-            ring.phase = 'gathering';
-          }
-        }
-
-        if (ring.phase === 'idle') {
-          ring.mesh.visible = false; ring.rotAccum = 0;
-          continue;
-        }
-
-        // 렌더링 (gathering / formed)
-        const isFormed = ring.phase === 'formed';
-        const rot      = t * (isFormed ? 2.8 : 1.5);
-        const shimmer  = isFormed ? 1.0 + 0.04 * Math.sin(t * 9.0) : 1.0;
-        const ease     = ring.gatherProgress * ring.gatherProgress * (3.0 - 2.0 * ring.gatherProgress);
-
-        for (let i = 0; i < RING_PART_COUNT; i++) {
-          const phase = (i / RING_PART_COUNT) * Math.PI * 2 + rot;
-          const r  = RING_R * shimmer;
-          const c  = Math.cos(phase), ss = Math.sin(phase);
-          const rx = wx + r * (c * ax.x + ss * ay.x);
-          const ry = wy + r * (c * ax.y + ss * ay.y);
-          const rz = wz + r * (c * ax.z + ss * ay.z);
-          const sx = wx + ring.offsetArr[i*3];
-          const sy = wy + ring.offsetArr[i*3+1];
-          const sz = wz + ring.offsetArr[i*3+2];
-          ring.posArr[i*3]   = sx + (rx - sx) * ease;
-          ring.posArr[i*3+1] = sy + (ry - sy) * ease;
-          ring.posArr[i*3+2] = sz + (rz - sz) * ease;
-        }
-
-        ring.mesh.material.uniforms.uAlpha.value = 0.25 + ring.gatherProgress * 0.65;
-        ring.mesh.visible = true;
-        ring.mesh.geometry.attributes.position.needsUpdate = true;
       }
+
+      // 버퍼 갱신
+      const pos  = _accMesh.geometry.attributes.position.array;
+      const seed = _accMesh.geometry.attributes.aSeed.array;
+      const alp  = _accMesh.geometry.attributes.aAlpha.array;
+      const count = Math.min(_accParts.length, ORB_ACC_COUNT);
+      for (let i = 0; i < count; i++) {
+        const p = _accParts[i];
+        pos[i*3] = p.cx ?? 0; pos[i*3+1] = p.cy ?? 0; pos[i*3+2] = p.cz ?? 0;
+        seed[i] = p.seed ?? 0;
+        alp[i]  = p.mode === 'in'    ? 0.35 + p.t * 0.6
+                : p.mode === 'orbit' ? 0.9
+                : Math.max(0.9 * (1.0 - p.t / 0.6), 0);
+      }
+      _accMesh.geometry.attributes.position.needsUpdate = true;
+      _accMesh.geometry.attributes.aSeed.needsUpdate    = true;
+      _accMesh.geometry.attributes.aAlpha.needsUpdate   = true;
+      _accMesh.geometry.setDrawRange(0, count);
     }
 
-        // C10 — GLOW ORB
+    // ─────────────────────────────────────────────────────────────
+    // C10 — GLOW ORB
     // ─────────────────────────────────────────────────────────────
 
     const _orb = { state: 'inactive', scale: 0, group: null };
@@ -918,7 +896,10 @@
       const growRate = ORB_GROW_SPEED / ORB_MAX_R;
       if (_orb.state === 'growing') {
         _orb.scale = Math.min(_orb.scale + growRate * dt, 1.0);
-        if (_orb.scale >= 1.0) _orb.state = 'active';
+        if (_orb.scale >= 1.0) {
+          _orb.state = 'active';
+          gaugeAdd(GAIN_ORB);   // 오브 완성 = 고래 게이지 기여
+        }
       } else if (_orb.state === 'active') {
         _orb.scale = 1.0 + 0.05 * Math.sin(timestamp / 1000 * 3.0);
       } else if (_orb.state === 'dissolving') {
@@ -1661,7 +1642,7 @@
                  + sin(p.y * 1.4 + uTime * 0.75 - p.x * 2.0);
         float ca = pow(clamp(1.0 - abs(a1 + a2) * 0.32, 0.0, 1.0), 6.0);
         float fade = 1.0 - smoothstep(0.55, 1.0, length(vUv * 2.0 - 1.0));
-        float a = ca * fade * (0.20 + uVoice * 0.18);
+        float a = ca * fade * (0.40 + uVoice * 0.36);
         gl_FragColor = vec4(vec3(0.50, 0.85, 1.0), a);
       }
     `;
@@ -1837,11 +1818,13 @@
     function initFishSchool() {
       if (!models.fishS || _fishSMesh) return;   // 세션 재진입 시 중복 생성 방지
 
-      // 인스턴스별 꼬리 스웨이 위상 (GPU 셰이더 aPhase)
+      // 인스턴스별 꼬리 스웨이 위상(aPhase) + 터치 플래시 시각(aFlash)
       const addPhase = (geo, n) => {
         const arr = new Float32Array(n);
         for (let i = 0; i < n; i++) arr[i] = Math.random() * Math.PI * 2;
         geo.setAttribute('aPhase', new THREE.InstancedBufferAttribute(arr, 1));
+        const fl = new Float32Array(n).fill(-1000);
+        geo.setAttribute('aFlash', new THREE.InstancedBufferAttribute(fl, 1));
       };
 
       // clown_fish.glb는 이미 +Z forward로 베이크되어 있다고 가정 (틀리면 makeRotationY(Math.PI) 등으로 보정)
@@ -1962,6 +1945,14 @@
     function spawnFishL(x, y, z) {
       if (_fishLData.length >= 2) return;
       const mesh = models.fishL.clone();
+      // 터치 플래시(uFlashT)를 개체별로 — 재질 분리 후 공유 유니폼 재연결
+      mesh.traverse(c => {
+        if (c.isMesh && c.material?.uniforms) {
+          c.material = c.material.clone();
+          c.material.uniforms.uTime  = _uTime;
+          c.material.uniforms.uVoice = _uVoice;
+        }
+      });
       scene.add(mesh);
       const [wx, wy, wz] = _randomSpawnPos();
       _fishLData.push({ x, y, z, vx:0, vy:0, vz:0,
@@ -2008,6 +1999,179 @@
         f.mesh.position.set(f.x, f.y+Math.sin(now*0.8+f.phase)*0.02, f.z);
         f.mesh.rotation.y = f.ry + Math.sin(now*1.8+f.phase)*0.10;
       }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // C21 — FISH TOUCH + LIGHT MOTES
+    // 만지면 반짝 + 빛 알갱이를 떨어뜨림 → 손으로 수집 → 고래 게이지
+    // ─────────────────────────────────────────────────────────────
+
+    const _moteVert = `
+      attribute float aSeed;
+      attribute float aAlpha;
+      uniform float uTime;
+      varying float vSeed;
+      varying float vA;
+      void main() {
+        vSeed = aSeed; vA = aAlpha;
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        float pulse = 0.85 + 0.15 * sin(uTime * 4.0 + aSeed * 17.0);
+        gl_PointSize = clamp(10.0 / max(0.3, -mv.z), 4.0, 16.0) * pulse;
+        gl_Position = projectionMatrix * mv;
+      }
+    `;
+    const _moteFrag = `
+      varying float vSeed;
+      varying float vA;
+      void main() {
+        float r = length(gl_PointCoord - vec2(0.5));
+        if (r > 0.5) discard;
+        float glow = exp(-r * r * 9.0);
+        vec3 col = mix(vec3(1.0, 0.85, 0.45), vec3(1.0, 1.0, 0.85), glow);
+        gl_FragColor = vec4(col, glow * vA);
+      }
+    `;
+
+    const _motes = [];
+    let   _moteMesh = null;
+
+    function initMotes() {
+      if (_moteMesh) return;
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(MOTE_MAX * 3), 3));
+      geo.setAttribute('aSeed',    new THREE.BufferAttribute(new Float32Array(MOTE_MAX), 1));
+      geo.setAttribute('aAlpha',   new THREE.BufferAttribute(new Float32Array(MOTE_MAX), 1));
+      geo.setDrawRange(0, 0);
+      _moteMesh = new THREE.Points(geo, new THREE.ShaderMaterial({
+        uniforms: { uTime: _uTime },
+        vertexShader: _moteVert, fragmentShader: _moteFrag,
+        transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+      }));
+      _moteMesh.frustumCulled = false;
+      scene.add(_moteMesh);
+    }
+
+    function spawnLightMote(x, y, z) {
+      if (_motes.length >= MOTE_MAX) _motes.shift();
+      _motes.push({
+        x, y, z,
+        vx: (Math.random() - 0.5) * 0.10,
+        vy: 0.04 + Math.random() * 0.05,
+        vz: (Math.random() - 0.5) * 0.10,
+        age: 0, seed: Math.random() * 100, state: 'free',
+        sx: 0, sy: 0, sz: 0, ft: 0,
+      });
+    }
+
+    // 터치/수집 판정에 쓰는 손 포인트 (검지 끝 + 손바닥 중앙)
+    const _tpA = new THREE.Vector3();
+    const _tpB = new THREE.Vector3();
+    const _touchPts = [];
+    function _touchPoints() {
+      _touchPts.length = 0;
+      for (const side of ['left', 'right']) {
+        const j = ctx.handJoints[side];
+        if (!j.valid) continue;
+        _touchPts.push(j.indexTip);
+        _touchPts.push(_palmPos(j, side === 'left' ? _tpA : _tpB));
+      }
+      return _touchPts;
+    }
+
+    function updateMotes(timestamp, dt) {
+      if (!_moteMesh) return;
+      const hands = _touchPoints();
+      const gp = _gauge.pos;
+
+      for (let i = _motes.length - 1; i >= 0; i--) {
+        const m = _motes[i];
+        if (m.state === 'free') {
+          m.age += dt;
+          if (m.age >= MOTE_LIFETIME) { _motes.splice(i, 1); continue; }
+          // 부드러운 부유
+          m.vx *= 0.985; m.vy *= 0.985; m.vz *= 0.985;
+          m.x += m.vx * dt;
+          m.y += m.vy * dt + Math.sin(m.age * 1.7 + m.seed) * 0.012 * dt;
+          m.z += m.vz * dt;
+          // 손에 닿으면 수집 → 게이지로 날아감
+          for (const h of hands) {
+            const dx = m.x - h.x, dy = m.y - h.y, dz = m.z - h.z;
+            if (dx*dx + dy*dy + dz*dz < MOTE_COLLECT_R * MOTE_COLLECT_R) {
+              m.state = 'fly'; m.ft = 0;
+              m.sx = m.x; m.sy = m.y; m.sz = m.z;
+              playCollectSound(m.x, m.y, m.z);
+              break;
+            }
+          }
+        } else {
+          m.ft += dt;
+          const t = Math.min(m.ft / MOTE_FLY_DUR, 1.0);
+          const e = t * t;   // ease-in: 게이지에 빨려들 듯
+          m.x = m.sx + (gp.x - m.sx) * e;
+          m.y = m.sy + (gp.y - m.sy) * e;
+          m.z = m.sz + (gp.z - m.sz) * e;
+          if (t >= 1.0) { _motes.splice(i, 1); gaugeAdd(GAIN_MOTE); continue; }
+        }
+      }
+
+      // 버퍼 갱신
+      const pos  = _moteMesh.geometry.attributes.position.array;
+      const seed = _moteMesh.geometry.attributes.aSeed.array;
+      const alp  = _moteMesh.geometry.attributes.aAlpha.array;
+      const count = Math.min(_motes.length, MOTE_MAX);
+      for (let i = 0; i < count; i++) {
+        const m = _motes[i];
+        pos[i*3] = m.x; pos[i*3+1] = m.y; pos[i*3+2] = m.z;
+        seed[i] = m.seed;
+        const fadeIn  = Math.min(m.age * 4, 1);
+        const fadeOut = m.state === 'free' ? Math.min((MOTE_LIFETIME - m.age) / 2, 1) : 1;
+        alp[i] = 0.95 * fadeIn * Math.max(fadeOut, 0);
+      }
+      _moteMesh.geometry.attributes.position.needsUpdate = true;
+      _moteMesh.geometry.attributes.aSeed.needsUpdate    = true;
+      _moteMesh.geometry.attributes.aAlpha.needsUpdate   = true;
+      _moteMesh.geometry.setDrawRange(0, count);
+    }
+
+    function _setFishFlash(mesh, i, t) {
+      const attr = mesh?.geometry?.attributes?.aFlash;
+      if (!attr) return;
+      attr.array[i] = t;
+      attr.needsUpdate = true;
+    }
+
+    function updateFishTouch(timestamp, dt) {
+      const now = timestamp / 1000;
+      const hands = _touchPoints();
+      if (hands.length === 0) return;
+
+      const tryTouch = (flock, touchR, flash, size) => {
+        for (let i = 0; i < flock.length; i++) {
+          const f = flock[i];
+          if (now - (f.lastTouch ?? -10) < TOUCH_COOLDOWN) continue;
+          for (const h of hands) {
+            const dx = f.x - h.x, dy = f.y - h.y, dz = f.z - h.z;
+            if (dx*dx + dy*dy + dz*dz >= touchR * touchR) continue;
+            f.lastTouch = now;
+            // 반짝 + 살짝 도망쳤다 돌아옴
+            const d = Math.sqrt(dx*dx + dy*dy + dz*dz) || 0.01;
+            f.vx += dx/d * 0.7; f.vy += dy/d * 0.3; f.vz += dz/d * 0.7;
+            f.scatterTimer = Math.max(f.scatterTimer ?? 0, 0.7);
+            flash(i, now);
+            spawnLightMote(f.x, f.y, f.z);
+            playTouchSound(f.x, f.y, f.z, size);
+            break;
+          }
+        }
+      };
+
+      tryTouch(_fishSData, TOUCH_R_S, (i, t) => _setFishFlash(_fishSMesh, i, t), 0);
+      tryTouch(_fishMData, TOUCH_R_M, (i, t) => _setFishFlash(_fishMMesh, i, t), 1);
+      tryTouch(_fishLData, TOUCH_R_L, (i, t) => {
+        _fishLData[i].mesh.traverse(c => {
+          if (c.isMesh && c.material?.uniforms?.uFlashT) c.material.uniforms.uFlashT.value = t;
+        });
+      }, 2);
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -2168,7 +2332,7 @@
 
       // 발광 강도는 셰이더의 uVoice 유니폼이 담당 (updateAtmosphere에서 스무딩)
 
-      const vortexPos = getActiveRingPositions();
+      const vortexPos = getOrbVortexPositions();
 
       for (let i = 0; i < _jellyData.length; i++) {
         const j = _jellyData[i];
@@ -2238,10 +2402,9 @@
     function updateWhale(timestamp, dt) {
       const now = timestamp / 1000;
 
-      // 조건 충족 시 자동 트리거 (Phase 5 SpawnManager에서 위임받음)
+      // 게이지 완성 시 소환 (안전망: 게이지 미완성이어도 4분 경과 시 등장)
       if (_whale.phase === 'idle' && !ctx.spawnState.whaleSpawned &&
-          ctx.sessionTime >= SPAWN_WHALE_TIME &&
-          ctx.counters.singSec >= SPAWN_WHALE_SING) {
+          (_gauge.full || ctx.sessionTime >= SPAWN_WHALE_TIME + 60)) {
         _triggerWhale();
       }
 
@@ -2275,6 +2438,338 @@
           if (DEBUG) console.log('[whale] 시퀀스 종료');
         }
       }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // C22 — WHALE GAUGE  (공중의 빛 고리 — 채우면 고래가 온다)
+    // 모든 제스처(터치·트레일·핀치·오브·노래)가 한 게이지에 기여 →
+    // "무엇을 해야 하나"가 첫 1분 안에 보이는 디제틱 목표
+    // ─────────────────────────────────────────────────────────────
+
+    const _gaugeVert = `
+      attribute float aFrac;
+      uniform float uProgress;
+      varying float vFrac;
+      void main() {
+        vFrac = aFrac;
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        // 채워진 입자는 더 크게 — 진행이 멀리서도 읽히도록
+        float filled = step(aFrac, uProgress);
+        gl_PointSize = clamp(18.0 / max(0.5, -mv.z), 4.0, 14.0) * mix(0.7, 1.35, filled);
+        gl_Position = projectionMatrix * mv;
+      }
+    `;
+    const _gaugeFrag = `
+      uniform float uTime;
+      uniform float uProgress;
+      uniform float uPulseT;
+      uniform float uFade;
+      varying float vFrac;
+      void main() {
+        float r = length(gl_PointCoord - vec2(0.5));
+        if (r > 0.5) discard;
+        float glow   = exp(-r * r * 10.0);
+        float filled = step(vFrac, uProgress);
+        float tw     = 0.75 + 0.25 * sin(uTime * 2.0 + vFrac * 40.0);
+        float pulse  = exp(-max(uTime - uPulseT, 0.0) * 3.0);
+        float edge   = smoothstep(0.05, 0.0, abs(vFrac - uProgress));   // 진행 선두 강조
+        // 채움: 금빛 반짝임 / 미채움: 어두운 시안 윤곽 (목표의 형태가 보임)
+        vec3 col = mix(vec3(0.35, 0.70, 1.0), vec3(1.0, 0.85, 0.45) * tw + vec3(pulse * 0.5), filled);
+        float a  = mix(0.10, 0.85 * tw + pulse * 0.4, filled) + edge * 0.9;
+        gl_FragColor = vec4(col, a * glow * uFade);
+      }
+    `;
+
+    const _gauge = {
+      progress: 0, full: false, mesh: null, mat: null,
+      pos: new THREE.Vector3(0, 1.7, -1.6),
+      trailSeen: 0,
+    };
+    const _gaugeFwd = new THREE.Vector3();
+
+    function initWhaleGauge() {
+      if (_gauge.mesh) return;
+      const pos  = new Float32Array(GAUGE_PTS * 3);
+      const frac = new Float32Array(GAUGE_PTS);
+      for (let i = 0; i < GAUGE_PTS; i++) {
+        const f = i / GAUGE_PTS;
+        const a = Math.PI / 2 - f * Math.PI * 2;   // 12시 방향부터 시계방향
+        pos[i*3]   = Math.cos(a) * GAUGE_R;
+        pos[i*3+1] = Math.sin(a) * GAUGE_R;
+        pos[i*3+2] = 0;
+        frac[i] = f;
+      }
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+      geo.setAttribute('aFrac',    new THREE.BufferAttribute(frac, 1));
+      _gauge.mat = new THREE.ShaderMaterial({
+        uniforms: {
+          uTime:     _uTime,
+          uProgress: { value: 0 },
+          uPulseT:   { value: -10 },
+          uFade:     { value: 1 },
+        },
+        vertexShader: _gaugeVert, fragmentShader: _gaugeFrag,
+        transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+      });
+      _gauge.mesh = new THREE.Points(geo, _gauge.mat);
+      _gauge.mesh.frustumCulled = false;
+      scene.add(_gauge.mesh);
+    }
+
+    function gaugeAdd(v, pulse = true) {
+      if (_gauge.full) return;
+      _gauge.progress = Math.min(_gauge.progress + v, 1.0);
+      if (pulse && _gauge.mat) _gauge.mat.uniforms.uPulseT.value = _uTime.value;
+      if (_gauge.progress >= 1.0) _gaugeComplete();
+    }
+
+    function _gaugeComplete() {
+      _gauge.full = true;
+      const p = _gauge.pos;
+      triggerBubbleBurst(p.x, p.y, p.z);
+      triggerShockwaveRing(p.x, p.y, p.z);
+      playShockwaveSound(p.x, p.y, p.z);
+      if (DEBUG) console.log('[gauge] 완성 → 고래 소환');
+    }
+
+    function updateGauge(dt) {
+      if (!_gauge.mesh) return;
+
+      // 시선 방향 전방을 느리게 따라붙음 (시야에서 사라지지 않게)
+      camera.getWorldDirection(_gaugeFwd);
+      _gaugeFwd.y = 0;
+      if (_gaugeFwd.lengthSq() < 0.001) _gaugeFwd.set(0, 0, -1);
+      _gaugeFwd.normalize();
+      const tx = ctx.headPos.x + _gaugeFwd.x * GAUGE_DIST;
+      const ty = ctx.spawnEyeY + 0.25;
+      const tz = ctx.headPos.z + _gaugeFwd.z * GAUGE_DIST;
+      const k = 1.0 - Math.pow(0.25, dt);   // 프레임레이트 무관 lerp
+      _gauge.pos.x += (tx - _gauge.pos.x) * k;
+      _gauge.pos.y += (ty - _gauge.pos.y) * k;
+      _gauge.pos.z += (tz - _gauge.pos.z) * k;
+      _gauge.mesh.position.copy(_gauge.pos);
+      _gauge.mesh.lookAt(ctx.headPos);
+
+      // 연속 기여: 트레일 거리 / SING
+      while (ctx.counters.trailLength >= _gauge.trailSeen + 0.5) {
+        _gauge.trailSeen += 0.5;
+        gaugeAdd(GAIN_TRAIL);
+      }
+      if (ctx.voiceHeld === 'sing') gaugeAdd(GAIN_SING * dt, false);
+
+      _gauge.mat.uniforms.uProgress.value = _gauge.progress;
+
+      // 완성 후 서서히 사라짐 (고래에게 무대를 넘김)
+      if (_gauge.full) {
+        _gauge.mat.uniforms.uFade.value = Math.max(_gauge.mat.uniforms.uFade.value - dt * 0.7, 0);
+      }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // C23 — GUIDE FISH  (온보딩 — 황금 물고기가 트레일 그리기를 시연)
+    // ─────────────────────────────────────────────────────────────
+
+    const _guide = {
+      state: 'none',   // none → enter → demo → wait → reward → free
+      mesh: null, mat: null,
+      t: 0, demoAngle: 0, rewarded: false, lastTouch: -10,
+      x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, ry: 0,
+      cx: 0, cy: 0, cz: 0,             // 데모 원 중심
+      wpx: 0, wpy: 0, wpz: 0, wpT: 0,  // free 상태 waypoint
+    };
+    const _gFwd = new THREE.Vector3();
+
+    // 가이드 트레일 (금빛 점 리본)
+    const GUIDE_TRAIL_MAX = 80;
+    let _gtMesh = null;
+    let _gtPts  = [];
+    const _gtVert = `
+      attribute float age;
+      varying float vN;
+      void main() {
+        vN = clamp(age / 2.5, 0.0, 1.0);
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        gl_PointSize = clamp(9.0 / max(0.4, -mv.z), 2.0, 9.0) * (1.0 - vN * 0.6);
+        gl_Position = projectionMatrix * mv;
+      }
+    `;
+    const _gtFrag = `
+      varying float vN;
+      void main() {
+        float r = length(gl_PointCoord - vec2(0.5));
+        if (r > 0.5) discard;
+        float glow = exp(-r * r * 12.0);
+        vec3 col = mix(vec3(1.0, 0.9, 0.5), vec3(1.0, 0.6, 0.3), vN);
+        gl_FragColor = vec4(col, glow * (1.0 - vN) * 0.85);
+      }
+    `;
+
+    function spawnGuideFish() {
+      if (!models.fishS) return;
+      if (_guide.mesh) { _resetGuide(); return; }   // 세션 재진입: 상태만 리셋
+
+      const src = models.fishS.children[0];
+      const geo = src.geometry.clone();
+      geo.deleteAttribute('aPhase');                 // 인스턴스 어트리뷰트 제거 (일반 Mesh용)
+      geo.deleteAttribute('aFlash');
+      const mat = src.material.clone();
+      if (mat.uniforms) {
+        mat.uniforms.uTime  = _uTime;                // clone이 끊은 공유 참조 복구
+        mat.uniforms.uVoice = _uVoice;
+        mat.uniforms.uTint.value.setRGB(1.9, 1.5, 0.75);   // 황금빛
+      } else {
+        mat.color = new THREE.Color(0xffcc55);       // 더미 폴백
+      }
+      _guide.mesh = new THREE.Mesh(geo, mat);
+      _guide.mesh.frustumCulled = false;
+      _guide.mat = mat;
+      scene.add(_guide.mesh);
+
+      const gtGeo = new THREE.BufferGeometry();
+      gtGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(GUIDE_TRAIL_MAX * 3), 3));
+      gtGeo.setAttribute('age',      new THREE.BufferAttribute(new Float32Array(GUIDE_TRAIL_MAX), 1));
+      gtGeo.setDrawRange(0, 0);
+      _gtMesh = new THREE.Points(gtGeo, new THREE.ShaderMaterial({
+        vertexShader: _gtVert, fragmentShader: _gtFrag,
+        transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+      }));
+      _gtMesh.frustumCulled = false;
+      scene.add(_gtMesh);
+
+      _resetGuide();
+    }
+
+    function _resetGuide() {
+      _guide.state = 'enter';
+      _guide.t = 0; _guide.demoAngle = 0; _guide.rewarded = false;
+      _guide.x = ctx.headPos.x + 1.2;
+      _guide.y = ctx.spawnEyeY + 0.2;
+      _guide.z = ctx.headPos.z - 1.4;
+      _guide.vx = _guide.vy = _guide.vz = 0;
+      _gtPts.length = 0;
+      if (_guide.mesh) _guide.mesh.visible = true;
+    }
+
+    function _guideDemoCenter() {
+      camera.getWorldDirection(_gFwd);
+      _gFwd.y = 0;
+      if (_gFwd.lengthSq() < 0.001) _gFwd.set(0, 0, -1);
+      _gFwd.normalize();
+      _guide.cx = ctx.headPos.x + _gFwd.x * 0.9;
+      _guide.cy = ctx.spawnEyeY - 0.05;
+      _guide.cz = ctx.headPos.z + _gFwd.z * 0.9;
+    }
+
+    function _guideTrailAdd(now) {
+      const last = _gtPts[_gtPts.length - 1];
+      if (last && Math.hypot(_guide.x - last.x, _guide.y - last.y, _guide.z - last.z) < 0.025) return;
+      _gtPts.push({ x: _guide.x, y: _guide.y, z: _guide.z, t: now });
+      if (_gtPts.length > GUIDE_TRAIL_MAX) _gtPts.shift();
+    }
+
+    function _guideTrailUpdate(now) {
+      if (!_gtMesh) return;
+      _gtPts = _gtPts.filter(p => now - p.t < 2.5);
+      const pos = _gtMesh.geometry.attributes.position.array;
+      const age = _gtMesh.geometry.attributes.age.array;
+      for (let i = 0; i < _gtPts.length; i++) {
+        pos[i*3] = _gtPts[i].x; pos[i*3+1] = _gtPts[i].y; pos[i*3+2] = _gtPts[i].z;
+        age[i] = now - _gtPts[i].t;
+      }
+      _gtMesh.geometry.attributes.position.needsUpdate = true;
+      _gtMesh.geometry.attributes.age.needsUpdate      = true;
+      _gtMesh.geometry.setDrawRange(0, _gtPts.length);
+    }
+
+    function updateGuideFish(timestamp, dt) {
+      if (!_guide.mesh || _guide.state === 'none') return;
+      const now = timestamp / 1000;
+      const g = _guide;
+      g.t += dt;
+
+      // 사용자가 그리기 시작했으면 기쁨의 보상 (1회)
+      if (!g.rewarded && g.state !== 'enter' && ctx.counters.trailLength > 0.4) {
+        g.state = 'reward'; g.t = 0; g.rewarded = true;
+      }
+
+      if (g.state === 'enter') {
+        // 사용자 전방 0.9m 지점으로 헤엄쳐 들어옴
+        _guideDemoCenter();
+        _steerToward(g, g.cx, g.cy, g.cz, 2.5, dt);
+        _clampSpeed(g, 0.7);
+        g.x += g.vx*dt; g.y += g.vy*dt; g.z += g.vz*dt;
+        const s = Math.sqrt(g.vx*g.vx + g.vz*g.vz);
+        if (s > 0.02) g.ry = Math.atan2(g.vx, g.vz);
+        if (Math.hypot(g.x-g.cx, g.y-g.cy, g.z-g.cz) < 0.18) { g.state='demo'; g.t=0; g.demoAngle=0; }
+
+      } else if (g.state === 'demo') {
+        // 사용자 앞에서 원을 그리며 트레일 시연 (2바퀴)
+        g.demoAngle += dt * 2.4;
+        const r  = 0.25;
+        const px = g.x, pz = g.z;
+        g.x = g.cx + Math.cos(g.demoAngle) * r;
+        g.y = g.cy + Math.sin(g.demoAngle * 2.0) * 0.05;
+        g.z = g.cz + Math.sin(g.demoAngle) * r;
+        if (Math.hypot(g.x-px, g.z-pz) > 1e-4) g.ry = Math.atan2(g.x-px, g.z-pz);
+        _guideTrailAdd(now);
+        if (g.demoAngle >= Math.PI * 4) { g.state='wait'; g.t=0; }
+
+      } else if (g.state === 'wait') {
+        // 호버하며 대기, 반응 없으면 6초마다 재시연
+        g.x += (g.cx - g.x) * 0.5 * dt;
+        g.z += (g.cz - g.z) * 0.5 * dt;
+        g.y = g.cy + Math.sin(now * 1.8) * 0.03;
+        if (g.t > 6) { _guideDemoCenter(); g.state='demo'; g.t=0; g.demoAngle=0; }
+
+      } else if (g.state === 'reward') {
+        // 기쁨의 나선 상승 + 빛 알갱이 보상
+        g.demoAngle += dt * 7.0;
+        const r = 0.12;
+        const px = g.x, pz = g.z;
+        g.x = g.cx + Math.cos(g.demoAngle) * r;
+        g.z = g.cz + Math.sin(g.demoAngle) * r;
+        g.y += dt * 0.25;
+        if (Math.hypot(g.x-px, g.z-pz) > 1e-4) g.ry = Math.atan2(g.x-px, g.z-pz);
+        _guideTrailAdd(now);
+        if (g.t > 1.4) {
+          spawnLightMote(g.x, g.y, g.z);
+          spawnLightMote(g.x + 0.06, g.y - 0.04, g.z);
+          playHatchSound(g.x, g.y, g.z);
+          g.state = 'free'; g.t = 0; g.wpT = 0;
+        }
+
+      } else if (g.state === 'free') {
+        // 일반 물고기처럼 주변을 유영 (계속 터치 가능한 황금 물고기)
+        g.wpT -= dt;
+        if (g.wpT <= 0 || Math.hypot(g.x-g.wpx, g.y-g.wpy, g.z-g.wpz) < 0.15) {
+          const [wx, wy, wz] = _randomSpawnPos();
+          g.wpx = wx; g.wpy = wy; g.wpz = wz;
+          g.wpT = 5 + Math.random() * 5;
+        }
+        _steerToward(g, g.wpx, g.wpy, g.wpz, 2.0, dt);
+        _clampSpeed(g, 0.5);
+        g.x += g.vx*dt; g.y += g.vy*dt; g.z += g.vz*dt;
+        const s = Math.sqrt(g.vx*g.vx + g.vz*g.vz);
+        if (s > 0.02) g.ry = Math.atan2(g.vx, g.vz);
+      }
+
+      // 터치 반응 (모든 상태에서 — 가이드는 보상이 후함)
+      if (now - g.lastTouch > TOUCH_COOLDOWN) {
+        for (const h of _touchPoints()) {
+          if (Math.hypot(g.x-h.x, g.y-h.y, g.z-h.z) < TOUCH_R_S + 0.02) {
+            g.lastTouch = now;
+            if (g.mat.uniforms?.uFlashT) g.mat.uniforms.uFlashT.value = now;
+            spawnLightMote(g.x, g.y, g.z);
+            playTouchSound(g.x, g.y, g.z, 0);
+            break;
+          }
+        }
+      }
+
+      g.mesh.position.set(g.x, g.y, g.z);
+      g.mesh.rotation.y = g.ry;
+      _guideTrailUpdate(now);
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -2381,6 +2876,7 @@
 
     // C01에서 핀치마다 호출
     function onPinchEvent() {
+      gaugeAdd(GAIN_PINCH);
       if (ctx.counters.pinchTotal >= _spawnThr.fishMNextPinch && ctx.spawnState.fishMCount < 3) {
         _spawnEgg('fishM');
         _spawnThr.fishMNextPinch += SPAWN_PINCH_STEP;
@@ -2527,6 +3023,45 @@
         pan.connect(_audioCtx.destination);
         osc.start(t); osc.stop(t + 0.7);
         src.start(t); src.stop(t + 0.6);
+      } catch(_) {}
+    }
+
+    // ── 물고기 터치: 크기별 음높이의 짧은 차임 ──
+    function playTouchSound(x, y, z, size) {
+      if (!_audioReady()) return;
+      try {
+        const t    = _audioCtx.currentTime;
+        const base = [1320, 990, 660][size] ?? 1100;
+        const osc  = _audioCtx.createOscillator();
+        const gain = _audioCtx.createGain();
+        const pan  = _makePanner(x, y, z, 0.3, 2);
+        osc.connect(gain); gain.connect(pan); pan.connect(_audioCtx.destination);
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(base, t);
+        osc.frequency.exponentialRampToValueAtTime(base * 0.75, t + 0.18);
+        gain.gain.setValueAtTime(0.0001, t);
+        gain.gain.exponentialRampToValueAtTime(0.18, t + 0.01);
+        gain.gain.exponentialRampToValueAtTime(0.001, t + 0.22);
+        osc.start(t); osc.stop(t + 0.22);
+      } catch(_) {}
+    }
+
+    // ── 빛 알갱이 수집: 상승 블립 ──
+    function playCollectSound(x, y, z) {
+      if (!_audioReady()) return;
+      try {
+        const t    = _audioCtx.currentTime;
+        const osc  = _audioCtx.createOscillator();
+        const gain = _audioCtx.createGain();
+        const pan  = _makePanner(x, y, z, 0.3, 2);
+        osc.connect(gain); gain.connect(pan); pan.connect(_audioCtx.destination);
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(1500, t);
+        osc.frequency.exponentialRampToValueAtTime(2200, t + 0.10);
+        gain.gain.setValueAtTime(0.0001, t);
+        gain.gain.exponentialRampToValueAtTime(0.14, t + 0.01);
+        gain.gain.exponentialRampToValueAtTime(0.001, t + 0.14);
+        osc.start(t); osc.stop(t + 0.14);
       } catch(_) {}
     }
 
@@ -2697,8 +3232,8 @@
         updateAtmosphere(timestamp, dt);   // 전역 uTime/uVoice 유니폼 갱신 포함
         updateFoodParticle(timestamp, dt);
         updateBubbleBurst(timestamp, dt);
-        updateHandRing(timestamp, dt);
         updateGlowOrb(timestamp, dt);
+        updateOrbAccretion(timestamp, dt);
         updateRingEffect(timestamp, dt);
         updateAmbientEnvironment(timestamp, dt);
         updateEggs(dt);
@@ -2706,10 +3241,14 @@
         // ── Phase 4: 크리처 레이어 ───────────────────────────────
         updateFishSchool(timestamp, dt);
         updateFishLarge(timestamp, dt);
+        updateGuideFish(timestamp, dt);
+        updateFishTouch(timestamp, dt);
         updateJellyfish(timestamp, dt);
         updateWhale(timestamp, dt);
 
         // ── Phase 5: 시스템 레이어 ───────────────────────────────
+        updateMotes(timestamp, dt);
+        updateGauge(dt);
         updateSpawnManager();
         _updateAudioListenerPos();
 
@@ -2723,7 +3262,8 @@
             `pinch:${ctx.counters.pinchTotal}  trail:${ctx.counters.trailLength.toFixed(1)}m<br>` +
             `voice:${ctx.counters.voiceSec.toFixed(0)}s  sing:${ctx.counters.singSec.toFixed(0)}s<br>` +
             `fishS:${ctx.spawnState.fishSCount} M:${ctx.spawnState.fishMCount} L:${ctx.spawnState.fishLCount} jelly:${ctx.spawnState.jellyCount}<br>` +
-            `eggs:${_eggs.length}  whale:${_whale.phase}  t:${ctx.sessionTime.toFixed(0)}s`;
+            `eggs:${_eggs.length}  whale:${_whale.phase}  t:${ctx.sessionTime.toFixed(0)}s<br>` +
+            `gauge:${(_gauge.progress * 100).toFixed(0)}%  motes:${_motes.length}  guide:${_guide.state}`;
         }
       }
 
@@ -2750,8 +3290,10 @@
       _phase3Inited = true;
       initFoodParticle();
       initBubbleBurst();
-      initHandRing();
       initGlowOrb();
+      initOrbAccretion();
+      initMotes();
+      initWhaleGauge();
       initRingEffect();
       initAmbientEnvironment();
       initAtmosphere();
@@ -2768,6 +3310,7 @@
       const offsets = [[-0.5,-0.2,-1.0],[0.3,-0.1,-0.8],[-0.2,0.1,-1.2],[0.6,-0.3,-1.0],[-0.4,0,-1.4]];
       for (const [ox,oy,oz] of offsets)
         spawnFishS(ctx.headPos.x+ox, ctx.spawnEyeY+oy, ctx.headPos.z+oz);
+      spawnGuideFish();
       if (DEBUG) console.log('[phase4] 크리처 레이어 초기화 완료');
     }
 
@@ -2806,7 +3349,20 @@
       _ambBubs.length   = 0;
       _bubTimer         = 0;
       _burstPool.forEach(b => { b.active = false; if (b.mesh) b.mesh.visible = false; });
-      Object.values(_handRing).forEach(r => { r.phase='idle'; r.gatherProgress=0; r.rotAccum=0; r.offsetsReady=false; if(r.mesh) r.mesh.visible=false; });
+      _accParts.length = 0;
+      if (_accMesh) _accMesh.geometry.setDrawRange(0, 0);
+      _motes.length = 0;
+      if (_moteMesh) _moteMesh.geometry.setDrawRange(0, 0);
+      _gauge.progress = 0; _gauge.full = false; _gauge.trailSeen = 0;
+      if (_gauge.mat) {
+        _gauge.mat.uniforms.uProgress.value = 0;
+        _gauge.mat.uniforms.uPulseT.value   = -10;
+        _gauge.mat.uniforms.uFade.value     = 1;
+      }
+      if (_guide.mesh) _guide.mesh.visible = false;
+      _guide.state = 'none';
+      _gtPts.length = 0;
+      if (_gtMesh) _gtMesh.geometry.setDrawRange(0, 0);
       _ringPool.forEach(r => { r.active = false; r.meshes?.forEach(m => m.visible = false); });
       if (_orb.group) { _orb.state = 'inactive'; _orb.group.visible = false; }
       _fishSData.length = 0; _fishMData.length = 0;
@@ -2851,8 +3407,11 @@
         triggerBubbleBurst(-0.3, 1.5, -0.8);
         triggerShockwaveRing(0, 1.4, -1.0);
         activateGlowOrb(0, 1.2, -0.7);
+        spawnLightMote(0.4, 1.3, -0.6);
+        spawnLightMote(-0.4, 1.6, -0.7);
+        gaugeAdd(0.45, false);
         _triggerWhale();
-        window._dbg = { ctx, whale: _whale, scene, camera, renderer };   // 콘솔 검사용
+        window._dbg = { ctx, whale: _whale, gauge: _gauge, guide: _guide, scene, camera, renderer };   // 콘솔 검사용
         console.log('[flat] preview ready');
       })();
     }
