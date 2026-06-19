@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Malrang</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #000; overflow: hidden; }
+    canvas { display: block; }
+
+    #overlay {
+      position: fixed; inset: 0; z-index: 10;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      background: rgba(0, 8, 12, 0.92);
+    }
+    #overlay.hidden { display: none; }
+    #overlay h1 {
+      color: #88ffcc; font-size: 2.4rem;
+      letter-spacing: 0.18em; font-weight: 300;
+      margin-bottom: 0.6rem;
+    }
+    #overlay p {
+      color: rgba(136, 255, 204, 0.5);
+      font-size: 0.9rem; letter-spacing: 0.1em;
+      margin-bottom: 3rem;
+    }
+    #btnXR {
+      padding: 0.9rem 3rem; font-size: 1.05rem;
+      background: transparent; color: #88ffcc;
+      border: 1px solid rgba(136, 255, 204, 0.6);
+      border-radius: 6px; cursor: pointer;
+      letter-spacing: 0.12em;
+      transition: background 0.25s, border-color 0.25s;
+    }
+    #btnXR:hover { background: rgba(136, 255, 204, 0.1); border-color: #88ffcc; }
+    #errMsg {
+      color: #ff8877; margin-top: 1.6rem;
+      font-size: 0.82rem; text-align: center;
+      max-width: 320px; line-height: 1.5;
+    }
+    #dbg {
+      position: fixed; top: 0.8rem; left: 0.8rem; z-index: 20;
+      color: #88ffcc; font-family: monospace; font-size: 0.72rem;
+      line-height: 1.6; pointer-events: none;
+      text-shadow: 0 0 6px #000; display: none;
+    }
+  </style>
+</head>
+<body>
+
+  <div id="overlay">
+    <h1>Malrang</h1>
+    <p>말랑말랑한 무언가</p>
+    <button id="btnXR">만져보기</button>
+    <div id="errMsg"></div>
+  </div>
+  <div id="dbg"></div>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.165.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.165.0/examples/jsm/"
+    }
+  }
+  </script>
+
+  <script type="module">
+    import * as THREE from 'three';
+
+    const DEBUG = location.search.includes('debug');
+    const dbgEl = document.getElementById('dbg');
+    if (DEBUG) dbgEl.style.display = 'block';
+
+    // ─────────────────────────────────────────────────────────────
+    // TOKENS
+    // ─────────────────────────────────────────────────────────────
+
+    const T = {
+      slime: {
+        radius:   0.15,    // m
+        segments: 64,
+        pos:      [0, -0.3, -0.5],  // 눈 기준 아래 30cm, 정면 50cm
+      },
+      color: {
+        base:     new THREE.Color(0x33ffaa),
+        emissive: new THREE.Color(0x003322),
+        opacity:  0.70,
+      },
+      deform: {
+        springK:  0.28,    // 스프링 강성 (클수록 빠르게 반응)
+        damping:  0.76,    // 속도 감쇠 (작을수록 출렁거림)
+        falloff:  6.0,     // 가우시안 범위 (클수록 좁게 패임)
+        maxDepth: 0.07,    // 최대 패임 깊이 m
+        bulge:    0.32,    // 주변 볼록 비율
+      },
+      hand: {
+        touchRadius: 0.025,  // 손가락 끝 콜라이더 반경 m
+      },
+    };
+
+    // ─────────────────────────────────────────────────────────────
+    // SHADERS
+    // ─────────────────────────────────────────────────────────────
+
+    const slimeVert = /* glsl */`
+      uniform vec3  uFingerLocal;
+      uniform float uDepth;
+      uniform float uFalloff;
+      uniform float uBulge;
+
+      varying vec3  vNormal;
+      varying vec3  vEyeDir;
+      varying float vInfluence;
+
+      void main() {
+        float d          = distance(position, uFingerLocal);
+        float gauss      = exp(-d * d * uFalloff);
+        float influence  = gauss * uDepth;
+
+        // 부피 보존: 패인 지점 주변이 볼록
+        float bulgeMask  = exp(-d * d * uFalloff * 0.22) - gauss;
+        float bulgeAmt   = bulgeMask * uDepth * uBulge;
+
+        vec3 displaced   = position - normal * influence + normal * max(bulgeAmt, 0.0);
+
+        vec4 worldPos    = modelMatrix * vec4(displaced, 1.0);
+        vEyeDir          = normalize(cameraPosition - worldPos.xyz);
+        vNormal          = normalize(normalMatrix * normal);
+        vInfluence       = gauss;
+
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(displaced, 1.0);
+      }
+    `;
+
+    const slimeFrag = /* glsl */`
+      uniform vec3  uColor;
+      uniform vec3  uEmissive;
+      uniform float uOpacity;
+
+      varying vec3  vNormal;
+      varying vec3  vEyeDir;
+      varying float vInfluence;
+
+      void main() {
+        float NdotE  = max(dot(vNormal, vEyeDir), 0.0);
+        float fresnel = pow(1.0 - NdotE, 3.0);
+
+        vec3 col  = uColor;
+        col      += vec3(0.15, 0.35, 0.25) * vInfluence;  // 눌린 곳 밝게
+        col      += uEmissive;
+        col      += vec3(0.9) * fresnel * 0.35;            // 가장자리 광택
+
+        float alpha = uOpacity + fresnel * 0.18;
+        gl_FragColor = vec4(col, alpha);
+      }
+    `;
+
+    // ─────────────────────────────────────────────────────────────
+    // SCENE
+    // ─────────────────────────────────────────────────────────────
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.xr.enabled = true;
+    document.body.appendChild(renderer.domElement);
+
+    const scene  = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 20);
+
+    const ambient = new THREE.AmbientLight(0xffffff, 0.6);
+    const dirLight = new THREE.DirectionalLight(0xffffff, 1.2);
+    dirLight.position.set(1, 2, 1);
+    scene.add(ambient, dirLight);
+
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // SLIME MESH
+    // ─────────────────────────────────────────────────────────────
+
+    const slimeGeo = new THREE.SphereGeometry(T.slime.radius, T.slime.segments, T.slime.segments);
+
+    const slimeMat = new THREE.ShaderMaterial({
+      vertexShader:   slimeVert,
+      fragmentShader: slimeFrag,
+      transparent:    true,
+      side:           THREE.DoubleSide,
+      uniforms: {
+        uFingerLocal: { value: new THREE.Vector3(9999, 9999, 9999) },
+        uDepth:       { value: 0.0 },
+        uFalloff:     { value: T.deform.falloff },
+        uBulge:       { value: T.deform.bulge },
+        uColor:       { value: T.color.base },
+        uEmissive:    { value: T.color.emissive },
+        uOpacity:     { value: T.color.opacity },
+      },
+    });
+
+    const slimeMesh = new THREE.Mesh(slimeGeo, slimeMat);
+    slimeMesh.position.set(...T.slime.pos);
+    scene.add(slimeMesh);
+
+    // ─────────────────────────────────────────────────────────────
+    // SPRING STATE
+    // ─────────────────────────────────────────────────────────────
+
+    const spring = {
+      depth:    0,
+      velocity: 0,
+    };
+
+    const _fingerWorld = new THREE.Vector3();
+    const _fingerLocal = new THREE.Vector3();
+    const _slimeWorld  = new THREE.Vector3();
+
+    function updateSpring(hand) {
+      const tip = hand?.joints?.['index-finger-tip'];
+      if (!tip) {
+        // 손 없으면 천천히 복원
+        spring.velocity += (0 - spring.depth) * T.deform.springK;
+        spring.velocity *= T.deform.damping;
+        spring.depth    += spring.velocity;
+        spring.depth     = Math.max(0, spring.depth);
+        slimeMat.uniforms.uDepth.value = spring.depth;
+        return;
+      }
+
+      _fingerWorld.setFromMatrixPosition(tip.matrixWorld);
+      slimeMesh.getWorldPosition(_slimeWorld);
+
+      const dist        = _fingerWorld.distanceTo(_slimeWorld);
+      const penetration = Math.max(0, T.slime.radius + T.hand.touchRadius - dist);
+      const target      = Math.min(penetration, T.deform.maxDepth);
+
+      spring.velocity += (target - spring.depth) * T.deform.springK;
+      spring.velocity *= T.deform.damping;
+      spring.depth    += spring.velocity;
+      spring.depth     = Math.max(0, spring.depth);
+
+      // 손가락 위치를 슬라임 로컬 공간으로 변환
+      _fingerLocal.copy(_fingerWorld);
+      slimeMesh.worldToLocal(_fingerLocal);
+
+      slimeMat.uniforms.uFingerLocal.value.copy(_fingerLocal);
+      slimeMat.uniforms.uDepth.value = spring.depth;
+
+      if (DEBUG) {
+        dbgEl.textContent =
+          `dist: ${dist.toFixed(3)}m\n` +
+          `penetration: ${penetration.toFixed(3)}m\n` +
+          `spring depth: ${spring.depth.toFixed(4)}\n` +
+          `velocity: ${spring.velocity.toFixed(4)}`;
+      }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // XR SETUP
+    // ─────────────────────────────────────────────────────────────
+
+    const btnXR  = document.getElementById('btnXR');
+    const errMsg = document.getElementById('errMsg');
+    const overlay = document.getElementById('overlay');
+
+    btnXR.addEventListener('click', async () => {
+      if (!navigator.xr) {
+        errMsg.textContent = 'WebXR를 지원하지 않는 기기입니다.';
+        return;
+      }
+      const supported = await navigator.xr.isSessionSupported('immersive-ar').catch(() => false);
+      if (!supported) {
+        errMsg.textContent = 'immersive-ar 세션을 지원하지 않습니다.';
+        return;
+      }
+      try {
+        const session = await navigator.xr.requestSession('immersive-ar', {
+          requiredFeatures: ['hand-tracking'],
+          optionalFeatures: ['local-floor'],
+        });
+        renderer.xr.setSession(session);
+        overlay.classList.add('hidden');
+      } catch (e) {
+        errMsg.textContent = `세션 시작 실패: ${e.message}`;
+      }
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // RENDER LOOP
+    // ─────────────────────────────────────────────────────────────
+
+    renderer.setAnimationLoop(() => {
+      const hand = renderer.xr.getHand(0);  // 오른손 우선
+      updateSpring(hand);
+      renderer.render(scene, camera);
+    });
+
+  </script>
+</body>
+</html>
