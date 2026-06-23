@@ -70,6 +70,7 @@
   <script type="module">
     import * as THREE from 'three';
     import { MarchingCubes } from 'three/addons/objects/MarchingCubes.js';
+    import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 
     const DEBUG = location.search.includes('debug');
     const dbgEl = document.getElementById('dbg');
@@ -105,6 +106,10 @@
         releaseSpeed: 0.018, // 손끝이 이 속도(m/frame ≈1.3m/s) 넘으면 털려 떨어짐
         breakDist:    0.090, // 손끝-전하 간격이 이만큼 벌어지면 끊어짐 m
         regrabDelay:  22,    // 놓은 뒤 재포착 금지 프레임 (~0.3s)
+      },
+      mesh: {
+        detail:  3,        // 아이코스피어 세분 (3=642정점). 패임 거칠면 4로
+        radius:  0.10,     // 휴식 반경 m
       },
       color: {
         base:     new THREE.Color(0x33ffaa),
@@ -214,15 +219,28 @@
     //   재질별 외형(광택·투명도·질감)으로 대체 — 손맛은 외형이 아니라 역학에 있음.
     // ─────────────────────────────────────────────────────────────
 
+    // 두 백엔드:
+    //   meta = 유체/위상 가족(자유전하 메타볼) — 늘어남·쪼개짐
+    //   mesh = 고체표면/소성 가족(변위 아이코스피어) — 누르면 패임·자국
     const MATERIALS = [
-      { // 0 — 탄성 극단: 팽팽하고 즉시 스냅백
-        name: 'Water Balloon',
+      { // 탄성 극단: 팽팽하고 즉시 스냅백 (위상 변화 가능)
+        name: 'Water Balloon', backend: 'meta',
         cohesion: 0.075, repelR: 0.075, repel: 0.62, bondDist: 0.135, damping: 0.90,
         color: new THREE.Color(0x55ddff),
       },
-      { // 1 — 소성 극단: 누른 자국이 남고, 죽은 듯 복원이 없음
-        name: 'Putty',
-        cohesion: 0.0018, repelR: 0.070, repel: 0.45, bondDist: 0.160, damping: 0.55,
+      { // 탄성 폼: 눌리면 패였다 스프링백 (항복점 높음 + 복원 빠름)
+        name: 'Marshmallow', backend: 'mesh',
+        stiffness: 0.35, damping: 0.78, yield: 0.030, flow: 0.15, recovery: 0.06, brush: 0.035,
+        color: new THREE.Color(0xfff0f3),
+      },
+      { // 점탄성: 패이고 천천히 차오름
+        name: 'Memory Foam', backend: 'mesh',
+        stiffness: 0.20, damping: 0.85, yield: 0.006, flow: 0.45, recovery: 0.010, brush: 0.035,
+        color: new THREE.Color(0xc8b8a0),
+      },
+      { // 소성 극단: 누른 자국이 영구히 남음 (복원 0)
+        name: 'Putty', backend: 'mesh',
+        stiffness: 0.18, damping: 0.55, yield: 0.003, flow: 0.85, recovery: 0.0, brush: 0.035,
         color: new THREE.Color(0xd9c8a0),
       },
     ];
@@ -231,12 +249,21 @@
     function applyMaterial(i) {
       activeMat = (i % MATERIALS.length + MATERIALS.length) % MATERIALS.length;
       const m = MATERIALS[activeMat];
-      T.sim.cohesion = m.cohesion;
-      T.sim.repelR   = m.repelR;
-      T.sim.repel    = m.repel;
-      T.sim.bondDist = m.bondDist;
-      T.sim.damping  = m.damping;
+      grab[0] = grab[1] = -1;          // 백엔드 전환 시 잡기 상태 초기화
       blobMat.uniforms.uColor.value.copy(m.color);
+      if (m.backend === 'meta') {
+        T.sim.cohesion = m.cohesion;
+        T.sim.repelR   = m.repelR;
+        T.sim.repel    = m.repel;
+        T.sim.bondDist = m.bondDist;
+        T.sim.damping  = m.damping;
+        meshObj.visible = false;
+        effect.visible  = true;
+      } else {
+        effect.visible  = false;
+        placeMesh(blobCenter);          // 현재 블롭 위치에 새 메시 띄움
+        meshObj.visible = true;
+      }
     }
 
     // 전하: 중심 없이 자유롭게 떠다님. cohesion으로 덩어리 유지.
@@ -250,11 +277,113 @@
     const cenSum   = Array.from({ length: N }, () => new THREE.Vector3());
     const cenCount = new Int32Array(N);
 
+    // 두 백엔드가 공유하는 블롭 중심 (meta가 매 프레임 갱신, mesh가 배치에 사용)
+    const blobCenter = new THREE.Vector3();
+
+    // ─────────────────────────────────────────────────────────────
+    // MESH BACKEND — 변위 아이코스피어 (정점별 탄성 + 항복(소성) + 복원)
+    //   누르면 손끝 구가 표면을 안쪽으로 밀어 패임. 변위가 항복점을 넘으면
+    //   rest(휴식 형상)를 cur 쪽으로 흘려 자국을 baked → 남음.
+    //   Putty: recovery 0(영구) / Memory Foam: 느린 복원 / Marshmallow: 탄성 복귀
+    // ─────────────────────────────────────────────────────────────
+
+    let meshGeo = new THREE.IcosahedronGeometry(T.mesh.radius, T.mesh.detail);
+    meshGeo = mergeVertices(meshGeo);              // 정점 용접 → 인덱스화, 부드러운 노멀
+    meshGeo.computeVertexNormals();
+    const meshObj = new THREE.Mesh(meshGeo, blobMat);
+    meshObj.visible = false;
+    scene.add(meshObj);
+
+    const meshPos  = meshGeo.attributes.position.array;   // 라이브 버퍼 = cur
+    const meshV    = meshGeo.attributes.position.count;
+    const meshBase = Float32Array.from(meshPos);          // 원래 구 (복원 목표)
+    const meshRest = Float32Array.from(meshPos);          // 소성 휴식 형상
+    const meshVel  = new Float32Array(meshV * 3);
+
+    function placeMesh(center) {
+      meshObj.position.copy(center);
+      meshPos.set(meshBase);
+      meshRest.set(meshBase);
+      meshVel.fill(0);
+      meshGeo.attributes.position.needsUpdate = true;
+      meshGeo.computeVertexNormals();
+    }
+
+    function updateMesh() {
+      const m = MATERIALS[activeMat];
+      const stiff = m.stiffness, damp = m.damping, flow = m.flow, recov = m.recovery;
+      const yld2 = m.yield * m.yield, br = m.brush, br2 = br * br;
+
+      // 손끝 로컬좌표 (월드 - 중심). 메시는 회전·스케일 없음.
+      const cen = meshObj.position;
+      let nf = 0; const flx = [0, 0], fly = [0, 0], flz = [0, 0];
+      for (let h = 0; h < 2; h++) if (fingers[h].has) {
+        flx[nf] = fingers[h].pos.x - cen.x;
+        fly[nf] = fingers[h].pos.y - cen.y;
+        flz[nf] = fingers[h].pos.z - cen.z;
+        nf++;
+      }
+
+      for (let i = 0; i < meshV; i++) {
+        const k = i * 3;
+        let cx = meshPos[k], cy = meshPos[k+1], cz = meshPos[k+2];
+        let rx = meshRest[k], ry = meshRest[k+1], rz = meshRest[k+2];
+        const bx = meshBase[k], by = meshBase[k+1], bz = meshBase[k+2];
+        let vx = meshVel[k], vy = meshVel[k+1], vz = meshVel[k+2];
+
+        // 탄성: cur → rest
+        vx = (vx + (rx - cx) * stiff) * damp; cx += vx;
+        vy = (vy + (ry - cy) * stiff) * damp; cy += vy;
+        vz = (vz + (rz - cz) * stiff) * damp; cz += vz;
+
+        // 손끝 구 충돌: 반경이 줄어드는 방향(=안쪽)으로만 밀어 패임
+        for (let f = 0; f < nf; f++) {
+          const dx = cx - flx[f], dy = cy - fly[f], dz = cz - flz[f];
+          const d2 = dx*dx + dy*dy + dz*dz;
+          if (d2 < br2 && d2 > 1e-12) {
+            const s = br / Math.sqrt(d2);
+            const tx = flx[f] + dx*s, ty = fly[f] + dy*s, tz = flz[f] + dz*s;
+            if (tx*tx + ty*ty + tz*tz < cx*cx + cy*cy + cz*cz) {
+              cx = tx; cy = ty; cz = tz; vx = 0; vy = 0; vz = 0;
+            }
+          }
+        }
+
+        // 소성: 변위가 항복점 넘으면 rest를 cur 쪽으로 흘림 (자국 남음)
+        const ddx = cx - rx, ddy = cy - ry, ddz = cz - rz;
+        if (ddx*ddx + ddy*ddy + ddz*ddz > yld2) {
+          rx += ddx*flow; ry += ddy*flow; rz += ddz*flow;
+        }
+        // 복원: rest를 원래 구 쪽으로 천천히 (Memory Foam>0, Putty=0)
+        rx += (bx - rx)*recov; ry += (by - ry)*recov; rz += (bz - rz)*recov;
+
+        meshPos[k]=cx; meshPos[k+1]=cy; meshPos[k+2]=cz;
+        meshRest[k]=rx; meshRest[k+1]=ry; meshRest[k+2]=rz;
+        meshVel[k]=vx; meshVel[k+1]=vy; meshVel[k+2]=vz;
+      }
+
+      meshGeo.attributes.position.needsUpdate = true;
+      meshGeo.computeVertexNormals();
+
+      // 손끝 글로우 (월드 좌표)
+      let fc = 0;
+      for (let h = 0; h < 2; h++) if (fingers[h].has) blobMat.uniforms.uFingers.value[fc++].copy(fingers[h].pos);
+      blobMat.uniforms.uFingerCount.value = fc;
+
+      if (DEBUG) {
+        dbgEl.textContent =
+          `material: ${m.name} [mesh] (핀치로 전환)\n` +
+          `fingers: ${fingers[0].has ? 'L' : '-'}${fingers[1].has ? 'R' : '-'}\n` +
+          `verts: ${meshV}`;
+      }
+    }
+
     // ─────────────────────────────────────────────────────────────
     // PLACEMENT — 세션 첫 프레임에 눈높이·정면 배치
     // ─────────────────────────────────────────────────────────────
 
     let needsPlacement = false;
+    let placed = false;
     const _headPos = new THREE.Vector3();
     const _headFwd = new THREE.Vector3();
     const _spawn   = new THREE.Vector3();
@@ -281,8 +410,9 @@
         charges[i].vel.set(0, 0, 0);
       }
       grab[0] = grab[1] = -1;
-      applyMaterial(0);
-      effect.visible = true;
+      blobCenter.copy(_spawn);
+      applyMaterial(0);            // 시작 = Water Balloon(meta), 가시성도 여기서 설정
+      placed = true;
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -359,7 +489,7 @@
           _thumb.setFromMatrixPosition(tipT.matrixWorld);
           if (_thumb.lengthSq() > 1e-8) {
             const pinchClose = fingers[h].pos.distanceTo(_thumb) < 0.022;
-            const farFromBlob = fingers[h].pos.distanceTo(effect.position) > 0.25;
+            const farFromBlob = fingers[h].pos.distanceTo(blobCenter) > 0.25;
             isPinch = pinchClose && farFromBlob && grab[h] < 0;
           }
         }
@@ -369,6 +499,9 @@
         }
         pinchOn[h] = isPinch;
       }
+
+      // ── 백엔드 분기: mesh 재질이면 변위 메시 경로로 (아래 메타볼 로직 건너뜀)
+      if (MATERIALS[activeMat].backend === 'mesh') { updateMesh(); return; }
 
       // ── 잡기 획득/해제 (손별 독립)
       for (let h = 0; h < 2; h++) {
@@ -450,6 +583,7 @@
       half = THREE.MathUtils.clamp(half, T.blob.fieldMin, T.blob.fieldMax);
       effect.position.set(cx, cy, cz);
       effect.scale.setScalar(half);
+      blobCenter.set(cx, cy, cz);   // mesh 전환 시 이 위치에 배치
 
       // ── 메타볼 필드 갱신
       effect.reset();
@@ -525,7 +659,7 @@
         placeBlob();
         needsPlacement = false;
       }
-      if (effect.visible) updateBlob();
+      if (placed) updateBlob();
       renderer.render(scene, camera);
     });
 
