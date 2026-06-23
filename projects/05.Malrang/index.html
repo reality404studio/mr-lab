@@ -69,6 +69,7 @@
 
   <script type="module">
     import * as THREE from 'three';
+    import { MarchingCubes } from 'three/addons/objects/MarchingCubes.js';
 
     const DEBUG = location.search.includes('debug');
     const dbgEl = document.getElementById('dbg');
@@ -79,82 +80,74 @@
     // ─────────────────────────────────────────────────────────────
 
     const T = {
-      slime: {
-        radius:   0.15,    // m
-        segments: 64,
-        forward:  0.5,     // 시작 시 머리 정면 거리 m
-        drop:     0.25,    // 눈높이에서 아래로 m (편하게 잡는 높이)
+      blob: {
+        forward:    0.5,    // 시작 시 머리 정면 거리 m
+        drop:       0.25,   // 눈높이에서 아래로 m
+        fieldScale: 0.45,   // 마칭큐브 필드 큐브 반-크기 m (큐브 = ±0.45 = 0.9m)
+        resolution: 32,     // 그리드 해상도 (Quest 예산상 ↑ 주의)
+        isolation:  80,     // 등위면 임계값
+        charges:    12,     // 메타볼 전하 수
+        offsetR:    0.07,   // 전하 분포 반경 m (표면은 이보다 약간 큼)
+        ballSubtract: 12,   // 메타볼 낙폭 (클수록 뭉침)
       },
+      spring: {
+        k:       0.20,   // 복원 강성
+        kGrab:   0.45,   // 잡힌 전하가 손가락 따라가는 강성
+        damping: 0.80,   // 출렁임 감쇠
+      },
+      grab: {
+        capture: 0.065,  // 이 거리 안이면 전하를 잡음 m
+        break:   0.28,   // 중심에서 이만큼 멀어지면 끊김(스냅) m
+      },
+      hand: { touchRadius: 0.02 },
       color: {
         base:     new THREE.Color(0x33ffaa),
         emissive: new THREE.Color(0x003322),
-        opacity:  0.70,
+        opacity:  0.78,
       },
-      deform: {
-        springK:  0.28,    // 스프링 강성 (클수록 빠르게 반응)
-        damping:  0.76,    // 속도 감쇠 (작을수록 출렁거림)
-        falloff:  6.0,     // 가우시안 범위 (클수록 좁게 패임)
-        maxDepth: 0.07,    // 최대 패임 깊이 m
-        bulge:    0.32,    // 주변 볼록 비율
-      },
-      hand: {
-        touchRadius: 0.025,  // 손가락 끝 콜라이더 반경 m
+      droplet: {
+        count:    96,
+        perSnap:  14,
+        sizePx:   7.0,
+        speed:    0.7,    // 초기 분출 속도 m/s
+        gravity:  1.1,    // 중력 m/s^2
+        life:     0.9,    // 수명 s
       },
     };
 
     // ─────────────────────────────────────────────────────────────
-    // SHADERS
+    // SHADERS — 슬라임 표면 (프레넬 광택 + 접촉 글로우 + 반투명)
     // ─────────────────────────────────────────────────────────────
 
-    const slimeVert = /* glsl */`
-      uniform vec3  uFingerLocal;
-      uniform float uDepth;
-      uniform float uFalloff;
-      uniform float uBulge;
-
-      varying vec3  vNormal;
-      varying vec3  vEyeDir;
-      varying float vInfluence;
-
+    const blobVert = /* glsl */`
+      uniform vec3 uFingerWorld;
+      varying vec3 vNormal;
+      varying vec3 vView;
+      varying float vGlow;
       void main() {
-        float d          = distance(position, uFingerLocal);
-        float gauss      = exp(-d * d * uFalloff);
-        float influence  = gauss * uDepth;
-
-        // 부피 보존: 패인 지점 주변이 볼록
-        float bulgeMask  = exp(-d * d * uFalloff * 0.22) - gauss;
-        float bulgeAmt   = bulgeMask * uDepth * uBulge;
-
-        vec3 displaced   = position - normal * influence + normal * max(bulgeAmt, 0.0);
-
-        vec4 worldPos    = modelMatrix * vec4(displaced, 1.0);
-        vEyeDir          = normalize(cameraPosition - worldPos.xyz);
-        vNormal          = normalize(normalMatrix * normal);
-        vInfluence       = gauss;
-
-        gl_Position = projectionMatrix * modelViewMatrix * vec4(displaced, 1.0);
+        vec4 wp  = modelMatrix * vec4(position, 1.0);
+        vView    = normalize(cameraPosition - wp.xyz);
+        vNormal  = normalize(mat3(modelMatrix) * normal);
+        float d  = distance(wp.xyz, uFingerWorld);
+        vGlow    = exp(-d * d * 220.0);       // 손끝 수 cm 안에서 밝아짐
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
       }
     `;
 
-    const slimeFrag = /* glsl */`
+    const blobFrag = /* glsl */`
       uniform vec3  uColor;
       uniform vec3  uEmissive;
       uniform float uOpacity;
-
       varying vec3  vNormal;
-      varying vec3  vEyeDir;
-      varying float vInfluence;
-
+      varying vec3  vView;
+      varying float vGlow;
       void main() {
-        float NdotE  = max(dot(vNormal, vEyeDir), 0.0);
-        float fresnel = pow(1.0 - NdotE, 3.0);
-
-        vec3 col  = uColor;
-        col      += vec3(0.15, 0.35, 0.25) * vInfluence;  // 눌린 곳 밝게
-        col      += uEmissive;
-        col      += vec3(0.9) * fresnel * 0.35;            // 가장자리 광택
-
-        float alpha = uOpacity + fresnel * 0.18;
+        float NdotV  = max(dot(normalize(vNormal), normalize(vView)), 0.0);
+        float fresnel = pow(1.0 - NdotV, 3.0);
+        vec3 col  = uColor + uEmissive;
+        col      += vec3(0.20, 0.45, 0.32) * vGlow;   // 만진 곳 밝게
+        col      += vec3(0.9) * fresnel * 0.35;        // 가장자리 광택
+        float alpha = uOpacity + fresnel * 0.20;
         gl_FragColor = vec4(col, alpha);
       }
     `;
@@ -184,52 +177,151 @@
     });
 
     // ─────────────────────────────────────────────────────────────
-    // SLIME MESH
+    // BLOB — 마칭큐브 등위면 + 스프링 전하
     // ─────────────────────────────────────────────────────────────
 
-    const slimeGeo = new THREE.SphereGeometry(T.slime.radius, T.slime.segments, T.slime.segments);
-
-    const slimeMat = new THREE.ShaderMaterial({
-      vertexShader:   slimeVert,
-      fragmentShader: slimeFrag,
+    const blobMat = new THREE.ShaderMaterial({
+      vertexShader:   blobVert,
+      fragmentShader: blobFrag,
       transparent:    true,
       side:           THREE.DoubleSide,
       uniforms: {
-        uFingerLocal: { value: new THREE.Vector3(9999, 9999, 9999) },
-        uDepth:       { value: 0.0 },
-        uFalloff:     { value: T.deform.falloff },
-        uBulge:       { value: T.deform.bulge },
+        uFingerWorld: { value: new THREE.Vector3(9999, 9999, 9999) },
         uColor:       { value: T.color.base },
         uEmissive:    { value: T.color.emissive },
         uOpacity:     { value: T.color.opacity },
       },
     });
 
-    const slimeMesh = new THREE.Mesh(slimeGeo, slimeMat);
-    slimeMesh.visible = false;  // 머리 위치 잡힐 때까지 숨김
-    scene.add(slimeMesh);
+    const effect = new MarchingCubes(T.blob.resolution, blobMat, false, false, 120000);
+    effect.isolation = T.blob.isolation;
+    effect.scale.setScalar(T.blob.fieldScale);
+    effect.visible = false;
+    scene.add(effect);
 
-    // 세션 시작 후 첫 프레임에 머리(카메라) 기준으로 눈높이·정면에 배치
+    // 메타볼 세기 (공식 예제 휴리스틱)
+    const ballStrength = 1.2 / ((Math.sqrt(T.blob.charges) - 1) / 4 + 1);
+
+    // 전하: rest = 중심 기준 오프셋(월드), pos/vel = 현재 상태
+    const center  = new THREE.Vector3();
+    const charges = [];
+    for (let i = 0; i < T.blob.charges; i++) {
+      // 피보나치 구 분포로 고르게
+      const phi   = Math.acos(1 - 2 * (i + 0.5) / T.blob.charges);
+      const theta = Math.PI * (1 + Math.sqrt(5)) * i;
+      const rest  = new THREE.Vector3(
+        Math.sin(phi) * Math.cos(theta),
+        Math.cos(phi),
+        Math.sin(phi) * Math.sin(theta),
+      ).multiplyScalar(T.blob.offsetR);
+      charges.push({ rest, pos: new THREE.Vector3(), vel: new THREE.Vector3() });
+    }
+    let grabbed = -1;  // 현재 잡힌 전하 인덱스
+
+    // ─────────────────────────────────────────────────────────────
+    // DROPLETS — 스냅 시 위로 튀는 물방울 (flat px → 근거리 PointSize 안전)
+    // ─────────────────────────────────────────────────────────────
+
+    const dropGeo = new THREE.BufferGeometry();
+    const dropPos  = new Float32Array(T.droplet.count * 3);
+    const dropLife = new Float32Array(T.droplet.count);
+    const dropVel  = new Float32Array(T.droplet.count * 3);
+    dropGeo.setAttribute('position', new THREE.BufferAttribute(dropPos, 3));
+    dropGeo.setAttribute('aLife', new THREE.BufferAttribute(dropLife, 1));
+
+    const dropMat = new THREE.ShaderMaterial({
+      transparent: true,
+      depthWrite:  false,
+      blending:    THREE.AdditiveBlending,
+      uniforms: { uSize: { value: T.droplet.sizePx }, uColor: { value: T.color.base } },
+      vertexShader: /* glsl */`
+        attribute float aLife;
+        uniform float uSize;
+        varying float vLife;
+        void main() {
+          vLife = aLife;
+          gl_PointSize = uSize * aLife;            // z감쇠 없음 = 근거리 폭발 방지
+          gl_Position  = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: /* glsl */`
+        uniform vec3 uColor;
+        varying float vLife;
+        void main() {
+          vec2 uv = gl_PointCoord - 0.5;
+          if (dot(uv, uv) > 0.25) discard;          // 둥근 점
+          gl_FragColor = vec4(uColor + 0.3, vLife);
+        }
+      `,
+    });
+    const droplets = new THREE.Points(dropGeo, dropMat);
+    droplets.frustumCulled = false;
+    droplets.visible = false;
+    scene.add(droplets);
+
+    let dropCursor = 0;
+    const _spawnDir = new THREE.Vector3();
+    function spawnDroplets(at) {
+      droplets.visible = true;
+      for (let n = 0; n < T.droplet.perSnap; n++) {
+        const i = dropCursor; dropCursor = (dropCursor + 1) % T.droplet.count;
+        dropPos[i * 3]     = at.x;
+        dropPos[i * 3 + 1] = at.y;
+        dropPos[i * 3 + 2] = at.z;
+        // 위 + 바깥으로 (패스스루 오클루전 규칙: 손 근처는 위로/퍼지게)
+        _spawnDir.set((Math.random() - 0.5), Math.random() * 0.8 + 0.6, (Math.random() - 0.5)).normalize();
+        const sp = T.droplet.speed * (0.6 + Math.random() * 0.6);
+        dropVel[i * 3]     = _spawnDir.x * sp;
+        dropVel[i * 3 + 1] = _spawnDir.y * sp;
+        dropVel[i * 3 + 2] = _spawnDir.z * sp;
+        dropLife[i] = 1.0;
+      }
+    }
+    function updateDroplets(dt) {
+      let alive = false;
+      for (let i = 0; i < T.droplet.count; i++) {
+        if (dropLife[i] <= 0) continue;
+        alive = true;
+        dropVel[i * 3 + 1] -= T.droplet.gravity * dt;
+        dropPos[i * 3]     += dropVel[i * 3] * dt;
+        dropPos[i * 3 + 1] += dropVel[i * 3 + 1] * dt;
+        dropPos[i * 3 + 2] += dropVel[i * 3 + 2] * dt;
+        dropLife[i] -= dt / T.droplet.life;
+        if (dropLife[i] < 0) dropLife[i] = 0;
+      }
+      droplets.visible = alive;
+      if (alive) {
+        dropGeo.attributes.position.needsUpdate = true;
+        dropGeo.attributes.aLife.needsUpdate = true;
+      }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // PLACEMENT — 세션 첫 프레임에 눈높이·정면 배치
+    // ─────────────────────────────────────────────────────────────
+
     let needsPlacement = false;
-
     const _headPos = new THREE.Vector3();
     const _headFwd = new THREE.Vector3();
 
-    function placeSlime() {
+    function placeBlob() {
       const xrCam = renderer.xr.getCamera();
       xrCam.getWorldPosition(_headPos);
-
-      // 머리가 바라보는 정면(수평 성분만 사용 → 바닥/천장 쏠림 방지)
       xrCam.getWorldDirection(_headFwd);
       _headFwd.y = 0;
       if (_headFwd.lengthSq() < 1e-6) _headFwd.set(0, 0, -1);
       _headFwd.normalize();
 
-      slimeMesh.position.copy(_headPos)
-        .addScaledVector(_headFwd, T.slime.forward);
-      slimeMesh.position.y = _headPos.y - T.slime.drop;
+      center.copy(_headPos).addScaledVector(_headFwd, T.blob.forward);
+      center.y = _headPos.y - T.blob.drop;
+      effect.position.copy(center);
 
-      slimeMesh.visible = true;
+      for (const c of charges) {
+        c.pos.copy(center).add(c.rest);
+        c.vel.set(0, 0, 0);
+      }
+      grabbed = -1;
+      effect.visible = true;
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -239,71 +331,89 @@
     const hands = [renderer.xr.getHand(0), renderer.xr.getHand(1)];
     hands.forEach(h => scene.add(h));
 
-    // ─────────────────────────────────────────────────────────────
-    // SPRING STATE
-    // ─────────────────────────────────────────────────────────────
-
-    const spring = {
-      depth:    0,
-      velocity: 0,
-    };
-
+    const _tipWorld   = new THREE.Vector3();
     const _fingerWorld = new THREE.Vector3();
-    const _tipWorld    = new THREE.Vector3();
-    const _fingerLocal = new THREE.Vector3();
-    const _slimeWorld  = new THREE.Vector3();
+    let   hasFinger = false;
 
-    // 양손 손가락 끝 중 슬라임에 가장 가까운 것을 찾는다
-    function nearestFingertip() {
-      slimeMesh.getWorldPosition(_slimeWorld);
-      let best = null, bestDist = Infinity;
+    // 양손 손가락 끝 중 중심에 가장 가까운 것 → _fingerWorld, hasFinger
+    function pickFinger() {
+      let best = Infinity;
+      hasFinger = false;
       for (const hand of hands) {
         const tip = hand?.joints?.['index-finger-tip'];
         if (!tip) continue;
         _tipWorld.setFromMatrixPosition(tip.matrixWorld);
-        // joint matrixWorld가 아직 갱신 전이면 원점(0,0,0)에 머무름 → 건너뜀
-        if (_tipWorld.lengthSq() < 1e-8) continue;
-        const d = _tipWorld.distanceTo(_slimeWorld);
-        if (d < bestDist) { bestDist = d; best = _fingerWorld.copy(_tipWorld); }
+        if (_tipWorld.lengthSq() < 1e-8) continue;   // 미갱신 joint(원점) 무시
+        const d = _tipWorld.distanceTo(center);
+        if (d < best) { best = d; _fingerWorld.copy(_tipWorld); hasFinger = true; }
       }
-      return best ? bestDist : null;
     }
 
-    function updateSpring() {
-      const dist = nearestFingertip();
+    // ─────────────────────────────────────────────────────────────
+    // SIM — 전하 스프링 + 잡기/끊기
+    // ─────────────────────────────────────────────────────────────
 
-      if (dist === null) {
-        // 손 없으면 천천히 복원
-        spring.velocity += (0 - spring.depth) * T.deform.springK;
-        spring.velocity *= T.deform.damping;
-        spring.depth    += spring.velocity;
-        spring.depth     = Math.max(0, spring.depth);
-        slimeMat.uniforms.uDepth.value = spring.depth;
-        if (DEBUG) dbgEl.textContent = 'no fingertip';
-        return;
+    const _target = new THREE.Vector3();
+    const _accel  = new THREE.Vector3();
+    const _field  = new THREE.Vector3();
+
+    function updateBlob() {
+      pickFinger();
+
+      // 잡기 획득
+      if (grabbed < 0 && hasFinger) {
+        let bi = -1, bd = T.grab.capture;
+        for (let i = 0; i < charges.length; i++) {
+          const d = charges[i].pos.distanceTo(_fingerWorld);
+          if (d < bd) { bd = d; bi = i; }
+        }
+        grabbed = bi;
+      }
+      // 끊김 판정
+      if (grabbed >= 0) {
+        if (!hasFinger) {
+          grabbed = -1;
+        } else if (charges[grabbed].pos.distanceTo(center) > T.grab.break) {
+          spawnDroplets(charges[grabbed].pos);
+          grabbed = -1;
+        }
       }
 
-      const penetration = Math.max(0, T.slime.radius + T.hand.touchRadius - dist);
-      const target      = Math.min(penetration, T.deform.maxDepth);
+      // 적분 (프레임 스텝, 72fps 가정 — 기존 튜닝과 일관)
+      for (let i = 0; i < charges.length; i++) {
+        const c = charges[i];
+        if (i === grabbed && hasFinger) {
+          _target.copy(_fingerWorld);
+          _accel.copy(_target).sub(c.pos).multiplyScalar(T.spring.kGrab);
+        } else {
+          _target.copy(center).add(c.rest);
+          _accel.copy(_target).sub(c.pos).multiplyScalar(T.spring.k);
+        }
+        c.vel.add(_accel).multiplyScalar(T.spring.damping);
+        c.pos.add(c.vel);
+      }
 
-      spring.velocity += (target - spring.depth) * T.deform.springK;
-      spring.velocity *= T.deform.damping;
-      spring.depth    += spring.velocity;
-      spring.depth     = Math.max(0, spring.depth);
+      // 마칭큐브 필드 갱신
+      effect.reset();
+      const inv = 1 / (2 * T.blob.fieldScale);
+      for (let i = 0; i < charges.length; i++) {
+        _field.copy(charges[i].pos).sub(center).multiplyScalar(inv).addScalar(0.5);
+        const fx = THREE.MathUtils.clamp(_field.x, 0.02, 0.98);
+        const fy = THREE.MathUtils.clamp(_field.y, 0.02, 0.98);
+        const fz = THREE.MathUtils.clamp(_field.z, 0.02, 0.98);
+        effect.addBall(fx, fy, fz, ballStrength, T.blob.ballSubtract);
+      }
+      effect.update();
 
-      // 손가락 위치를 슬라임 로컬 공간으로 변환
-      _fingerLocal.copy(_fingerWorld);
-      slimeMesh.worldToLocal(_fingerLocal);
-
-      slimeMat.uniforms.uFingerLocal.value.copy(_fingerLocal);
-      slimeMat.uniforms.uDepth.value = spring.depth;
+      // 셰이더 손끝 글로우
+      blobMat.uniforms.uFingerWorld.value.copy(
+        hasFinger ? _fingerWorld : { x: 9999, y: 9999, z: 9999 });
 
       if (DEBUG) {
         dbgEl.textContent =
-          `dist: ${dist.toFixed(3)}m\n` +
-          `penetration: ${penetration.toFixed(3)}m\n` +
-          `spring depth: ${spring.depth.toFixed(4)}\n` +
-          `velocity: ${spring.velocity.toFixed(4)}`;
+          `finger: ${hasFinger ? 'yes' : 'no'}\n` +
+          `grabbed: ${grabbed}\n` +
+          (grabbed >= 0 ? `pull: ${charges[grabbed].pos.distanceTo(center).toFixed(3)}m / break ${T.grab.break}\n` : '');
       }
     }
 
@@ -331,7 +441,7 @@
           optionalFeatures: ['local-floor'],
         });
         renderer.xr.setSession(session);
-        needsPlacement = true;  // 첫 프레임에 눈높이 배치
+        needsPlacement = true;
         overlay.classList.add('hidden');
       } catch (e) {
         errMsg.textContent = `세션 시작 실패: ${e.message}`;
@@ -342,12 +452,19 @@
     // RENDER LOOP
     // ─────────────────────────────────────────────────────────────
 
+    const clock = new THREE.Clock();
+
     renderer.setAnimationLoop(() => {
+      const dt = Math.min(clock.getDelta(), 0.05);
+
       if (needsPlacement && renderer.xr.isPresenting) {
-        placeSlime();
+        placeBlob();
         needsPlacement = false;
       }
-      updateSpring();
+      if (effect.visible) {
+        updateBlob();
+        updateDroplets(dt);
+      }
       renderer.render(scene, camera);
     });
 
