@@ -82,7 +82,8 @@
       slime: {
         radius:   0.15,    // m
         segments: 64,
-        pos:      [0, -0.3, -0.5],  // 눈 기준 아래 30cm, 정면 50cm
+        forward:  0.5,     // 시작 시 머리 정면 거리 m
+        drop:     0.25,    // 눈높이에서 아래로 m (편하게 잡는 높이)
       },
       color: {
         base:     new THREE.Color(0x33ffaa),
@@ -205,8 +206,31 @@
     });
 
     const slimeMesh = new THREE.Mesh(slimeGeo, slimeMat);
-    slimeMesh.position.set(...T.slime.pos);
+    slimeMesh.visible = false;  // 머리 위치 잡힐 때까지 숨김
     scene.add(slimeMesh);
+
+    // 세션 시작 후 첫 프레임에 머리(카메라) 기준으로 눈높이·정면에 배치
+    let needsPlacement = false;
+
+    const _headPos = new THREE.Vector3();
+    const _headFwd = new THREE.Vector3();
+
+    function placeSlime() {
+      const xrCam = renderer.xr.getCamera();
+      xrCam.getWorldPosition(_headPos);
+
+      // 머리가 바라보는 정면(수평 성분만 사용 → 바닥/천장 쏠림 방지)
+      xrCam.getWorldDirection(_headFwd);
+      _headFwd.y = 0;
+      if (_headFwd.lengthSq() < 1e-6) _headFwd.set(0, 0, -1);
+      _headFwd.normalize();
+
+      slimeMesh.position.copy(_headPos)
+        .addScaledVector(_headFwd, T.slime.forward);
+      slimeMesh.position.y = _headPos.y - T.slime.drop;
+
+      slimeMesh.visible = true;
+    }
 
     // ─────────────────────────────────────────────────────────────
     // SPRING STATE
@@ -285,6 +309,7 @@
           optionalFeatures: ['local-floor'],
         });
         renderer.xr.setSession(session);
+        needsPlacement = true;  // 첫 프레임에 눈높이 배치
         overlay.classList.add('hidden');
       } catch (e) {
         errMsg.textContent = `세션 시작 실패: ${e.message}`;
@@ -296,6 +321,10 @@
     // ─────────────────────────────────────────────────────────────
 
     renderer.setAnimationLoop(() => {
+      if (needsPlacement && renderer.xr.isPresenting) {
+        placeSlime();
+        needsPlacement = false;
+      }
       const hand = renderer.xr.getHand(0);  // 오른손 우선
       updateSpring(hand);
       renderer.render(scene, camera);
