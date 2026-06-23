@@ -203,6 +203,39 @@
 
     const ballStrength = 1.2 / ((Math.sqrt(T.blob.charges) - 1) / 4 + 1);
 
+    // ─────────────────────────────────────────────────────────────
+    // MATERIALS — 손맛 스파이크: 탄성 ↔ 소성 두 극단만 (B단계)
+    //   cohesion: 형상 기억(높음=탄성 복원 / ≈0=소성, 자국이 남음)
+    //   damping : 생기(높음=출렁/스냅백 / 낮음=죽은 듯 무복원)
+    //   color는 어느 재질인지 알려주는 *테스터용 임시 틴트*. C단계에서
+    //   재질별 외형(광택·투명도·질감)으로 대체 — 손맛은 외형이 아니라 역학에 있음.
+    // ─────────────────────────────────────────────────────────────
+
+    const MATERIALS = [
+      { // 0 — 탄성 극단: 팽팽하고 즉시 스냅백
+        name: 'Water Balloon',
+        cohesion: 0.075, repelR: 0.075, repel: 0.62, bondDist: 0.135, damping: 0.90,
+        color: new THREE.Color(0x55ddff),
+      },
+      { // 1 — 소성 극단: 누른 자국이 남고, 죽은 듯 복원이 없음
+        name: 'Putty',
+        cohesion: 0.0018, repelR: 0.070, repel: 0.45, bondDist: 0.160, damping: 0.55,
+        color: new THREE.Color(0xd9c8a0),
+      },
+    ];
+    let activeMat = 0;
+
+    function applyMaterial(i) {
+      activeMat = (i % MATERIALS.length + MATERIALS.length) % MATERIALS.length;
+      const m = MATERIALS[activeMat];
+      T.sim.cohesion = m.cohesion;
+      T.sim.repelR   = m.repelR;
+      T.sim.repel    = m.repel;
+      T.sim.bondDist = m.bondDist;
+      T.sim.damping  = m.damping;
+      blobMat.uniforms.uColor.value.copy(m.color);
+    }
+
     // 전하: 중심 없이 자유롭게 떠다님. cohesion으로 덩어리 유지.
     const N = T.blob.charges;
     const charges = [];
@@ -245,6 +278,7 @@
         charges[i].vel.set(0, 0, 0);
       }
       grab[0] = grab[1] = -1;
+      applyMaterial(0);
       effect.visible = true;
     }
 
@@ -260,6 +294,11 @@
       { pos: new THREE.Vector3(), has: false },
     ];
     const grab = [-1, -1];   // 손별로 잡은 전하 인덱스
+
+    // 핀치(엄지+검지)로 재질 순환 — 슬라임에서 떨어진 허공에서 의도적으로
+    const pinchOn = [false, false];
+    let   pinchCooldown = 0;
+    const _thumb = new THREE.Vector3();
 
     function readFingers() {
       for (let h = 0; h < 2; h++) {
@@ -291,6 +330,27 @@
 
     function updateBlob() {
       readFingers();
+
+      // ── 핀치로 재질 순환: 슬라임에서 떨어진 허공에서 엄지+검지를 붙임
+      //    (잡는 중이거나 슬라임 근처면 무시 → 인터랙션과 충돌 방지)
+      pinchCooldown = Math.max(0, pinchCooldown - 1);
+      for (let h = 0; h < 2; h++) {
+        const tipT = hands[h]?.joints?.['thumb-tip'];
+        let isPinch = false;
+        if (tipT && fingers[h].has) {
+          _thumb.setFromMatrixPosition(tipT.matrixWorld);
+          if (_thumb.lengthSq() > 1e-8) {
+            const pinchClose = fingers[h].pos.distanceTo(_thumb) < 0.022;
+            const farFromBlob = fingers[h].pos.distanceTo(effect.position) > 0.25;
+            isPinch = pinchClose && farFromBlob && grab[h] < 0;
+          }
+        }
+        if (isPinch && !pinchOn[h] && pinchCooldown === 0) {
+          applyMaterial(activeMat + 1);
+          pinchCooldown = 45;   // ~0.6s @72fps 디바운스
+        }
+        pinchOn[h] = isPinch;
+      }
 
       // ── 잡기 획득/해제 (손별 독립)
       for (let h = 0; h < 2; h++) {
@@ -386,6 +446,7 @@
         let clusters = 0;
         for (let i = 0; i < N; i++) if (find(i) === i) clusters++;
         dbgEl.textContent =
+          `material: ${MATERIALS[activeMat].name}  (핀치로 전환)\n` +
           `fingers: ${fingers[0].has ? 'L' : '-'}${fingers[1].has ? 'R' : '-'}\n` +
           `grab: ${grab[0]} / ${grab[1]}\n` +
           `clusters(덩어리): ${clusters}\n` +
