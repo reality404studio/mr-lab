@@ -233,6 +233,13 @@
     }
 
     // ─────────────────────────────────────────────────────────────
+    // HANDS  (scene에 추가해야 joint matrixWorld가 매 프레임 갱신됨)
+    // ─────────────────────────────────────────────────────────────
+
+    const hands = [renderer.xr.getHand(0), renderer.xr.getHand(1)];
+    hands.forEach(h => scene.add(h));
+
+    // ─────────────────────────────────────────────────────────────
     // SPRING STATE
     // ─────────────────────────────────────────────────────────────
 
@@ -242,25 +249,40 @@
     };
 
     const _fingerWorld = new THREE.Vector3();
+    const _tipWorld    = new THREE.Vector3();
     const _fingerLocal = new THREE.Vector3();
     const _slimeWorld  = new THREE.Vector3();
 
-    function updateSpring(hand) {
-      const tip = hand?.joints?.['index-finger-tip'];
-      if (!tip) {
+    // 양손 손가락 끝 중 슬라임에 가장 가까운 것을 찾는다
+    function nearestFingertip() {
+      slimeMesh.getWorldPosition(_slimeWorld);
+      let best = null, bestDist = Infinity;
+      for (const hand of hands) {
+        const tip = hand?.joints?.['index-finger-tip'];
+        if (!tip) continue;
+        _tipWorld.setFromMatrixPosition(tip.matrixWorld);
+        // joint matrixWorld가 아직 갱신 전이면 원점(0,0,0)에 머무름 → 건너뜀
+        if (_tipWorld.lengthSq() < 1e-8) continue;
+        const d = _tipWorld.distanceTo(_slimeWorld);
+        if (d < bestDist) { bestDist = d; best = _fingerWorld.copy(_tipWorld); }
+      }
+      return best ? bestDist : null;
+    }
+
+    function updateSpring() {
+      const dist = nearestFingertip();
+
+      if (dist === null) {
         // 손 없으면 천천히 복원
         spring.velocity += (0 - spring.depth) * T.deform.springK;
         spring.velocity *= T.deform.damping;
         spring.depth    += spring.velocity;
         spring.depth     = Math.max(0, spring.depth);
         slimeMat.uniforms.uDepth.value = spring.depth;
+        if (DEBUG) dbgEl.textContent = 'no fingertip';
         return;
       }
 
-      _fingerWorld.setFromMatrixPosition(tip.matrixWorld);
-      slimeMesh.getWorldPosition(_slimeWorld);
-
-      const dist        = _fingerWorld.distanceTo(_slimeWorld);
       const penetration = Math.max(0, T.slime.radius + T.hand.touchRadius - dist);
       const target      = Math.min(penetration, T.deform.maxDepth);
 
@@ -325,8 +347,7 @@
         placeSlime();
         needsPlacement = false;
       }
-      const hand = renderer.xr.getHand(0);  // 오른손 우선
-      updateSpring(hand);
+      updateSpring();
       renderer.render(scene, camera);
     });
 
