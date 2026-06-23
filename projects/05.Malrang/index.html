@@ -102,6 +102,9 @@
       grab: {
         capture: 0.060,    // 이 거리 안의 전하를 잡음 m
         kGrab:   0.40,     // 잡힌 전하가 손가락 따라가는 강성
+        releaseSpeed: 0.018, // 손끝이 이 속도(m/frame ≈1.3m/s) 넘으면 털려 떨어짐
+        breakDist:    0.090, // 손끝-전하 간격이 이만큼 벌어지면 끊어짐 m
+        regrabDelay:  22,    // 놓은 뒤 재포착 금지 프레임 (~0.3s)
       },
       color: {
         base:     new THREE.Color(0x33ffaa),
@@ -295,6 +298,12 @@
     ];
     const grab = [-1, -1];   // 손별로 잡은 전하 인덱스
 
+    // 손끝 속도 (털어서 놓기용)
+    const fingerPrev     = [new THREE.Vector3(), new THREE.Vector3()];
+    const fingerVel      = [new THREE.Vector3(), new THREE.Vector3()];
+    const fingerSpeed    = [0, 0];
+    const regrabCooldown = [0, 0];
+
     // 핀치(엄지+검지)로 재질 순환 — 슬라임에서 떨어진 허공에서 의도적으로
     const pinchOn = [false, false];
     let   pinchCooldown = 0;
@@ -303,11 +312,20 @@
     function readFingers() {
       for (let h = 0; h < 2; h++) {
         const tip = hands[h]?.joints?.['index-finger-tip'];
+        const wasHas = fingers[h].has;
         fingers[h].has = false;
+        fingerSpeed[h] = 0;
         if (!tip) continue;
         fingers[h].pos.setFromMatrixPosition(tip.matrixWorld);
         if (fingers[h].pos.lengthSq() < 1e-8) continue;   // 미갱신 joint(원점) 무시
         fingers[h].has = true;
+        if (wasHas) {                                     // 연속 추적 중일 때만 속도 계산
+          fingerVel[h].subVectors(fingers[h].pos, fingerPrev[h]);
+          fingerSpeed[h] = fingerVel[h].length();
+        } else {
+          fingerVel[h].set(0, 0, 0);                      // 추적 재획득 프레임의 속도 스파이크 무시
+        }
+        fingerPrev[h].copy(fingers[h].pos);
       }
     }
 
@@ -354,8 +372,21 @@
 
       // ── 잡기 획득/해제 (손별 독립)
       for (let h = 0; h < 2; h++) {
-        if (grab[h] >= 0 && !fingers[h].has) grab[h] = -1;            // 손 사라짐 → 놓기
-        if (grab[h] < 0 && fingers[h].has) {
+        regrabCooldown[h] = Math.max(0, regrabCooldown[h] - 1);
+
+        // 놓기: 손 사라짐 / 빠른 털기 / 너무 벌어짐 → 손 속도 실어서 날려보냄
+        if (grab[h] >= 0) {
+          const c = charges[grab[h]];
+          const stretched = c.pos.distanceTo(fingers[h].pos) > T.grab.breakDist;
+          if (!fingers[h].has || fingerSpeed[h] > T.grab.releaseSpeed || stretched) {
+            if (fingers[h].has) c.vel.copy(fingerVel[h]);
+            grab[h] = -1;
+            regrabCooldown[h] = T.grab.regrabDelay;
+          }
+        }
+
+        // 잡기 획득 (놓은 직후 쿨다운 중엔 안 잡음)
+        if (grab[h] < 0 && fingers[h].has && regrabCooldown[h] === 0) {
           let bi = -1, bd = T.grab.capture;
           for (let i = 0; i < N; i++) {
             if (i === grab[1 - h]) continue;                          // 다른 손이 잡은 건 제외
