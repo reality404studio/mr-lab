@@ -135,19 +135,22 @@
         height:  CAT_H,
       },
       sim: {
-        cohesion:  0.068,   // rest 스프링
-        neighborK: 0.042,   // 인접 스프링 (낮추면 나선 억제)
-        damping:   0.88,    // 감쇠
-        push:      0.038,   // ★ Z방향 밀어내기 강성 (작게!)
-        pushR:     0.055,   // 밀어내기 반경 m
-        maxVel:    0.05,    // 최대 속도
+        cohesion:  0.062,
+        neighborK: 0.072,
+        damping:   0.88,
+        maxVel:    0.048,
       },
       grab: {
-        capture:      0.07,
-        kGrab:        0.32,
-        releaseSpeed: 0.028,
-        breakDist:    0.16,
-        regrabDelay:  20,
+        capture:      0.12,
+        kGrab:        0.10,
+        releaseSpeed: 0.035,
+        breakDist:    0.20,
+        regrabDelay:  18,
+      },
+      rigid: {
+        grabPropK: 0.12,
+        homeK:     0.006,
+        damp:      0.93,
       },
     };
 
@@ -888,8 +891,8 @@
         }
         try {
           const session = await navigator.xr.requestSession('immersive-ar', {
-            requiredFeatures: ['hand-tracking'],
-            optionalFeatures: ['local-floor'],
+            requiredFeatures: ['local-floor'],
+            optionalFeatures: ['hand-tracking'],  // 선택사항: 지원 안 해도 세션 실패 안 함
           });
           renderer.xr.setSession(session);
           needsPlacement = true;
