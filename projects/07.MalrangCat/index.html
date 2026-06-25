@@ -155,8 +155,13 @@
     const hStep    = T.cat.width  / SEG;
     const vStep    = T.cat.height / SEG;
     const diagStep = Math.sqrt(hStep * hStep + vStep * vStep);
-    const pushR2   = T.sim.pushR  * T.sim.pushR;
     const capR2    = T.grab.capture * T.grab.capture;
+
+    // 풍선 돔 설정
+    const BULGE    = 0.022;                    // 최대 Z 돌출량 (m) — 풍선 두께
+    const TOUCH_Z  = BULGE + 0.045;           // 잡기 허용 Z 범위 (m)
+    const balloonZ = new Float32Array(VCOUNT); // 버텍스별 rest Z 오프셋
+    let   balloonBuilt = false;
 
     // ─────────────────────────────────────────────────────────────
     // SHADER — 텍스처 + 디퓨즈 + 프레넬 + 손끝 글로우
@@ -249,32 +254,76 @@
     // ─────────────────────────────────────────────────────────────
     const catGeo = new THREE.PlaneGeometry(T.cat.width, T.cat.height, SEG, SEG);
 
-    // ── 알파 마스크: 텍스처를 캔버스로 샘플링 → 투명 버텍스 핀 처리
-    // alphaMask[i] = 0 이면 그 버텍스는 물리 정지(고양이 윤곽 밖)
-    const alphaMask = new Uint8Array(VCOUNT); // 0=frozen, 1=active
-    alphaMask.fill(1); // 기본 active, 텍스처 로드 후 갱신
+    // ── 알파 마스크 + 풍선 돔
+    // alphaMask[i]=0 → 투명(고양이 윤곽 밖), 물리 정지
+    // balloonZ[i]    → 고양이 내부 거리 필드 기반 Z 오프셋 (풍선 모양)
+    const alphaMask = new Uint8Array(VCOUNT);
+    alphaMask.fill(1);
 
     function buildAlphaMask(img) {
       const cvs = document.createElement('canvas');
-      cvs.width  = img.width;
-      cvs.height = img.height;
+      cvs.width = img.width; cvs.height = img.height;
       const ctx = cvs.getContext('2d');
       ctx.drawImage(img, 0, 0);
       const data = ctx.getImageData(0, 0, img.width, img.height).data;
 
-      // PlaneGeometry UV: u=col/SEG (0→1 left→right), v=1-row/SEG (bottom=0,top=1)
-      // Three.js PlaneGeometry vertex order: row 0 = top
+      // ── 1. 알파 샘플링
       for (let row = 0; row <= SEG; row++) {
         for (let col = 0; col <= SEG; col++) {
           const i = row * COLS + col;
           const u = col / SEG;
-          const v = 1 - row / SEG;  // Three UV v=0 bottom
+          const v = 1 - row / SEG;
           const px = Math.min(Math.floor(u * img.width),  img.width  - 1);
           const py = Math.min(Math.floor((1-v) * img.height), img.height - 1);
-          const alpha = data[(py * img.width + px) * 4 + 3];
-          alphaMask[i] = alpha > 20 ? 1 : 0;
+          alphaMask[i] = data[(py * img.width + px) * 4 + 3] > 20 ? 1 : 0;
         }
       }
+
+      // ── 2. 거리 필드 계산 (Manhattan) → 돔 높이
+      // distField[i] = 투명 경계에서 몇 격자 떨어졌는지
+      const dist = new Float32Array(VCOUNT);
+      for (let i = 0; i < VCOUNT; i++) dist[i] = alphaMask[i] ? 999 : 0;
+
+      // 전진 패스
+      for (let r = 0; r <= SEG; r++) for (let c = 0; c <= SEG; c++) {
+        const i = r * COLS + c;
+        if (!alphaMask[i]) continue;
+        let m = dist[i];
+        if (c > 0)   m = Math.min(m, dist[i-1]    + 1);
+        if (r > 0)   m = Math.min(m, dist[i-COLS] + 1);
+        dist[i] = m;
+      }
+      // 후진 패스
+      for (let r = SEG; r >= 0; r--) for (let c = SEG; c >= 0; c--) {
+        const i = r * COLS + c;
+        if (!alphaMask[i]) continue;
+        let m = dist[i];
+        if (c < SEG) m = Math.min(m, dist[i+1]    + 1);
+        if (r < SEG) m = Math.min(m, dist[i+COLS] + 1);
+        dist[i] = m;
+      }
+
+      // ── 3. 정규화 후 풍선 Z 계산
+      // sin(t*PI/2) 커브: 가장자리=0, 중심=BULGE, 전환 부드러움
+      const maxD = dist.reduce((m,v) => Math.max(m,v), 0) || 1;
+      for (let i = 0; i < VCOUNT; i++) {
+        if (!alphaMask[i]) { balloonZ[i] = 0; continue; }
+        const t = dist[i] / maxD;                    // 0(가장자리) ~ 1(중심)
+        balloonZ[i] = Math.sin(t * Math.PI * 0.5) * BULGE;
+      }
+
+      applyBalloon();
+      balloonBuilt = true;
+    }
+
+    // 풍선 높이를 지오메트리 + rest 위치에 적용
+    function applyBalloon() {
+      for (let i = 0; i < VCOUNT; i++) {
+        posArr[i*3+2]  = balloonZ[i];
+        if (placed) restArr[i*3+2] = balloonZ[i]; // 이미 배치됐으면 rest도 갱신
+      }
+      catGeo.attributes.position.needsUpdate = true;
+      catGeo.computeVertexNormals();
     }
 
     const catImg = new Image();
@@ -350,6 +399,8 @@
     // INIT PHYSICS — rest 위치 복사, 속도 초기화
     // ─────────────────────────────────────────────────────────────
     function initPhysics() {
+      // 풍선이 이미 빌드됐으면 먼저 적용
+      if (balloonBuilt) applyBalloon();
       restArr.set(posArr);
       velArr.fill(0);
       grabActive[0] = grabActive[1] = false;
@@ -441,6 +492,16 @@
 
         // 손끝 → 로컬 공간 변환
         fingerLocalPos[h].copy(fingers[h].pos).applyMatrix4(_invMat);
+
+        // ── Z 근접 게이트: 손이 메시 평면에서 너무 멀면 완전 무시
+        // 풍선 표면(≈BULGE) 기준 ±TOUCH_Z 범위 밖이면 인터랙션 없음
+        // → 손이 가까이 가기만 해도 울렁이는 현상 완전 차단
+        if (fingerLocalPos[h].z < -0.02 || fingerLocalPos[h].z > TOUCH_Z) {
+          if (grabActive[h]) { grabActive[h] = false; grabMask[h].fill(0); }
+          fingerLocalPos[h].set(9999, 9999, 9999);
+          fingers[h].has = false; // 이 프레임 인터랙션 무효화
+          continue;
+        }
 
         // ── 해제 조건 확인 (잡는 중일 때)
         if (grabActive[h]) {
@@ -576,9 +637,8 @@
           if (d > 1e-8) { s=(d-diagStep)/d*kN; fx+=dx*s; fy+=dy*s; fz+=dz*s; }
         }
 
-        // ── 투명 버텍스: 물리 동결 (나선 방지 핵심)
+        // ── 투명 버텍스: 물리 동결 (윤곽 유지)
         if (!alphaMask[i]) {
-          // rest position으로 강제 리셋, 속도 0
           pos[i3]   = rest[i3];
           pos[i3+1] = rest[i3+1];
           pos[i3+2] = rest[i3+2];
@@ -586,29 +646,15 @@
           continue;
         }
 
-        // ── 손끝 힘
+        // ── 잡기 힘 (push 완전 제거 — 울렁임 버그 차단)
         for (let h = 0; h < 2; h++) {
           if (!fingers[h].has) continue;
+          if (!grabActive[h] || !grabMask[h][i]) continue;
           const fl = fingerLocalPos[h];
-
-          if (grabActive[h] && grabMask[h][i]) {
-            // 잡힘: XY(평면 내) + Z(법선) 모두 당김
-            fx += (fl.x - px) * T.grab.kGrab;
-            fy += (fl.y - py) * T.grab.kGrab;
-            fz += (fl.z - pz) * T.grab.kGrab;
-          } else {
-            // ★ 밀어내기: XY 거리 기준으로만 반응, Z방향으로만 밀기
-            // → 나선 버그 방지: XY 방향 힘 제거
-            dx = px - fl.x;
-            dy = py - fl.y;
-            const dxy2 = dx*dx + dy*dy;
-            if (dxy2 < pushR2 && dxy2 > 1e-8) {
-              const dxy = Math.sqrt(dxy2);
-              // 손끝보다 앞(Z+)으로 밀기 (로컬 Z = 메시 법선)
-              const pushZ = (T.sim.pushR - dxy) / T.sim.pushR * T.sim.push;
-              fz += pushZ; // Z방향만
-            }
-          }
+          // 잡힌 버텍스를 손끝 위치로 스프링 당김 (XYZ 모두)
+          fx += (fl.x - px) * T.grab.kGrab;
+          fy += (fl.y - py) * T.grab.kGrab;
+          fz += (fl.z - pz) * T.grab.kGrab;
         }
 
         // ── 적분
