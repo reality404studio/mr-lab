@@ -153,11 +153,14 @@
         damp:      0.9,
       },
       push: {
-        contactZ:  0.14,  // 손바닥 접촉 z 허용 범위 (m, 슬랩 양쪽)
-        margin:    0.08,  // xy 접촉 여유 (윤곽 밖에서도 살짝 닿으면 인정)
-        pushK:     0.10,  // 손바닥 속도 → 몸통 속도 (≈손바닥 따라 이동)
-        minSpeed:  0.0025,// 이 속도 미만이면 밀기 무시 (정지 손바닥 떨림 방지)
-        homeFollow:0.08,  // home이 현재 위치를 천천히 따라옴 → 민 자리에 머묾
+        offset:   0.045,  // 손바닥 중심 → 실제 접촉면(피부) 보정 (고양이 방향)
+        bandLo:  -0.04,   // 접촉 z 하한 (local m) — 표면 안쪽 살짝
+        bandHi:   0.05,   // 접촉 z 상한 = BULGE + 이 값 (실제 닿아야 반응)
+        reachXY:  0.0,    // xy 접촉 여유 (0 = 윤곽 안에서만)
+        stick:    0.85,   // 닿은 채 손바닥 변위를 따라가는 비율 (저항 없는 추종)
+        palmR:    0.18,   // 표면 cling 반경 (local m) — 손에 감기는 범위
+        kPalm:    0.07,   // cling 강성 (표면이 손바닥에 붙는 정도)
+        minSpeed: 0.0015, // 이 속도 미만이면 이동 무시 (정지 손 떨림 방지)
       },
     };
 
@@ -167,6 +170,7 @@
     const diagStep = Math.sqrt(hStep * hStep + vStep * vStep);
     const capR     = T.grab.capture;          // 좌우 편의성
     const capR2    = capR * capR;
+    const palmR2   = T.push.palmR * T.push.palmR;
 
     // 풍선 돔 설정
     const BULGE    = 0.06;                     // 최대 Z 돌출량 (m) — 풍선 두께 (3배 크기 비례)
@@ -412,13 +416,16 @@
     const fingerLocalPos = [new THREE.Vector3(), new THREE.Vector3()];
     const fingerCanGrab  = [false, false]; // XR = true 항상; 마우스 = 클릭 시만
 
-    // ── PALM STATE — 손바닥으로 슥슥 밀어 고양이 통째 이동
-    const palmPos   = [new THREE.Vector3(), new THREE.Vector3()];
-    const palmPrev  = [new THREE.Vector3(), new THREE.Vector3()];
-    const palmVel   = [new THREE.Vector3(), new THREE.Vector3()];
-    const palmHas   = [false, false];
-    const _palmLoc  = new THREE.Vector3();
-    const _w        = new THREE.Vector3(); // 임시 (wrist)
+    // ── PALM STATE — 손바닥으로 슥슥 밀어 고양이 이동 + 손에 감기는 cling
+    const palmPos      = [new THREE.Vector3(), new THREE.Vector3()];
+    const palmPrev     = [new THREE.Vector3(), new THREE.Vector3()];
+    const palmVel      = [new THREE.Vector3(), new THREE.Vector3()];
+    const palmHas      = [false, false];
+    const palmStick    = [false, false];                                   // 이번 프레임 접촉?
+    const palmLocalPt  = [new THREE.Vector3(), new THREE.Vector3()];       // 접촉점(cat-local)
+    const _palmC       = new THREE.Vector3(); // 보정된 접촉점(world)
+    const _dir         = new THREE.Vector3(); // 손바닥→고양이 방향
+    const _w           = new THREE.Vector3(); // 임시 (wrist)
 
     // 마우스 모드: hover 글로우용 (physics와 분리)
     const shaderPos   = [new THREE.Vector3(9999,9999,9999), new THREE.Vector3(9999,9999,9999)];
@@ -463,6 +470,7 @@
       regrabCool[0] = regrabCool[1] = 0;
       fingerCanGrab[0] = fingerCanGrab[1] = false;
       palmHas[0] = palmHas[1] = false;
+      palmStick[0] = palmStick[1] = false;
       meshVel.set(0, 0, 0);
     }
 
@@ -638,6 +646,31 @@
     }
 
     // ─────────────────────────────────────────────────────────────
+    // PALM CONTACT — 손바닥 접촉 판정 (보정된 접촉면 기준)
+    //   _invMat은 updateGrab에서 갱신됨(같은 프레임, catMesh 위치 변동 전)
+    // ─────────────────────────────────────────────────────────────
+    function updatePalm() {
+      for (let h = 0; h < 2; h++) {
+        palmStick[h] = false;
+        if (!palmHas[h]) continue;
+
+        // 손바닥 중심(조인트 기준)은 피부보다 안쪽 → 고양이 쪽으로 offset 보정
+        _dir.copy(catMesh.position).sub(palmPos[h]);
+        if (_dir.lengthSq() < 1e-8) continue;
+        _dir.normalize();
+        _palmC.copy(palmPos[h]).addScaledVector(_dir, T.push.offset);
+
+        // 접촉점 → cat-local, 윤곽 안 + 표면 근처(z)일 때만 접촉
+        palmLocalPt[h].copy(_palmC).applyMatrix4(_invMat);
+        const lp   = palmLocalPt[h];
+        const inXY = Math.abs(lp.x) < T.cat.width  * 0.5 + T.push.reachXY &&
+                     Math.abs(lp.y) < T.cat.height * 0.5 + T.push.reachXY;
+        const inZ  = lp.z > T.push.bandLo && lp.z < BULGE + T.push.bandHi;
+        if (inXY && inZ) palmStick[h] = true;
+      }
+    }
+
+    // ─────────────────────────────────────────────────────────────
     // SIMULATION STEP — 버텍스 물리 적분
     //   cohesion: rest position spring (탄성 복원)
     //   neighbor: 8방향 스프링 (출렁임 파급, 구조 유지)
@@ -746,6 +779,17 @@
           fz += (fl.z - pz) * T.grab.kGrab * w;
         }
 
+        // ── 손바닥 cling — 닿은 주변 표면이 손바닥에 감기듯 끌림(쫀득)
+        for (let h = 0; h < 2; h++) {
+          if (!palmStick[h]) continue;
+          const pl = palmLocalPt[h];
+          const dpx = pl.x - px, dpy = pl.y - py, dpz = pl.z - pz;
+          const d2  = dpx*dpx + dpy*dpy + dpz*dpz;
+          if (d2 >= palmR2) continue;
+          const w = (1 - Math.sqrt(d2) / T.push.palmR) * T.push.kPalm; // 중심↑ 가장자리0
+          fx += dpx * w; fy += dpy * w; fz += dpz * w;
+        }
+
         // ── 적분
         vel[i3]   = (vel[i3]   + fx) * dp;
         vel[i3+1] = (vel[i3+1] + fy) * dp;
@@ -771,37 +815,29 @@
     // MESH RIGID UPDATE — 잡아당길 때 고양이 전체가 밀리고 복귀
     // ─────────────────────────────────────────────────────────────
     function updateMeshRigid() {
-      // grab 활성 → 손 속도의 일부를 메시 전체 이동에 전달
+      // 검지 잡기 → 손 속도 일부를 몸통에 (잡고 끌면 살짝 따라옴)
       for (let h = 0; h < 2; h++) {
         if (grabActive[h] && fingerSpeed[h] > 0.001) {
           meshVel.addScaledVector(fingerVel[h], T.rigid.grabPropK);
         }
       }
 
-      // ── 손바닥 밀기: 손바닥이 고양이에 닿은 채 움직이면 그 방향으로 몸통 이동
-      const halfW = T.cat.width  * 0.5 + T.push.margin;
-      const halfH = T.cat.height * 0.5 + T.push.margin;
+      // ── 손바닥 sticky-follow: 닿은 채 움직이면 손바닥 변위를 직접 따라감
+      //   (속도 누적/홈 스프링 없음 → 저항 없이 손에 붙어 끌림)
+      let stuck = false;
       for (let h = 0; h < 2; h++) {
-        if (!palmHas[h]) continue;
-        const sp = palmVel[h].length();
-        if (sp < T.push.minSpeed) continue;
-        // 손바닥을 고양이 로컬 공간으로 (slab 접촉 판정)
-        _palmLoc.copy(palmPos[h]).applyMatrix4(_invMat);
-        const inXY = Math.abs(_palmLoc.x) < halfW && Math.abs(_palmLoc.y) < halfH;
-        const inZ  = _palmLoc.z > -T.push.contactZ && _palmLoc.z < TOUCH_Z + T.push.contactZ;
-        if (inXY && inZ) meshVel.addScaledVector(palmVel[h], T.push.pushK);
+        if (!palmStick[h]) continue;
+        if (palmVel[h].lengthSq() < T.push.minSpeed * T.push.minSpeed) { stuck = true; continue; }
+        catMesh.position.addScaledVector(palmVel[h], T.push.stick); // 즉시 추종
+        meshVel.copy(palmVel[h]).multiplyScalar(T.push.stick);      // 해제 후 짧은 글라이드용
+        stuck = true;
       }
 
-      // 미세 안정화 스프링 (home이 위치를 따라오므로 스냅백 아님)
-      meshVel.x += (meshHome.x - catMesh.position.x) * T.rigid.homeK;
-      meshVel.y += (meshHome.y - catMesh.position.y) * T.rigid.homeK;
-      meshVel.z += (meshHome.z - catMesh.position.z) * T.rigid.homeK;
-      // 감쇠 + 적용
-      meshVel.multiplyScalar(T.rigid.damp);
-      catMesh.position.add(meshVel);
-
-      // home이 현재 위치를 천천히 따라옴 → 민 자리에 머묾(고정 앵커 아님)
-      meshHome.lerp(catMesh.position, T.push.homeFollow);
+      // 손바닥 접촉 중이 아닐 때만 관성 적용 (검지 끌기 글라이드 + 잔여 감쇠)
+      if (!stuck) {
+        meshVel.multiplyScalar(T.rigid.damp);
+        catMesh.position.add(meshVel);
+      }
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -812,6 +848,7 @@
 
       catMesh.updateWorldMatrix(false, false);
       updateGrab();
+      updatePalm();        // ← 손바닥 접촉 판정 (simStep cling + 이동에 사용)
       simStep();
       updateMeshRigid();   // ← 고양이 전체 이동 물리
 
