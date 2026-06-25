@@ -1,0 +1,783 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MalrangCat</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #000; overflow: hidden; font-family: 'Georgia', serif; }
+    canvas { display: block; }
+
+    #overlay {
+      position: fixed; inset: 0; z-index: 10;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      background: radial-gradient(ellipse at center,
+        rgba(14, 5, 28, 0.97) 0%,
+        rgba(3, 0, 10, 0.99) 100%);
+    }
+    #overlay.hidden { display: none; }
+
+    #overlay h1 {
+      color: #ffd9a0;
+      font-size: 2.8rem;
+      letter-spacing: 0.26em;
+      font-weight: 400;
+      margin-bottom: 0.45rem;
+      text-shadow: 0 0 50px rgba(255, 170, 60, 0.25);
+    }
+    #overlay p {
+      color: rgba(255, 200, 140, 0.42);
+      font-size: 0.84rem;
+      letter-spacing: 0.2em;
+      margin-bottom: 3.8rem;
+      font-family: sans-serif;
+    }
+    #btnXR {
+      padding: 1rem 3.8rem;
+      font-size: 0.95rem;
+      background: transparent;
+      color: #ffd9a0;
+      border: 1px solid rgba(255, 180, 80, 0.4);
+      border-radius: 60px;
+      cursor: pointer;
+      letter-spacing: 0.2em;
+      font-family: sans-serif;
+      transition: background 0.28s, border-color 0.28s, box-shadow 0.28s;
+    }
+    #btnXR:hover {
+      background: rgba(255, 180, 80, 0.07);
+      border-color: rgba(255, 210, 130, 0.7);
+      box-shadow: 0 0 28px rgba(255, 160, 50, 0.18);
+    }
+    #errMsg {
+      color: #ff8877;
+      margin-top: 1.6rem;
+      font-size: 0.78rem;
+      text-align: center;
+      max-width: 290px;
+      line-height: 1.75;
+      font-family: sans-serif;
+    }
+    #dbg {
+      position: fixed; top: 0.8rem; left: 0.8rem; z-index: 20;
+      color: rgba(255, 200, 140, 0.75);
+      font-family: monospace;
+      font-size: 0.68rem;
+      line-height: 1.85;
+      pointer-events: none;
+      text-shadow: 0 0 5px #000;
+      display: none;
+    }
+    #hint {
+      position: fixed; bottom: 2.2rem; left: 50%;
+      transform: translateX(-50%); z-index: 20;
+      color: rgba(255, 200, 140, 0.48);
+      font-size: 0.74rem;
+      letter-spacing: 0.12em;
+      pointer-events: none;
+      font-family: sans-serif;
+      white-space: nowrap;
+    }
+  </style>
+</head>
+<body>
+  <div id="overlay">
+    <h1>MalrangCat</h1>
+    <p>말랑말랑한 고양이</p>
+    <button id="btnXR">만져보기</button>
+    <div id="errMsg"></div>
+  </div>
+  <div id="dbg"></div>
+  <div id="hint"></div>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.165.0/build/three.module.js"
+    }
+  }
+  </script>
+
+  <script type="module">
+    import * as THREE from 'three';
+
+    // ─────────────────────────────────────────────────────────────
+    // FLAGS
+    // ─────────────────────────────────────────────────────────────
+    const DEBUG     = location.search.includes('debug');
+    const MOUSEMODE = location.search.includes('mouse');
+
+    const dbgEl  = document.getElementById('dbg');
+    const hintEl = document.getElementById('hint');
+    if (DEBUG) dbgEl.style.display = 'block';
+
+    // ─────────────────────────────────────────────────────────────
+    // TOKENS
+    // ─────────────────────────────────────────────────────────────
+    const SEG    = 64;           // 격자 해상도 (64×64 = 4,225 버텍스)
+    const COLS   = SEG + 1;
+    const VCOUNT = COLS * COLS;
+
+    const T = {
+      cat: {
+        forward: 0.5,    // XR 배치: 눈 정면 m
+        drop:    0.05,   // XR 배치: 눈높이 아래 m
+        width:   0.38,   // 메시 가로 m
+        height:  0.48,   // 메시 세로 m
+      },
+      sim: {
+        cohesion:  0.072,   // rest 스프링 (높음 = 빠른 탄성 복원)
+        neighborK: 0.055,   // 인접 버텍스 스프링 (출렁임 파급)
+        damping:   0.875,   // 속도 감쇠
+        push:      0.55,    // 손끝 밀어내기 강성 (dent)
+        pushR:     0.062,   // 밀어내기 사거리 m
+        maxVel:    0.065,   // 버텍스 최대 속도 m/frame
+      },
+      grab: {
+        capture:      0.08,   // 잡기 반경 m
+        kGrab:        0.38,   // 잡기 스프링 강성
+        releaseSpeed: 0.024,  // 이 속도(m/frame) 이상이면 털어서 해제
+        breakDist:    0.14,   // 잡기 중심에서 이 거리 벌어지면 끊어짐 m
+        regrabDelay:  18,     // 해제 후 재포착 금지 프레임
+      },
+    };
+
+    // 사전 계산 — 스프링 자연 길이
+    const hStep    = T.cat.width  / SEG;
+    const vStep    = T.cat.height / SEG;
+    const diagStep = Math.sqrt(hStep * hStep + vStep * vStep);
+    const pushR2   = T.sim.pushR    * T.sim.pushR;
+    const capR2    = T.grab.capture * T.grab.capture;
+
+    // ─────────────────────────────────────────────────────────────
+    // SHADER — 텍스처 + 디퓨즈 + 프레넬 + 손끝 글로우
+    // ─────────────────────────────────────────────────────────────
+    const catVert = /* glsl */`
+      uniform vec3  uFingers[2];
+      uniform int   uFingerCount;
+      varying vec2  vUv;
+      varying vec3  vNormal;
+      varying vec3  vView;
+      varying float vGlow;
+
+      void main() {
+        vUv     = uv;
+        vec4 wp = modelMatrix * vec4(position, 1.0);
+        vNormal = normalize(mat3(modelMatrix) * normal);
+        vView   = normalize(cameraPosition - wp.xyz);
+
+        float g = 0.0;
+        for (int k = 0; k < 2; k++) {
+          if (k >= uFingerCount) break;
+          float d = distance(wp.xyz, uFingers[k]);
+          g = max(g, exp(-d * d * 260.0));
+        }
+        vGlow = g;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `;
+
+    const catFrag = /* glsl */`
+      uniform sampler2D uTex;
+      uniform vec3      uLightDir;
+      varying vec2      vUv;
+      varying vec3      vNormal;
+      varying vec3      vView;
+      varying float     vGlow;
+
+      void main() {
+        vec4 tex = texture2D(uTex, vUv);
+        if (tex.a < 0.04) discard;
+
+        vec3 n = normalize(vNormal);
+        vec3 v = normalize(vView);
+
+        // 디퓨즈 라이팅
+        float diff  = max(dot(n, normalize(uLightDir)), 0.0);
+        float light = 0.50 + 0.50 * diff;
+
+        // 프레넬 (젤리 가장자리 광택)
+        float fresnel = pow(1.0 - max(dot(n, v), 0.0), 2.8);
+
+        vec3 col  = tex.rgb * light;
+        col += vec3(1.0, 0.97, 0.90) * fresnel * 0.16;
+        col += vec3(1.0, 0.82, 0.42) * vGlow * 0.60;  // 황금빛 글로우
+
+        gl_FragColor = vec4(col, tex.a);
+      }
+    `;
+
+    // ─────────────────────────────────────────────────────────────
+    // SCENE
+    // ─────────────────────────────────────────────────────────────
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.xr.enabled = !MOUSEMODE;
+    document.body.appendChild(renderer.domElement);
+
+    const scene  = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 20);
+
+    if (MOUSEMODE) {
+      camera.position.set(0, 0, 0.65);
+      camera.lookAt(0, 0, 0);
+    }
+
+    scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+    const dirLight = new THREE.DirectionalLight(0xffffff, 1.1);
+    dirLight.position.set(1, 2, 2);
+    scene.add(dirLight);
+
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // CAT MESH — PlaneGeometry + ShaderMaterial
+    // ─────────────────────────────────────────────────────────────
+    const catGeo = new THREE.PlaneGeometry(T.cat.width, T.cat.height, SEG, SEG);
+    const catTex = new THREE.TextureLoader().load('IMG_2182.PNG');
+    catTex.colorSpace = THREE.SRGBColorSpace;
+
+    const catMat = new THREE.ShaderMaterial({
+      vertexShader:   catVert,
+      fragmentShader: catFrag,
+      transparent: true,
+      side:        THREE.DoubleSide,
+      depthWrite:  false,
+      uniforms: {
+        uTex:         { value: catTex },
+        uFingers:     { value: [new THREE.Vector3(9999, 9999, 9999),
+                                 new THREE.Vector3(9999, 9999, 9999)] },
+        uFingerCount: { value: 0 },
+        uLightDir:    { value: new THREE.Vector3(1, 2, 2).normalize() },
+      },
+    });
+
+    const catMesh = new THREE.Mesh(catGeo, catMat);
+    catMesh.visible = false;
+    scene.add(catMesh);
+
+    // ─────────────────────────────────────────────────────────────
+    // PHYSICS BUFFERS (로컬 메시 공간)
+    // ─────────────────────────────────────────────────────────────
+    const posArr  = catGeo.attributes.position.array;  // 지오메트리 버퍼 직접 참조
+    const restArr = new Float32Array(VCOUNT * 3);       // 초기(rest) 위치
+    const velArr  = new Float32Array(VCOUNT * 3);       // 버텍스 속도
+
+    // ─────────────────────────────────────────────────────────────
+    // FINGER STATE
+    // ─────────────────────────────────────────────────────────────
+    const fingers = [
+      { pos: new THREE.Vector3(), has: false },
+      { pos: new THREE.Vector3(), has: false },
+    ];
+    const fingerPrev     = [new THREE.Vector3(), new THREE.Vector3()];
+    const fingerVel      = [new THREE.Vector3(), new THREE.Vector3()];
+    const fingerSpeed    = [0, 0];
+    const fingerLocalPos = [new THREE.Vector3(), new THREE.Vector3()];
+    const fingerCanGrab  = [false, false]; // XR = true 항상; 마우스 = 클릭 시만
+
+    // 마우스 모드: hover 글로우용 (physics와 분리)
+    const shaderPos   = [new THREE.Vector3(9999,9999,9999), new THREE.Vector3(9999,9999,9999)];
+    let   shaderCount = 0;
+
+    // ─────────────────────────────────────────────────────────────
+    // GRAB STATE
+    // ─────────────────────────────────────────────────────────────
+    const grabActive  = [false, false];
+    const grabMask    = [new Uint8Array(VCOUNT), new Uint8Array(VCOUNT)];
+    const grabCenterL = [new THREE.Vector3(), new THREE.Vector3()];
+    const regrabCool  = [0, 0];
+
+    // ─────────────────────────────────────────────────────────────
+    // HELPERS
+    // ─────────────────────────────────────────────────────────────
+    const _invMat  = new THREE.Matrix4();
+    const _headPos = new THREE.Vector3();
+    const _headFwd = new THREE.Vector3();
+    const _spawn   = new THREE.Vector3();
+
+    let placed = false, needsPlacement = false;
+
+    // ─────────────────────────────────────────────────────────────
+    // INIT PHYSICS — rest 위치 복사, 속도 초기화
+    // ─────────────────────────────────────────────────────────────
+    function initPhysics() {
+      restArr.set(posArr);
+      velArr.fill(0);
+      grabActive[0] = grabActive[1] = false;
+      grabMask[0].fill(0); grabMask[1].fill(0);
+      regrabCool[0] = regrabCool[1] = 0;
+      fingerCanGrab[0] = fingerCanGrab[1] = false;
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // PLACEMENT (XR) — 세션 첫 프레임에 눈높이 정면 배치
+    // ─────────────────────────────────────────────────────────────
+    function placeCat() {
+      const xrCam = renderer.xr.getCamera();
+      xrCam.getWorldPosition(_headPos);
+      xrCam.getWorldDirection(_headFwd);
+      _headFwd.y = 0;
+      if (_headFwd.lengthSq() < 1e-6) _headFwd.set(0, 0, -1);
+      _headFwd.normalize();
+
+      _spawn.copy(_headPos).addScaledVector(_headFwd, T.cat.forward);
+      _spawn.y = _headPos.y - T.cat.drop;
+
+      catMesh.position.copy(_spawn);
+
+      // PlaneGeometry 기본 법선 (+Z local) → 사용자를 향하도록 (-headFwd)
+      catMesh.quaternion.setFromUnitVectors(
+        new THREE.Vector3(0, 0, 1),
+        _headFwd.clone().negate()
+      );
+      catMesh.updateWorldMatrix(false, false);
+      catMesh.visible = true;
+      initPhysics();
+      placed = true;
+    }
+
+    // PLACEMENT (mouse) — 원점에 고양이, 카메라는 앞쪽
+    function placeCatMouse() {
+      catMesh.position.set(0, 0, 0);
+      catMesh.quaternion.identity();
+      catMesh.updateWorldMatrix(false, false);
+      catMesh.visible = true;
+      document.getElementById('overlay').classList.add('hidden');
+      hintEl.textContent = '클릭 & 드래그로 말랑하게 만져보세요 🐾';
+      initPhysics();
+      placed = true;
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // HANDS  (scene에 추가해야 joint matrixWorld 갱신됨)
+    // ─────────────────────────────────────────────────────────────
+    const hands = MOUSEMODE ? [] : [renderer.xr.getHand(0), renderer.xr.getHand(1)];
+    hands.forEach(h => scene.add(h));
+
+    function readFingers() {
+      for (let h = 0; h < 2; h++) {
+        const tip    = hands[h]?.joints?.['index-finger-tip'];
+        const wasHas = fingers[h].has;
+        fingers[h].has = false;
+        fingerSpeed[h] = 0;
+        if (!tip) continue;
+        fingers[h].pos.setFromMatrixPosition(tip.matrixWorld);
+        if (fingers[h].pos.lengthSq() < 1e-8) continue; // 미갱신 joint(원점) 무시
+        fingers[h].has = true;
+        fingerCanGrab[h] = true;  // XR: 항상 잡기 가능
+        if (wasHas) {
+          fingerVel[h].subVectors(fingers[h].pos, fingerPrev[h]);
+          fingerSpeed[h] = fingerVel[h].length();
+        } else {
+          fingerVel[h].set(0, 0, 0); // 추적 재획득 프레임 속도 스파이크 방지
+        }
+        fingerPrev[h].copy(fingers[h].pos);
+      }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // GRAB UPDATE — 손별 잡기 획득/해제
+    // ─────────────────────────────────────────────────────────────
+    function updateGrab() {
+      _invMat.copy(catMesh.matrixWorld).invert();
+
+      for (let h = 0; h < 2; h++) {
+        regrabCool[h] = Math.max(0, regrabCool[h] - 1);
+
+        if (!fingers[h].has) {
+          if (grabActive[h]) { grabActive[h] = false; grabMask[h].fill(0); }
+          fingerLocalPos[h].set(9999, 9999, 9999);
+          continue;
+        }
+
+        // 손끝 → 로컬 공간 변환
+        fingerLocalPos[h].copy(fingers[h].pos).applyMatrix4(_invMat);
+
+        // ── 해제 조건 확인 (잡는 중일 때)
+        if (grabActive[h]) {
+          const flick  = fingerSpeed[h] > T.grab.releaseSpeed;
+          const tooFar = fingerLocalPos[h].distanceTo(grabCenterL[h]) > T.grab.breakDist;
+          if (flick || tooFar) {
+            // 손 속도를 로컬 공간으로 변환 후 잡힌 버텍스에 전달 (날아가게)
+            const e   = _invMat.elements;
+            const wx  = fingerVel[h].x, wy = fingerVel[h].y, wz = fingerVel[h].z;
+            const lvx = e[0]*wx + e[4]*wy + e[8]*wz;
+            const lvy = e[1]*wx + e[5]*wy + e[9]*wz;
+            const lvz = e[2]*wx + e[6]*wy + e[10]*wz;
+            for (let i = 0; i < VCOUNT; i++) {
+              if (!grabMask[h][i]) continue;
+              velArr[i*3]   += lvx * 0.50;
+              velArr[i*3+1] += lvy * 0.50;
+              velArr[i*3+2] += lvz * 0.50;
+            }
+            grabActive[h] = false;
+            grabMask[h].fill(0);
+            regrabCool[h] = T.grab.regrabDelay;
+          }
+          continue; // 잡는 중: 재획득 시도 안 함
+        }
+
+        // ── 잡기 획득 — capture 반경 안의 버텍스 일괄 포착
+        if (fingerCanGrab[h] && regrabCool[h] === 0) {
+          const fl = fingerLocalPos[h];
+          let count = 0;
+          grabMask[h].fill(0);
+          grabCenterL[h].set(0, 0, 0);
+
+          for (let i = 0; i < VCOUNT; i++) {
+            const dx = posArr[i*3]   - fl.x;
+            const dy = posArr[i*3+1] - fl.y;
+            const dz = posArr[i*3+2] - fl.z;
+            if (dx*dx + dy*dy + dz*dz < capR2) {
+              grabMask[h][i] = 1;
+              grabCenterL[h].x += posArr[i*3];
+              grabCenterL[h].y += posArr[i*3+1];
+              grabCenterL[h].z += posArr[i*3+2];
+              count++;
+            }
+          }
+          if (count > 0) {
+            grabCenterL[h].divideScalar(count);
+            grabActive[h] = true;
+          }
+        }
+      }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // SIMULATION STEP — 버텍스 물리 적분
+    //   cohesion: rest position spring (탄성 복원)
+    //   neighbor: 8방향 스프링 (출렁임 파급, 구조 유지)
+    //   finger:   push(dent) 또는 grab(pull) 힘
+    // ─────────────────────────────────────────────────────────────
+    function simStep() {
+      const pos  = posArr;
+      const rest = restArr;
+      const vel  = velArr;
+      const kC   = T.sim.cohesion;
+      const kN   = T.sim.neighborK;
+      const dp   = T.sim.damping;
+      const mv   = T.sim.maxVel;
+      const mv2  = mv * mv;
+
+      for (let i = 0; i < VCOUNT; i++) {
+        const i3 = i * 3;
+        const px = pos[i3], py = pos[i3+1], pz = pos[i3+2];
+
+        // ── cohesion: rest position으로 끌어당김
+        let fx = (rest[i3]   - px) * kC;
+        let fy = (rest[i3+1] - py) * kC;
+        let fz = (rest[i3+2] - pz) * kC;
+
+        const row = (i / COLS) | 0;
+        const col = i % COLS;
+
+        let ni, ni3, dx, dy, dz, d, s;
+
+        // ── 축방향 스프링 (L/R: hStep, U/D: vStep)
+        if (col > 0) {
+          ni = i-1; ni3 = ni*3;
+          dx = pos[ni3]-px; dy = pos[ni3+1]-py; dz = pos[ni3+2]-pz;
+          d  = Math.sqrt(dx*dx+dy*dy+dz*dz);
+          if (d > 1e-8) { s=(d-hStep)/d*kN; fx+=dx*s; fy+=dy*s; fz+=dz*s; }
+        }
+        if (col < SEG) {
+          ni = i+1; ni3 = ni*3;
+          dx = pos[ni3]-px; dy = pos[ni3+1]-py; dz = pos[ni3+2]-pz;
+          d  = Math.sqrt(dx*dx+dy*dy+dz*dz);
+          if (d > 1e-8) { s=(d-hStep)/d*kN; fx+=dx*s; fy+=dy*s; fz+=dz*s; }
+        }
+        if (row > 0) {
+          ni = i-COLS; ni3 = ni*3;
+          dx = pos[ni3]-px; dy = pos[ni3+1]-py; dz = pos[ni3+2]-pz;
+          d  = Math.sqrt(dx*dx+dy*dy+dz*dz);
+          if (d > 1e-8) { s=(d-vStep)/d*kN; fx+=dx*s; fy+=dy*s; fz+=dz*s; }
+        }
+        if (row < SEG) {
+          ni = i+COLS; ni3 = ni*3;
+          dx = pos[ni3]-px; dy = pos[ni3+1]-py; dz = pos[ni3+2]-pz;
+          d  = Math.sqrt(dx*dx+dy*dy+dz*dz);
+          if (d > 1e-8) { s=(d-vStep)/d*kN; fx+=dx*s; fy+=dy*s; fz+=dz*s; }
+        }
+
+        // ── 대각선 스프링 (shear 방지, 젤리 구조감)
+        if (col > 0 && row > 0) {
+          ni = i-COLS-1; ni3 = ni*3;
+          dx = pos[ni3]-px; dy = pos[ni3+1]-py; dz = pos[ni3+2]-pz;
+          d  = Math.sqrt(dx*dx+dy*dy+dz*dz);
+          if (d > 1e-8) { s=(d-diagStep)/d*kN; fx+=dx*s; fy+=dy*s; fz+=dz*s; }
+        }
+        if (col < SEG && row > 0) {
+          ni = i-COLS+1; ni3 = ni*3;
+          dx = pos[ni3]-px; dy = pos[ni3+1]-py; dz = pos[ni3+2]-pz;
+          d  = Math.sqrt(dx*dx+dy*dy+dz*dz);
+          if (d > 1e-8) { s=(d-diagStep)/d*kN; fx+=dx*s; fy+=dy*s; fz+=dz*s; }
+        }
+        if (col > 0 && row < SEG) {
+          ni = i+COLS-1; ni3 = ni*3;
+          dx = pos[ni3]-px; dy = pos[ni3+1]-py; dz = pos[ni3+2]-pz;
+          d  = Math.sqrt(dx*dx+dy*dy+dz*dz);
+          if (d > 1e-8) { s=(d-diagStep)/d*kN; fx+=dx*s; fy+=dy*s; fz+=dz*s; }
+        }
+        if (col < SEG && row < SEG) {
+          ni = i+COLS+1; ni3 = ni*3;
+          dx = pos[ni3]-px; dy = pos[ni3+1]-py; dz = pos[ni3+2]-pz;
+          d  = Math.sqrt(dx*dx+dy*dy+dz*dz);
+          if (d > 1e-8) { s=(d-diagStep)/d*kN; fx+=dx*s; fy+=dy*s; fz+=dz*s; }
+        }
+
+        // ── 손끝 힘
+        for (let h = 0; h < 2; h++) {
+          if (!fingers[h].has) continue;
+          const fl = fingerLocalPos[h];
+
+          if (grabActive[h] && grabMask[h][i]) {
+            // 잡힘: 손끝 방향으로 스프링 당김 (stretch)
+            fx += (fl.x - px) * T.grab.kGrab;
+            fy += (fl.y - py) * T.grab.kGrab;
+            fz += (fl.z - pz) * T.grab.kGrab;
+          } else {
+            // 밀어내기: 손끝에서 버텍스를 밀어 패임(dent) 형성
+            dx = px-fl.x; dy = py-fl.y; dz = pz-fl.z;
+            const dsq = dx*dx+dy*dy+dz*dz;
+            if (dsq < pushR2 && dsq > 1e-8) {
+              d = Math.sqrt(dsq);
+              s = (T.sim.pushR - d) / d * T.sim.push;
+              fx += dx*s; fy += dy*s; fz += dz*s;
+            }
+          }
+        }
+
+        // ── 적분
+        vel[i3]   = (vel[i3]   + fx) * dp;
+        vel[i3+1] = (vel[i3+1] + fy) * dp;
+        vel[i3+2] = (vel[i3+2] + fz) * dp;
+
+        // 폭주 방지 클램프
+        const vsq = vel[i3]*vel[i3]+vel[i3+1]*vel[i3+1]+vel[i3+2]*vel[i3+2];
+        if (vsq > mv2) {
+          const sc = mv / Math.sqrt(vsq);
+          vel[i3]*=sc; vel[i3+1]*=sc; vel[i3+2]*=sc;
+        }
+
+        pos[i3]   += vel[i3];
+        pos[i3+1] += vel[i3+1];
+        pos[i3+2] += vel[i3+2];
+      }
+
+      catGeo.attributes.position.needsUpdate = true;
+      catGeo.computeVertexNormals();
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // MAIN UPDATE — 매 프레임 호출
+    // ─────────────────────────────────────────────────────────────
+    function updateCat() {
+      if (!MOUSEMODE) readFingers();
+
+      catMesh.updateWorldMatrix(false, false);
+      updateGrab();
+      simStep();
+
+      // 셰이더 손끝 글로우 업데이트
+      if (MOUSEMODE) {
+        // 마우스 모드: hover 위치는 shaderPos, physics는 fingers
+        catMat.uniforms.uFingers.value[0].copy(shaderPos[0]);
+        catMat.uniforms.uFingerCount.value = shaderCount;
+      } else {
+        let fc = 0;
+        for (let h = 0; h < 2; h++) {
+          if (fingers[h].has) catMat.uniforms.uFingers.value[fc++].copy(fingers[h].pos);
+        }
+        catMat.uniforms.uFingerCount.value = fc;
+      }
+
+      if (DEBUG) {
+        dbgEl.textContent =
+          `mode: ${MOUSEMODE ? 'mouse' : 'XR'}\n` +
+          `L: ${fingers[0].has ? '✓' : '✗'}  grab:${grabActive[0] ? '●' : '○'}\n` +
+          `R: ${fingers[1].has ? '✓' : '✗'}  grab:${grabActive[1] ? '●' : '○'}`;
+      }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // MOUSE MODE INPUT  (?mouse URL 파라미터로 활성화)
+    // ─────────────────────────────────────────────────────────────
+    if (MOUSEMODE) {
+      const raycaster = new THREE.Raycaster();
+      const mouseNDC  = new THREE.Vector2();
+      const hitPlane  = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
+      const hitPoint  = new THREE.Vector3();
+      let   isDown    = false;
+
+      function trackMouse(clientX, clientY) {
+        mouseNDC.x =  (clientX / window.innerWidth)  * 2 - 1;
+        mouseNDC.y = -(clientY / window.innerHeight) * 2 + 1;
+        raycaster.setFromCamera(mouseNDC, camera);
+        return raycaster.ray.intersectPlane(hitPlane, hitPoint);
+      }
+
+      window.addEventListener('mousemove', e => {
+        if (!placed) return;
+        if (!trackMouse(e.clientX, e.clientY)) { fingers[0].has = false; return; }
+
+        const prevPos = fingerPrev[0].clone();
+        shaderPos[0].copy(hitPoint);
+        shaderCount = 1;
+
+        if (isDown) {
+          fingers[0].pos.copy(hitPoint);
+          fingers[0].has = true;
+          fingerCanGrab[0] = true;
+          fingerVel[0].subVectors(hitPoint, prevPos);
+          fingerSpeed[0] = fingerVel[0].length();
+        } else {
+          fingers[0].has = false;
+          fingerCanGrab[0] = false;
+          fingerVel[0].set(0, 0, 0);
+          fingerSpeed[0] = 0;
+        }
+        fingerPrev[0].copy(hitPoint);
+      });
+
+      window.addEventListener('mousedown', e => {
+        if (!placed) return;
+        isDown = true;
+        if (!trackMouse(e.clientX, e.clientY)) return;
+        fingers[0].pos.copy(hitPoint);
+        fingers[0].has = true;
+        fingerCanGrab[0] = true;
+        fingerPrev[0].copy(hitPoint);
+        fingerVel[0].set(0, 0, 0);
+        fingerSpeed[0] = 0;
+      });
+
+      window.addEventListener('mouseup', () => {
+        isDown = false;
+        fingers[0].has = false;
+        fingerCanGrab[0] = false;
+        fingerSpeed[0] = 0;
+        // 잡기 해제 시 현재 속도를 버텍스에 전달
+        if (grabActive[0]) {
+          catMesh.updateWorldMatrix(false, false);
+          _invMat.copy(catMesh.matrixWorld).invert();
+          const e   = _invMat.elements;
+          const wx  = fingerVel[0].x, wy = fingerVel[0].y, wz = fingerVel[0].z;
+          const lvx = e[0]*wx + e[4]*wy + e[8]*wz;
+          const lvy = e[1]*wx + e[5]*wy + e[9]*wz;
+          const lvz = e[2]*wx + e[6]*wy + e[10]*wz;
+          for (let i = 0; i < VCOUNT; i++) {
+            if (!grabMask[0][i]) continue;
+            velArr[i*3]   += lvx * 0.42;
+            velArr[i*3+1] += lvy * 0.42;
+            velArr[i*3+2] += lvz * 0.42;
+          }
+          grabActive[0] = false;
+          grabMask[0].fill(0);
+          regrabCool[0] = T.grab.regrabDelay;
+        }
+      });
+
+      window.addEventListener('mouseleave', () => {
+        shaderCount = 0;
+        fingers[0].has = false;
+        if (grabActive[0]) { grabActive[0] = false; grabMask[0].fill(0); }
+      });
+
+      // 터치 지원
+      window.addEventListener('touchmove', e => {
+        e.preventDefault();
+        if (!placed) return;
+        const t = e.touches[0];
+        if (!trackMouse(t.clientX, t.clientY)) return;
+        const prevPos = fingerPrev[0].clone();
+        shaderPos[0].copy(hitPoint);
+        shaderCount = 1;
+        fingers[0].pos.copy(hitPoint);
+        fingers[0].has = true;
+        fingerCanGrab[0] = true;
+        fingerVel[0].subVectors(hitPoint, prevPos);
+        fingerSpeed[0] = fingerVel[0].length();
+        fingerPrev[0].copy(hitPoint);
+      }, { passive: false });
+
+      window.addEventListener('touchstart', e => {
+        if (!placed) return;
+        isDown = true;
+        const t = e.touches[0];
+        if (!trackMouse(t.clientX, t.clientY)) return;
+        fingers[0].pos.copy(hitPoint);
+        fingers[0].has = true;
+        fingerCanGrab[0] = true;
+        fingerPrev[0].copy(hitPoint);
+        fingerVel[0].set(0, 0, 0);
+        fingerSpeed[0] = 0;
+      });
+
+      window.addEventListener('touchend', () => {
+        isDown = false;
+        fingers[0].has = false;
+        fingerCanGrab[0] = false;
+        shaderCount = 0;
+        if (grabActive[0]) { grabActive[0] = false; grabMask[0].fill(0); }
+      });
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // XR SETUP
+    // ─────────────────────────────────────────────────────────────
+    const overlay = document.getElementById('overlay');
+    const btnXR   = document.getElementById('btnXR');
+    const errMsg  = document.getElementById('errMsg');
+
+    if (!MOUSEMODE) {
+      btnXR.addEventListener('click', async () => {
+        if (!navigator.xr) {
+          errMsg.textContent = 'WebXR를 지원하지 않는 기기입니다.';
+          return;
+        }
+        const ok = await navigator.xr.isSessionSupported('immersive-ar').catch(() => false);
+        if (!ok) {
+          errMsg.textContent = 'immersive-ar 세션을 지원하지 않습니다.';
+          return;
+        }
+        try {
+          const session = await navigator.xr.requestSession('immersive-ar', {
+            requiredFeatures: ['hand-tracking'],
+            optionalFeatures: ['local-floor'],
+          });
+          renderer.xr.setSession(session);
+          needsPlacement = true;
+          overlay.classList.add('hidden');
+        } catch (e) {
+          errMsg.textContent = `세션 시작 실패: ${e.message}`;
+        }
+      });
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // RENDER LOOP
+    // ─────────────────────────────────────────────────────────────
+    renderer.setAnimationLoop(() => {
+      if (MOUSEMODE && !placed) {
+        placeCatMouse();
+      } else if (!MOUSEMODE && needsPlacement && renderer.xr.isPresenting) {
+        placeCat();
+        needsPlacement = false;
+      }
+
+      if (placed) updateCat();
+      renderer.render(scene, camera);
+    });
+
+  </script>
+</body>
+</html>
