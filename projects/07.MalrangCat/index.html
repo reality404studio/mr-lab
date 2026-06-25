@@ -120,35 +120,42 @@
     const COLS   = SEG + 1;
     const VCOUNT = COLS * COLS;
 
+    // cheesecat.png content bbox: 247-710 x (1024w), 426-1165 y (1536h) → aspect 0.627
+    const CAT_ASPECT = 463 / 739;   // (710-247) / (1165-426) ≈ 0.626
+    const CAT_W      = 0.32;        // 메시 가로 m
+    const CAT_H      = CAT_W / CAT_ASPECT; // ≈ 0.511 m
+
+    // UV crop: image 전체 중 고양이가 있는 영역만 쓰도록
+    // (Cloudflare 서빙 시 텍스처는 전체 이미지, UV는 그대로 0~1)
     const T = {
       cat: {
-        forward: 0.5,    // XR 배치: 눈 정면 m
-        drop:    0.05,   // XR 배치: 눈높이 아래 m
-        width:   0.38,   // 메시 가로 m
-        height:  0.48,   // 메시 세로 m
+        forward: 0.5,
+        drop:    0.05,
+        width:   CAT_W,
+        height:  CAT_H,
       },
       sim: {
-        cohesion:  0.072,   // rest 스프링 (높음 = 빠른 탄성 복원)
-        neighborK: 0.055,   // 인접 버텍스 스프링 (출렁임 파급)
-        damping:   0.875,   // 속도 감쇠
-        push:      0.55,    // 손끝 밀어내기 강성 (dent)
-        pushR:     0.062,   // 밀어내기 사거리 m
-        maxVel:    0.065,   // 버텍스 최대 속도 m/frame
+        cohesion:  0.068,   // rest 스프링
+        neighborK: 0.042,   // 인접 스프링 (낮추면 나선 억제)
+        damping:   0.88,    // 감쇠
+        push:      0.038,   // ★ Z방향 밀어내기 강성 (작게!)
+        pushR:     0.055,   // 밀어내기 반경 m
+        maxVel:    0.05,    // 최대 속도
       },
       grab: {
-        capture:      0.08,   // 잡기 반경 m
-        kGrab:        0.38,   // 잡기 스프링 강성
-        releaseSpeed: 0.024,  // 이 속도(m/frame) 이상이면 털어서 해제
-        breakDist:    0.14,   // 잡기 중심에서 이 거리 벌어지면 끊어짐 m
-        regrabDelay:  18,     // 해제 후 재포착 금지 프레임
+        capture:      0.07,
+        kGrab:        0.32,
+        releaseSpeed: 0.028,
+        breakDist:    0.16,
+        regrabDelay:  20,
       },
     };
 
-    // 사전 계산 — 스프링 자연 길이
+    // 사전 계산
     const hStep    = T.cat.width  / SEG;
     const vStep    = T.cat.height / SEG;
     const diagStep = Math.sqrt(hStep * hStep + vStep * vStep);
-    const pushR2   = T.sim.pushR    * T.sim.pushR;
+    const pushR2   = T.sim.pushR  * T.sim.pushR;
     const capR2    = T.grab.capture * T.grab.capture;
 
     // ─────────────────────────────────────────────────────────────
@@ -241,7 +248,41 @@
     // CAT MESH — PlaneGeometry + ShaderMaterial
     // ─────────────────────────────────────────────────────────────
     const catGeo = new THREE.PlaneGeometry(T.cat.width, T.cat.height, SEG, SEG);
-    const catTex = new THREE.TextureLoader().load('IMG_2182.PNG');
+
+    // ── 알파 마스크: 텍스처를 캔버스로 샘플링 → 투명 버텍스 핀 처리
+    // alphaMask[i] = 0 이면 그 버텍스는 물리 정지(고양이 윤곽 밖)
+    const alphaMask = new Uint8Array(VCOUNT); // 0=frozen, 1=active
+    alphaMask.fill(1); // 기본 active, 텍스처 로드 후 갱신
+
+    function buildAlphaMask(img) {
+      const cvs = document.createElement('canvas');
+      cvs.width  = img.width;
+      cvs.height = img.height;
+      const ctx = cvs.getContext('2d');
+      ctx.drawImage(img, 0, 0);
+      const data = ctx.getImageData(0, 0, img.width, img.height).data;
+
+      // PlaneGeometry UV: u=col/SEG (0→1 left→right), v=1-row/SEG (bottom=0,top=1)
+      // Three.js PlaneGeometry vertex order: row 0 = top
+      for (let row = 0; row <= SEG; row++) {
+        for (let col = 0; col <= SEG; col++) {
+          const i = row * COLS + col;
+          const u = col / SEG;
+          const v = 1 - row / SEG;  // Three UV v=0 bottom
+          const px = Math.min(Math.floor(u * img.width),  img.width  - 1);
+          const py = Math.min(Math.floor((1-v) * img.height), img.height - 1);
+          const alpha = data[(py * img.width + px) * 4 + 3];
+          alphaMask[i] = alpha > 20 ? 1 : 0;
+        }
+      }
+    }
+
+    const catImg = new Image();
+    catImg.crossOrigin = 'anonymous';
+    catImg.onload = () => buildAlphaMask(catImg);
+    catImg.src = 'cheesecat.png';
+
+    const catTex = new THREE.TextureLoader().load('cheesecat.png');
     catTex.colorSpace = THREE.SRGBColorSpace;
 
     const catMat = new THREE.ShaderMaterial({
@@ -425,7 +466,7 @@
           continue; // 잡는 중: 재획득 시도 안 함
         }
 
-        // ── 잡기 획득 — capture 반경 안의 버텍스 일괄 포착
+        // ── 잡기 획득 — capture 반경 안의 불투명 버텍스만 포착
         if (fingerCanGrab[h] && regrabCool[h] === 0) {
           const fl = fingerLocalPos[h];
           let count = 0;
@@ -433,6 +474,7 @@
           grabCenterL[h].set(0, 0, 0);
 
           for (let i = 0; i < VCOUNT; i++) {
+            if (!alphaMask[i]) continue;  // 투명 버텍스는 잡기 불가
             const dx = posArr[i*3]   - fl.x;
             const dy = posArr[i*3+1] - fl.y;
             const dz = posArr[i*3+2] - fl.z;
@@ -534,24 +576,37 @@
           if (d > 1e-8) { s=(d-diagStep)/d*kN; fx+=dx*s; fy+=dy*s; fz+=dz*s; }
         }
 
+        // ── 투명 버텍스: 물리 동결 (나선 방지 핵심)
+        if (!alphaMask[i]) {
+          // rest position으로 강제 리셋, 속도 0
+          pos[i3]   = rest[i3];
+          pos[i3+1] = rest[i3+1];
+          pos[i3+2] = rest[i3+2];
+          vel[i3] = vel[i3+1] = vel[i3+2] = 0;
+          continue;
+        }
+
         // ── 손끝 힘
         for (let h = 0; h < 2; h++) {
           if (!fingers[h].has) continue;
           const fl = fingerLocalPos[h];
 
           if (grabActive[h] && grabMask[h][i]) {
-            // 잡힘: 손끝 방향으로 스프링 당김 (stretch)
+            // 잡힘: XY(평면 내) + Z(법선) 모두 당김
             fx += (fl.x - px) * T.grab.kGrab;
             fy += (fl.y - py) * T.grab.kGrab;
             fz += (fl.z - pz) * T.grab.kGrab;
           } else {
-            // 밀어내기: 손끝에서 버텍스를 밀어 패임(dent) 형성
-            dx = px-fl.x; dy = py-fl.y; dz = pz-fl.z;
-            const dsq = dx*dx+dy*dy+dz*dz;
-            if (dsq < pushR2 && dsq > 1e-8) {
-              d = Math.sqrt(dsq);
-              s = (T.sim.pushR - d) / d * T.sim.push;
-              fx += dx*s; fy += dy*s; fz += dz*s;
+            // ★ 밀어내기: XY 거리 기준으로만 반응, Z방향으로만 밀기
+            // → 나선 버그 방지: XY 방향 힘 제거
+            dx = px - fl.x;
+            dy = py - fl.y;
+            const dxy2 = dx*dx + dy*dy;
+            if (dxy2 < pushR2 && dxy2 > 1e-8) {
+              const dxy = Math.sqrt(dxy2);
+              // 손끝보다 앞(Z+)으로 밀기 (로컬 Z = 메시 법선)
+              const pushZ = (T.sim.pushR - dxy) / T.sim.pushR * T.sim.push;
+              fz += pushZ; // Z방향만
             }
           }
         }
