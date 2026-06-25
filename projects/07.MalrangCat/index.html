@@ -155,7 +155,8 @@
     const hStep    = T.cat.width  / SEG;
     const vStep    = T.cat.height / SEG;
     const diagStep = Math.sqrt(hStep * hStep + vStep * vStep);
-    const capR2    = T.grab.capture * T.grab.capture;
+    const capR     = T.grab.capture;          // 좌우 편의성
+    const capR2    = capR * capR;
 
     // 풍선 돔 설정
     const BULGE    = 0.022;                    // 최대 Z 돌출량 (m) — 풍선 두께
@@ -381,9 +382,17 @@
     // GRAB STATE
     // ─────────────────────────────────────────────────────────────
     const grabActive  = [false, false];
-    const grabMask    = [new Uint8Array(VCOUNT), new Uint8Array(VCOUNT)];
+    // grabWeight[h][i] = 0~1 (단순 블리안 대신 거리 가중치)
+    // 가운데 = 1, 반경 끝 = 0 → 점토 주룉 늘어나는 느낌
+    const grabWeight  = [new Float32Array(VCOUNT), new Float32Array(VCOUNT)];
     const grabCenterL = [new THREE.Vector3(), new THREE.Vector3()];
     const regrabCool  = [0, 0];
+
+    // ─────────────────────────────────────────────────────────────
+    // MESH RIGID BODY — 메시 전체 이동 (cat이 손으로 밀리도록)
+    // ─────────────────────────────────────────────────────────────
+    const meshVel  = new THREE.Vector3();
+    const meshHome = new THREE.Vector3(); // 배치 직후 원위치
 
     // ─────────────────────────────────────────────────────────────
     // HELPERS
@@ -399,14 +408,14 @@
     // INIT PHYSICS — rest 위치 복사, 속도 초기화
     // ─────────────────────────────────────────────────────────────
     function initPhysics() {
-      // 풍선이 이미 빌드됐으면 먼저 적용
       if (balloonBuilt) applyBalloon();
       restArr.set(posArr);
       velArr.fill(0);
       grabActive[0] = grabActive[1] = false;
-      grabMask[0].fill(0); grabMask[1].fill(0);
+      grabWeight[0].fill(0); grabWeight[1].fill(0);
       regrabCool[0] = regrabCool[1] = 0;
       fingerCanGrab[0] = fingerCanGrab[1] = false;
+      meshVel.set(0, 0, 0);
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -424,8 +433,8 @@
       _spawn.y = _headPos.y - T.cat.drop;
 
       catMesh.position.copy(_spawn);
+      meshHome.copy(_spawn);   // 원위치 저장
 
-      // PlaneGeometry 기본 법선 (+Z local) → 사용자를 향하도록 (-headFwd)
       catMesh.quaternion.setFromUnitVectors(
         new THREE.Vector3(0, 0, 1),
         _headFwd.clone().negate()
@@ -439,6 +448,7 @@
     // PLACEMENT (mouse) — 원점에 고양이, 카메라는 앞쪽
     function placeCatMouse() {
       catMesh.position.set(0, 0, 0);
+      meshHome.set(0, 0, 0);   // 원위치 저장
       catMesh.quaternion.identity();
       catMesh.updateWorldMatrix(false, false);
       catMesh.visible = true;
@@ -485,7 +495,7 @@
         regrabCool[h] = Math.max(0, regrabCool[h] - 1);
 
         if (!fingers[h].has) {
-          if (grabActive[h]) { grabActive[h] = false; grabMask[h].fill(0); }
+          if (grabActive[h]) { grabActive[h] = false; grabWeight[h].fill(0); }
           fingerLocalPos[h].set(9999, 9999, 9999);
           continue;
         }
@@ -497,9 +507,9 @@
         // 풍선 표면(≈BULGE) 기준 ±TOUCH_Z 범위 밖이면 인터랙션 없음
         // → 손이 가까이 가기만 해도 울렁이는 현상 완전 차단
         if (fingerLocalPos[h].z < -0.02 || fingerLocalPos[h].z > TOUCH_Z) {
-          if (grabActive[h]) { grabActive[h] = false; grabMask[h].fill(0); }
+          if (grabActive[h]) { grabActive[h] = false; grabWeight[h].fill(0); }
           fingerLocalPos[h].set(9999, 9999, 9999);
-          fingers[h].has = false; // 이 프레임 인터랙션 무효화
+          fingers[h].has = false;
           continue;
         }
 
@@ -515,40 +525,45 @@
             const lvy = e[1]*wx + e[5]*wy + e[9]*wz;
             const lvz = e[2]*wx + e[6]*wy + e[10]*wz;
             for (let i = 0; i < VCOUNT; i++) {
-              if (!grabMask[h][i]) continue;
-              velArr[i*3]   += lvx * 0.50;
-              velArr[i*3+1] += lvy * 0.50;
-              velArr[i*3+2] += lvz * 0.50;
+              const w = grabWeight[h][i];
+              if (w < 0.001) continue;
+              velArr[i*3]   += lvx * 0.45 * w;
+              velArr[i*3+1] += lvy * 0.45 * w;
+              velArr[i*3+2] += lvz * 0.45 * w;
             }
             grabActive[h] = false;
-            grabMask[h].fill(0);
+            grabWeight[h].fill(0);
             regrabCool[h] = T.grab.regrabDelay;
           }
           continue; // 잡는 중: 재획득 시도 안 함
         }
 
-        // ── 잡기 획득 — capture 반경 안의 불투명 버텍스만 포착
+        // ── 잡기 획득 — capture 반경 안의 불투명 버텍스, 거리 가중치 계산
         if (fingerCanGrab[h] && regrabCool[h] === 0) {
           const fl = fingerLocalPos[h];
-          let count = 0;
-          grabMask[h].fill(0);
+          let   wsum = 0;
+          grabWeight[h].fill(0);
           grabCenterL[h].set(0, 0, 0);
 
           for (let i = 0; i < VCOUNT; i++) {
-            if (!alphaMask[i]) continue;  // 투명 버텍스는 잡기 불가
+            if (!alphaMask[i]) continue;
             const dx = posArr[i*3]   - fl.x;
             const dy = posArr[i*3+1] - fl.y;
             const dz = posArr[i*3+2] - fl.z;
-            if (dx*dx + dy*dy + dz*dz < capR2) {
-              grabMask[h][i] = 1;
-              grabCenterL[h].x += posArr[i*3];
-              grabCenterL[h].y += posArr[i*3+1];
-              grabCenterL[h].z += posArr[i*3+2];
-              count++;
+            const dsq = dx*dx + dy*dy + dz*dz;
+            if (dsq < capR2) {
+              // 중심=1, 가장자리=0 의 부드러운 낙하 (찰흙 느낌)
+              const t = 1 - Math.sqrt(dsq) / capR;
+              const w = t * t;   // ease-in falloff
+              grabWeight[h][i] = w;
+              grabCenterL[h].x += posArr[i*3]   * w;
+              grabCenterL[h].y += posArr[i*3+1] * w;
+              grabCenterL[h].z += posArr[i*3+2] * w;
+              wsum += w;
             }
           }
-          if (count > 0) {
-            grabCenterL[h].divideScalar(count);
+          if (wsum > 0.01) {
+            grabCenterL[h].divideScalar(wsum);
             grabActive[h] = true;
           }
         }
@@ -646,15 +661,16 @@
           continue;
         }
 
-        // ── 잡기 힘 (push 완전 제거 — 울렁임 버그 차단)
+        // ── 잡기 힘 — 가중치 기반 부드러운 당김 (찰흙 주욱 느낌)
         for (let h = 0; h < 2; h++) {
           if (!fingers[h].has) continue;
-          if (!grabActive[h] || !grabMask[h][i]) continue;
+          const w = grabWeight[h][i];
+          if (!grabActive[h] || w < 0.001) continue;
           const fl = fingerLocalPos[h];
-          // 잡힌 버텍스를 손끝 위치로 스프링 당김 (XYZ 모두)
-          fx += (fl.x - px) * T.grab.kGrab;
-          fy += (fl.y - py) * T.grab.kGrab;
-          fz += (fl.z - pz) * T.grab.kGrab;
+          // 가중치로 스케일: 중심 버텍스는 강하게, 주변은 약하게 당김
+          fx += (fl.x - px) * T.grab.kGrab * w;
+          fy += (fl.y - py) * T.grab.kGrab * w;
+          fz += (fl.z - pz) * T.grab.kGrab * w;
         }
 
         // ── 적분
@@ -679,6 +695,25 @@
     }
 
     // ─────────────────────────────────────────────────────────────
+    // MESH RIGID UPDATE — 잡아당길 때 고양이 전체가 밀리고 복귀
+    // ─────────────────────────────────────────────────────────────
+    function updateMeshRigid() {
+      // grab 활성 → 손 속도의 일부를 메시 전체 이동에 전달
+      for (let h = 0; h < 2; h++) {
+        if (grabActive[h] && fingerSpeed[h] > 0.001) {
+          meshVel.addScaledVector(fingerVel[h], T.rigid.grabPropK);
+        }
+      }
+      // 원위치 복귀 스프링
+      meshVel.x += (meshHome.x - catMesh.position.x) * T.rigid.homeK;
+      meshVel.y += (meshHome.y - catMesh.position.y) * T.rigid.homeK;
+      meshVel.z += (meshHome.z - catMesh.position.z) * T.rigid.homeK;
+      // 감쇠 + 적용
+      meshVel.multiplyScalar(T.rigid.damp);
+      catMesh.position.add(meshVel);
+    }
+
+    // ─────────────────────────────────────────────────────────────
     // MAIN UPDATE — 매 프레임 호출
     // ─────────────────────────────────────────────────────────────
     function updateCat() {
@@ -687,10 +722,10 @@
       catMesh.updateWorldMatrix(false, false);
       updateGrab();
       simStep();
+      updateMeshRigid();   // ← 고양이 전체 이동 물리
 
       // 셰이더 손끝 글로우 업데이트
       if (MOUSEMODE) {
-        // 마우스 모드: hover 위치는 shaderPos, physics는 fingers
         catMat.uniforms.uFingers.value[0].copy(shaderPos[0]);
         catMat.uniforms.uFingerCount.value = shaderCount;
       } else {
@@ -776,13 +811,14 @@
           const lvy = e[1]*wx + e[5]*wy + e[9]*wz;
           const lvz = e[2]*wx + e[6]*wy + e[10]*wz;
           for (let i = 0; i < VCOUNT; i++) {
-            if (!grabMask[0][i]) continue;
-            velArr[i*3]   += lvx * 0.42;
-            velArr[i*3+1] += lvy * 0.42;
-            velArr[i*3+2] += lvz * 0.42;
+            const w = grabWeight[0][i];
+            if (w < 0.001) continue;
+            velArr[i*3]   += lvx * 0.42 * w;
+            velArr[i*3+1] += lvy * 0.42 * w;
+            velArr[i*3+2] += lvz * 0.42 * w;
           }
           grabActive[0] = false;
-          grabMask[0].fill(0);
+          grabWeight[0].fill(0);
           regrabCool[0] = T.grab.regrabDelay;
         }
       });
@@ -790,7 +826,7 @@
       window.addEventListener('mouseleave', () => {
         shaderCount = 0;
         fingers[0].has = false;
-        if (grabActive[0]) { grabActive[0] = false; grabMask[0].fill(0); }
+        if (grabActive[0]) { grabActive[0] = false; grabWeight[0].fill(0); }
       });
 
       // 터치 지원
@@ -828,7 +864,7 @@
         fingers[0].has = false;
         fingerCanGrab[0] = false;
         shaderCount = 0;
-        if (grabActive[0]) { grabActive[0] = false; grabMask[0].fill(0); }
+        if (grabActive[0]) { grabActive[0] = false; grabWeight[0].fill(0); }
       });
     }
 
