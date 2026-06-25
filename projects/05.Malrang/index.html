@@ -101,6 +101,10 @@
         push:     0.50,    // 손끝이 전하를 밀어내는 강성 (press → dent)
         pushR:    0.055,   // 손끝 누름 사거리 m
         smear:    0.40,    // 손끝 진행방향으로 표면을 끌어 옮김 (Move/Drag 브러시, 손속도의 배율)
+        // ── 응집·안전망 (cohesion과 분리: 소성이어도 덩어리가 흩어져 사라지지 않게)
+        maxR:     0.22,    // 클러스터 중심에서 이 반경까지는 자유(자국 보존), 넘으면 끌어옴 m
+        leash:    0.55,    // maxR 밖 전하를 중심으로 끌어오는 강성 (containment)
+        maxVel:   0.08,    // 전하 1프레임 최대 이동 m (≈5.8m/s, 폭주 방지 클램프)
       },
       grab: {
         capture: 0.060,    // 이 거리 안의 전하를 잡음 m
@@ -437,10 +441,15 @@
 
       // ── 힘 누적: cohesion(중심으로) + repulsion(부피 유지)
       for (let i = 0; i < N; i++) force[i].set(0, 0, 0);
+      const maxR = T.sim.maxR, leash = T.sim.leash;
       for (let i = 0; i < N; i++) {
         const r = find(i);
-        _acc.copy(cenSum[r]).divideScalar(cenCount[r]).sub(charges[i].pos);
+        _acc.copy(cenSum[r]).divideScalar(cenCount[r]).sub(charges[i].pos);  // 중심 - 위치 (안쪽 방향)
         force[i].addScaledVector(_acc, T.sim.cohesion);
+        // 컨테인먼트 리시: 중심에서 maxR 넘게 멀어진 전하만 끌어옴. maxR 안은 복원력 0
+        //   → 소성(cohesion≈0)이어도 흩어져 사라지지 않고, 누름·스미어 자국은 그대로 남음.
+        const d = _acc.length();
+        if (d > maxR) force[i].addScaledVector(_acc, (d - maxR) / d * leash);
       }
       const repelR2 = T.sim.repelR * T.sim.repelR;
       for (let i = 0; i < N; i++) {
@@ -478,6 +487,7 @@
       }
 
       // ── 적분 (잡힌 전하는 손가락 스프링으로 오버라이드)
+      const maxVel2 = T.sim.maxVel * T.sim.maxVel;
       let grabbedBy = -1;
       for (let i = 0; i < N; i++) {
         const c = charges[i];
@@ -488,6 +498,7 @@
         } else {
           c.vel.add(force[i]).multiplyScalar(T.sim.damping);
         }
+        if (c.vel.lengthSq() > maxVel2) c.vel.setLength(T.sim.maxVel);   // 폭주 방지 클램프
         c.pos.add(c.vel);
       }
 
