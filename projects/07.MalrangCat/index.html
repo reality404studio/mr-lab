@@ -122,35 +122,35 @@
 
     // cheesecat.png content bbox: 247-710 x (1024w), 426-1165 y (1536h) → aspect 0.627
     const CAT_ASPECT = 463 / 739;   // (710-247) / (1165-426) ≈ 0.626
-    const CAT_W      = 0.32;        // 메시 가로 m
-    const CAT_H      = CAT_W / CAT_ASPECT; // ≈ 0.511 m
+    const CAT_W      = 0.96;        // 메시 가로 m (기존 0.32의 3배)
+    const CAT_H      = CAT_W / CAT_ASPECT; // ≈ 1.53 m
 
     // UV crop: image 전체 중 고양이가 있는 영역만 쓰도록
     // (Cloudflare 서빙 시 텍스처는 전체 이미지, UV는 그대로 0~1)
     const T = {
       cat: {
-        forward: 0.5,
-        drop:    0.05,
+        forward: 0.75,   // 3배 커진 만큼 살짝 멀리
+        drop:    0.25,    // 큰 고양이 중심을 눈높이보다 아래로
         width:   CAT_W,
         height:  CAT_H,
       },
       sim: {
-        cohesion:  0.062,
+        cohesion:  0.055,  // 살짝 낮춰 반죽처럼 늘어난 채 천천히 복원
         neighborK: 0.072,
         damping:   0.88,
-        maxVel:    0.048,
+        maxVel:    0.10,   // 멀리 당길 때 버텍스가 손끝을 따라오도록 상향
       },
       grab: {
-        capture:      0.12,
-        kGrab:        0.10,
-        releaseSpeed: 0.035,
-        breakDist:    0.20,
+        capture:      0.16,  // 큰 고양이용 잡기 반경
+        kGrab:        0.17,  // 손끝을 더 단단히 따라옴 → 쭉 늘어남
+        releaseSpeed: 0.09,  // 일반 드래그로는 안 풀리고, 빠른 털기만 놓침
+        breakDist:    0.5,   // 반죽 가닥 길게 당겨도 안 끊김
         regrabDelay:  18,
       },
       rigid: {
-        grabPropK: 0.12,
-        homeK:     0.006,
-        damp:      0.93,
+        grabPropK: 0.03,  // 몸통 이동 대폭 축소 → 손을 피하지 않고 제자리서 늘어남
+        homeK:     0.05,  // 밀려도 빠르게 제자리 복귀
+        damp:      0.9,
       },
     };
 
@@ -162,8 +162,8 @@
     const capR2    = capR * capR;
 
     // 풍선 돔 설정
-    const BULGE    = 0.022;                    // 최대 Z 돌출량 (m) — 풍선 두께
-    const TOUCH_Z  = BULGE + 0.045;           // 잡기 허용 Z 범위 (m)
+    const BULGE    = 0.06;                     // 최대 Z 돌출량 (m) — 풍선 두께 (3배 크기 비례)
+    const TOUCH_Z  = BULGE + 0.06;            // 잡기 허용 Z 범위 (m)
     const balloonZ = new Float32Array(VCOUNT); // 버텍스별 rest Z 오프셋
     let   balloonBuilt = false;
 
