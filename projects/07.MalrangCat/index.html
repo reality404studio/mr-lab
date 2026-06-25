@@ -139,6 +139,8 @@
         neighborK: 0.072,
         damping:   0.88,
         maxVel:    0.10,   // 멀리 당길 때 버텍스가 손끝을 따라오도록 상향
+        cohesionB: 0.10,   // 뒷면은 더 단단히 rest 유지 → "앞만 눌리고 뒤는 잠잠"
+        kThick:    0.045,  // 두께(앞-뒤 간격) 스프링 → 볼륨 유지 / 봉합
       },
       grab: {
         capture:      0.16,  // 큰 고양이용 잡기 반경
@@ -339,12 +341,18 @@
     // 풍선 높이를 지오메트리 + rest 위치에 적용
     function applyBalloon() {
       for (let i = 0; i < VCOUNT; i++) {
-        posArr[i*3+2]  = balloonZ[i];
-        if (placed) restArr[i*3+2] = balloonZ[i]; // 이미 배치됐으면 rest도 갱신
+        posArr[i*3+2]   =  balloonZ[i];           // 앞면 +Z 돔
+        posArrB[i*3+2]  = -balloonZ[i];           // 뒷면 -Z 돔
+        if (placed) {
+          restArr[i*3+2]  =  balloonZ[i];
+          restArrB[i*3+2] = -balloonZ[i];
+        }
       }
       if (placed) computeRestLengths();           // rest 바뀌면 스프링 길이도 재계산
-      catGeo.attributes.position.needsUpdate = true;
+      catGeo.attributes.position.needsUpdate  = true;
+      catGeoB.attributes.position.needsUpdate = true;
       catGeo.computeVertexNormals();
+      catGeoB.computeVertexNormals();
     }
 
     const catImg = new Image();
@@ -374,20 +382,32 @@
     catMesh.visible = false;
     scene.add(catMesh);
 
-    // ── 뒷면 껍데기: 같은 물리 지오메트리를 z축 반전해 붙임
-    // → 앞(+Z 돔) + 뒤(-Z 돔)이 가장자리에서 맞물려 입체 인형(쿠션) 형태.
-    //   geometry/uniform를 공유하므로 변형이 앞뒤 똑같이 반영됨.
-    const catMeshBack = new THREE.Mesh(catGeo, catMat);
-    catMeshBack.scale.z = -1;       // 돔을 반대쪽으로
-    catMesh.add(catMeshBack);       // 자식 → catMesh 변형/가시성 따라감
+    // ── 뒷면 껍데기: 독립 지오메트리(거울 공유 X)
+    // 앞면 버퍼를 공유하지 않고 자기 물리를 가짐 → 앞을 만져도 뒤는 따로 거동.
+    // 두께 스프링이 앞↔뒤를 묶어 닫힌 볼륨 유지(rim에선 rest≈0 → 봉합, 안 비침).
+    const catGeoB = catGeo.clone();
+    // 윈딩 반전 → 법선이 -Z(바깥쪽) 향하도록 (뒷면 라이팅 정상화)
+    if (catGeoB.index) {
+      const idx = catGeoB.index.array;
+      for (let t = 0; t < idx.length; t += 3) { const tmp = idx[t]; idx[t] = idx[t+2]; idx[t+2] = tmp; }
+      catGeoB.index.needsUpdate = true;
+    }
+    const catMeshBack = new THREE.Mesh(catGeoB, catMat);
+    catMesh.add(catMeshBack);       // 자식 → catMesh 변형/가시성/핀치이동 따라감
 
     // ─────────────────────────────────────────────────────────────
     // PHYSICS BUFFERS (로컬 메시 공간)
     // ─────────────────────────────────────────────────────────────
-    const posArr  = catGeo.attributes.position.array;  // 지오메트리 버퍼 직접 참조
+    const posArr  = catGeo.attributes.position.array;  // 앞면 지오메트리 버퍼 직접 참조
     const restArr = new Float32Array(VCOUNT * 3);       // 초기(rest) 위치
     const velArr  = new Float32Array(VCOUNT * 3);       // 버텍스 속도
     const prevArr = new Float32Array(VCOUNT * 3);       // 직전 프레임 스냅샷 (Jacobi 적분용)
+
+    // 뒷면 레이어 (독립 시뮬, 두께 스프링으로 앞면 따라 볼륨 유지)
+    const posArrB  = catGeoB.attributes.position.array; // 뒷면 지오메트리 버퍼
+    const restArrB = new Float32Array(VCOUNT * 3);
+    const velArrB  = new Float32Array(VCOUNT * 3);
+    const prevArrB = new Float32Array(VCOUNT * 3);
 
     // ── 스프링 rest 길이 (풍선 돔 포함 실제 거리)
     // 평면 hStep/vStep을 쓰면 돔 경사가 영구 긴장 → 손 안 대도 자가운동.
@@ -473,8 +493,10 @@
     function initPhysics() {
       if (balloonBuilt) applyBalloon();
       restArr.set(posArr);
+      restArrB.set(posArrB);
       computeRestLengths();   // 돔 포함 실제 rest 길이 (평형 보장)
       velArr.fill(0);
+      velArrB.fill(0);
       grabActive[0] = grabActive[1] = false;
       grabWeight[0].fill(0); grabWeight[1].fill(0);
       regrabCool[0] = regrabCool[1] = 0;
@@ -838,6 +860,119 @@
     }
 
     // ─────────────────────────────────────────────────────────────
+    // SIMULATION STEP (뒷면) — 독립 시뮬, 손 힘 없음
+    //   격자 스프링 + cohesion(더 단단) + 두께 스프링(앞면 따라 볼륨/봉합).
+    //   두께는 "압축될 때만" 밀어냄 → 앞을 누르면 뒤가 볼록(잠잠하다가 볼륨 보존),
+    //   앞을 당겨 늘일 땐 뒤가 끌려오지 않음.
+    // ─────────────────────────────────────────────────────────────
+    function simStepBack() {
+      const pos   = posArrB;
+      const prev  = prevArrB;
+      const rest  = restArrB;
+      const vel   = velArrB;
+      const front = posArr;            // 두께 스프링용 (앞면 현재 z)
+      const kC    = T.sim.cohesionB;
+      const kN    = T.sim.neighborK;
+      const dp    = T.sim.damping;
+      const kT    = T.sim.kThick;
+      const mv    = T.sim.maxVel;
+      const mv2   = mv * mv;
+
+      prev.set(pos);
+
+      for (let i = 0; i < VCOUNT; i++) {
+        const i3 = i * 3;
+        const px = prev[i3], py = prev[i3+1], pz = prev[i3+2];
+
+        let fx = (rest[i3]   - px) * kC;
+        let fy = (rest[i3+1] - py) * kC;
+        let fz = (rest[i3+2] - pz) * kC;
+
+        const row = (i / COLS) | 0;
+        const col = i % COLS;
+        let ni3, dx, dy, dz, d, s;
+
+        if (col > 0) {
+          ni3 = (i-1)*3;
+          dx = prev[ni3]-px; dy = prev[ni3+1]-py; dz = prev[ni3+2]-pz;
+          d  = Math.sqrt(dx*dx+dy*dy+dz*dz);
+          if (d > 1e-8) { s=(d-rlH[i-1])/d*kN; fx+=dx*s; fy+=dy*s; fz+=dz*s; }
+        }
+        if (col < SEG) {
+          ni3 = (i+1)*3;
+          dx = prev[ni3]-px; dy = prev[ni3+1]-py; dz = prev[ni3+2]-pz;
+          d  = Math.sqrt(dx*dx+dy*dy+dz*dz);
+          if (d > 1e-8) { s=(d-rlH[i])/d*kN; fx+=dx*s; fy+=dy*s; fz+=dz*s; }
+        }
+        if (row > 0) {
+          ni3 = (i-COLS)*3;
+          dx = prev[ni3]-px; dy = prev[ni3+1]-py; dz = prev[ni3+2]-pz;
+          d  = Math.sqrt(dx*dx+dy*dy+dz*dz);
+          if (d > 1e-8) { s=(d-rlV[i-COLS])/d*kN; fx+=dx*s; fy+=dy*s; fz+=dz*s; }
+        }
+        if (row < SEG) {
+          ni3 = (i+COLS)*3;
+          dx = prev[ni3]-px; dy = prev[ni3+1]-py; dz = prev[ni3+2]-pz;
+          d  = Math.sqrt(dx*dx+dy*dy+dz*dz);
+          if (d > 1e-8) { s=(d-rlV[i])/d*kN; fx+=dx*s; fy+=dy*s; fz+=dz*s; }
+        }
+        if (col > 0 && row > 0) {
+          ni3 = (i-COLS-1)*3;
+          dx = prev[ni3]-px; dy = prev[ni3+1]-py; dz = prev[ni3+2]-pz;
+          d  = Math.sqrt(dx*dx+dy*dy+dz*dz);
+          if (d > 1e-8) { s=(d-rlD1[i-COLS-1])/d*kN; fx+=dx*s; fy+=dy*s; fz+=dz*s; }
+        }
+        if (col < SEG && row > 0) {
+          ni3 = (i-COLS+1)*3;
+          dx = prev[ni3]-px; dy = prev[ni3+1]-py; dz = prev[ni3+2]-pz;
+          d  = Math.sqrt(dx*dx+dy*dy+dz*dz);
+          if (d > 1e-8) { s=(d-rlD2[i-COLS+1])/d*kN; fx+=dx*s; fy+=dy*s; fz+=dz*s; }
+        }
+        if (col > 0 && row < SEG) {
+          ni3 = (i+COLS-1)*3;
+          dx = prev[ni3]-px; dy = prev[ni3+1]-py; dz = prev[ni3+2]-pz;
+          d  = Math.sqrt(dx*dx+dy*dy+dz*dz);
+          if (d > 1e-8) { s=(d-rlD2[i])/d*kN; fx+=dx*s; fy+=dy*s; fz+=dz*s; }
+        }
+        if (col < SEG && row < SEG) {
+          ni3 = (i+COLS+1)*3;
+          dx = prev[ni3]-px; dy = prev[ni3+1]-py; dz = prev[ni3+2]-pz;
+          d  = Math.sqrt(dx*dx+dy*dy+dz*dz);
+          if (d > 1e-8) { s=(d-rlD1[i])/d*kN; fx+=dx*s; fy+=dy*s; fz+=dz*s; }
+        }
+
+        if (!alphaMask[i]) {
+          pos[i3]   = rest[i3];
+          pos[i3+1] = rest[i3+1];
+          pos[i3+2] = rest[i3+2];
+          vel[i3] = vel[i3+1] = vel[i3+2] = 0;
+          continue;
+        }
+
+        // ── 두께 스프링 (압축될 때만): 앞-뒤 간격이 rest보다 좁아지면 뒤를 밀어냄
+        const err = (front[i3+2] - pz) - 2 * balloonZ[i];   // 현재간격 - rest간격
+        if (err < 0) fz += err * kT;                        // 음수 → 뒤를 -z로 (볼록)
+
+        vel[i3]   = (vel[i3]   + fx) * dp;
+        vel[i3+1] = (vel[i3+1] + fy) * dp;
+        vel[i3+2] = (vel[i3+2] + fz) * dp;
+
+        const vsq = vel[i3]*vel[i3]+vel[i3+1]*vel[i3+1]+vel[i3+2]*vel[i3+2];
+        if (vsq > mv2) {
+          const sc = mv / Math.sqrt(vsq);
+          vel[i3]*=sc; vel[i3+1]*=sc; vel[i3+2]*=sc;
+        }
+
+        pos[i3]   += vel[i3];
+        pos[i3+1] += vel[i3+1];
+        pos[i3+2] += vel[i3+2];
+      }
+
+      catGeoB.attributes.position.needsUpdate = true;
+      catGeoB.computeVertexNormals();
+    }
+
+    // ─────────────────────────────────────────────────────────────
     // MESH RIGID UPDATE — 잡아당길 때 고양이 전체가 밀리고 복귀
     // ─────────────────────────────────────────────────────────────
     function updateMeshRigid() {
@@ -886,7 +1021,8 @@
       catMesh.updateWorldMatrix(false, false);
       updateGrab();
       updatePalm();        // ← 손바닥 접촉 판정 (simStep cling + 이동에 사용)
-      simStep();
+      simStep();           // 앞면(손 힘의 주인)
+      simStepBack();       // 뒷면(독립 팔로워 + 두께 볼륨)
       updateMeshRigid();   // ← 고양이 전체 이동 물리
 
       // 셰이더 손끝 글로우 업데이트
