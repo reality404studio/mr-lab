@@ -205,7 +205,7 @@
 
       void main() {
         vec4 tex = texture2D(uTex, vUv);
-        if (tex.a < 0.04) discard;
+        if (tex.a < 0.5) discard;   // 깔끔한 윤곽 컷아웃 (depthWrite와 함께 뒷면 비침 차단)
 
         vec3 n = normalize(vNormal);
         vec3 v = normalize(vView);
@@ -344,7 +344,7 @@
       fragmentShader: catFrag,
       transparent: true,
       side:        THREE.DoubleSide,
-      depthWrite:  false,
+      depthWrite:  true,   // 앞 껍데기가 뒤 껍데기를 가리도록 (입체 인형)
       uniforms: {
         uTex:         { value: catTex },
         uFingers:     { value: [new THREE.Vector3(9999, 9999, 9999),
@@ -357,6 +357,13 @@
     const catMesh = new THREE.Mesh(catGeo, catMat);
     catMesh.visible = false;
     scene.add(catMesh);
+
+    // ── 뒷면 껍데기: 같은 물리 지오메트리를 z축 반전해 붙임
+    // → 앞(+Z 돔) + 뒤(-Z 돔)이 가장자리에서 맞물려 입체 인형(쿠션) 형태.
+    //   geometry/uniform를 공유하므로 변형이 앞뒤 똑같이 반영됨.
+    const catMeshBack = new THREE.Mesh(catGeo, catMat);
+    catMeshBack.scale.z = -1;       // 돔을 반대쪽으로
+    catMesh.add(catMeshBack);       // 자식 → catMesh 변형/가시성 따라감
 
     // ─────────────────────────────────────────────────────────────
     // PHYSICS BUFFERS (로컬 메시 공간)
