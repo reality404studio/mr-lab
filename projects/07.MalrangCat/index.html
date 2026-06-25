@@ -149,8 +149,15 @@
       },
       rigid: {
         grabPropK: 0.03,  // 몸통 이동 대폭 축소 → 손을 피하지 않고 제자리서 늘어남
-        homeK:     0.05,  // 밀려도 빠르게 제자리 복귀
+        homeK:     0.025, // 미세 드리프트 안정화 (home이 따라오므로 스냅백 아님)
         damp:      0.9,
+      },
+      push: {
+        contactZ:  0.14,  // 손바닥 접촉 z 허용 범위 (m, 슬랩 양쪽)
+        margin:    0.08,  // xy 접촉 여유 (윤곽 밖에서도 살짝 닿으면 인정)
+        pushK:     0.10,  // 손바닥 속도 → 몸통 속도 (≈손바닥 따라 이동)
+        minSpeed:  0.0025,// 이 속도 미만이면 밀기 무시 (정지 손바닥 떨림 방지)
+        homeFollow:0.08,  // home이 현재 위치를 천천히 따라옴 → 민 자리에 머묾
       },
     };
 
@@ -405,6 +412,14 @@
     const fingerLocalPos = [new THREE.Vector3(), new THREE.Vector3()];
     const fingerCanGrab  = [false, false]; // XR = true 항상; 마우스 = 클릭 시만
 
+    // ── PALM STATE — 손바닥으로 슥슥 밀어 고양이 통째 이동
+    const palmPos   = [new THREE.Vector3(), new THREE.Vector3()];
+    const palmPrev  = [new THREE.Vector3(), new THREE.Vector3()];
+    const palmVel   = [new THREE.Vector3(), new THREE.Vector3()];
+    const palmHas   = [false, false];
+    const _palmLoc  = new THREE.Vector3();
+    const _w        = new THREE.Vector3(); // 임시 (wrist)
+
     // 마우스 모드: hover 글로우용 (physics와 분리)
     const shaderPos   = [new THREE.Vector3(9999,9999,9999), new THREE.Vector3(9999,9999,9999)];
     let   shaderCount = 0;
@@ -447,6 +462,7 @@
       grabWeight[0].fill(0); grabWeight[1].fill(0);
       regrabCool[0] = regrabCool[1] = 0;
       fingerCanGrab[0] = fingerCanGrab[1] = false;
+      palmHas[0] = palmHas[1] = false;
       meshVel.set(0, 0, 0);
     }
 
@@ -502,18 +518,37 @@
         const wasHas = fingers[h].has;
         fingers[h].has = false;
         fingerSpeed[h] = 0;
-        if (!tip) continue;
-        fingers[h].pos.setFromMatrixPosition(tip.matrixWorld);
-        if (fingers[h].pos.lengthSq() < 1e-8) continue; // 미갱신 joint(원점) 무시
-        fingers[h].has = true;
-        fingerCanGrab[h] = true;  // XR: 항상 잡기 가능
-        if (wasHas) {
-          fingerVel[h].subVectors(fingers[h].pos, fingerPrev[h]);
-          fingerSpeed[h] = fingerVel[h].length();
-        } else {
-          fingerVel[h].set(0, 0, 0); // 추적 재획득 프레임 속도 스파이크 방지
+        if (tip) {
+          fingers[h].pos.setFromMatrixPosition(tip.matrixWorld);
+          if (fingers[h].pos.lengthSq() >= 1e-8) { // 미갱신 joint(원점) 무시
+            fingers[h].has = true;
+            fingerCanGrab[h] = true;  // XR: 항상 잡기 가능
+            if (wasHas) {
+              fingerVel[h].subVectors(fingers[h].pos, fingerPrev[h]);
+              fingerSpeed[h] = fingerVel[h].length();
+            } else {
+              fingerVel[h].set(0, 0, 0); // 추적 재획득 프레임 속도 스파이크 방지
+            }
+            fingerPrev[h].copy(fingers[h].pos);
+          }
         }
-        fingerPrev[h].copy(fingers[h].pos);
+
+        // ── 손바닥 중심 = wrist + middle-finger-metacarpal 중점
+        const wrist = hands[h]?.joints?.['wrist'];
+        const meta  = hands[h]?.joints?.['middle-finger-metacarpal'];
+        const wasPalm = palmHas[h];
+        palmHas[h] = false;
+        if (wrist && meta) {
+          _w.setFromMatrixPosition(wrist.matrixWorld);
+          palmPos[h].setFromMatrixPosition(meta.matrixWorld);
+          if (_w.lengthSq() >= 1e-8 && palmPos[h].lengthSq() >= 1e-8) {
+            palmPos[h].add(_w).multiplyScalar(0.5);
+            palmHas[h] = true;
+            if (wasPalm) palmVel[h].subVectors(palmPos[h], palmPrev[h]);
+            else         palmVel[h].set(0, 0, 0); // 재획득 스파이크 방지
+            palmPrev[h].copy(palmPos[h]);
+          }
+        }
       }
     }
 
@@ -742,13 +777,31 @@
           meshVel.addScaledVector(fingerVel[h], T.rigid.grabPropK);
         }
       }
-      // 원위치 복귀 스프링
+
+      // ── 손바닥 밀기: 손바닥이 고양이에 닿은 채 움직이면 그 방향으로 몸통 이동
+      const halfW = T.cat.width  * 0.5 + T.push.margin;
+      const halfH = T.cat.height * 0.5 + T.push.margin;
+      for (let h = 0; h < 2; h++) {
+        if (!palmHas[h]) continue;
+        const sp = palmVel[h].length();
+        if (sp < T.push.minSpeed) continue;
+        // 손바닥을 고양이 로컬 공간으로 (slab 접촉 판정)
+        _palmLoc.copy(palmPos[h]).applyMatrix4(_invMat);
+        const inXY = Math.abs(_palmLoc.x) < halfW && Math.abs(_palmLoc.y) < halfH;
+        const inZ  = _palmLoc.z > -T.push.contactZ && _palmLoc.z < TOUCH_Z + T.push.contactZ;
+        if (inXY && inZ) meshVel.addScaledVector(palmVel[h], T.push.pushK);
+      }
+
+      // 미세 안정화 스프링 (home이 위치를 따라오므로 스냅백 아님)
       meshVel.x += (meshHome.x - catMesh.position.x) * T.rigid.homeK;
       meshVel.y += (meshHome.y - catMesh.position.y) * T.rigid.homeK;
       meshVel.z += (meshHome.z - catMesh.position.z) * T.rigid.homeK;
       // 감쇠 + 적용
       meshVel.multiplyScalar(T.rigid.damp);
       catMesh.position.add(meshVel);
+
+      // home이 현재 위치를 천천히 따라옴 → 민 자리에 머묾(고정 앵커 아님)
+      meshHome.lerp(catMesh.position, T.push.homeFollow);
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -777,8 +830,8 @@
       if (DEBUG) {
         dbgEl.textContent =
           `mode: ${MOUSEMODE ? 'mouse' : 'XR'}\n` +
-          `L: ${fingers[0].has ? '✓' : '✗'}  grab:${grabActive[0] ? '●' : '○'}\n` +
-          `R: ${fingers[1].has ? '✓' : '✗'}  grab:${grabActive[1] ? '●' : '○'}`;
+          `L: ${fingers[0].has ? '✓' : '✗'}  grab:${grabActive[0] ? '●' : '○'}  palm:${palmHas[0] ? '✓' : '✗'}\n` +
+          `R: ${fingers[1].has ? '✓' : '✗'}  grab:${grabActive[1] ? '●' : '○'}  palm:${palmHas[1] ? '✓' : '✗'}`;
       }
     }
 
