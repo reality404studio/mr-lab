@@ -326,6 +326,7 @@
         posArr[i*3+2]  = balloonZ[i];
         if (placed) restArr[i*3+2] = balloonZ[i]; // 이미 배치됐으면 rest도 갱신
       }
+      if (placed) computeRestLengths();           // rest 바뀌면 스프링 길이도 재계산
       catGeo.attributes.position.needsUpdate = true;
       catGeo.computeVertexNormals();
     }
@@ -363,6 +364,26 @@
     const posArr  = catGeo.attributes.position.array;  // 지오메트리 버퍼 직접 참조
     const restArr = new Float32Array(VCOUNT * 3);       // 초기(rest) 위치
     const velArr  = new Float32Array(VCOUNT * 3);       // 버텍스 속도
+    const prevArr = new Float32Array(VCOUNT * 3);       // 직전 프레임 스냅샷 (Jacobi 적분용)
+
+    // ── 스프링 rest 길이 (풍선 돔 포함 실제 거리)
+    // 평면 hStep/vStep을 쓰면 돔 경사가 영구 긴장 → 손 안 대도 자가운동.
+    // rest 위치(돔 포함)의 실제 이웃 거리로 잡아야 돔이 진짜 평형이 됨.
+    const rlH  = new Float32Array(VCOUNT); // i ↔ i+1      (col < SEG)
+    const rlV  = new Float32Array(VCOUNT); // i ↔ i+COLS   (row < SEG)
+    const rlD1 = new Float32Array(VCOUNT); // i ↔ i+COLS+1 (down-right)
+    const rlD2 = new Float32Array(VCOUNT); // i ↔ i+COLS-1 (down-left)
+
+    function computeRestLengths() {
+      for (let r = 0; r <= SEG; r++) for (let c = 0; c <= SEG; c++) {
+        const i = r * COLS + c, i3 = i * 3;
+        const rx = restArr[i3], ry = restArr[i3+1], rz = restArr[i3+2];
+        if (c < SEG)             { const n=(i+1)*3;      rlH[i]  = Math.hypot(restArr[n]-rx, restArr[n+1]-ry, restArr[n+2]-rz); }
+        if (r < SEG)             { const n=(i+COLS)*3;   rlV[i]  = Math.hypot(restArr[n]-rx, restArr[n+1]-ry, restArr[n+2]-rz); }
+        if (r < SEG && c < SEG)  { const n=(i+COLS+1)*3; rlD1[i] = Math.hypot(restArr[n]-rx, restArr[n+1]-ry, restArr[n+2]-rz); }
+        if (r < SEG && c > 0)    { const n=(i+COLS-1)*3; rlD2[i] = Math.hypot(restArr[n]-rx, restArr[n+1]-ry, restArr[n+2]-rz); }
+      }
+    }
 
     // ─────────────────────────────────────────────────────────────
     // FINGER STATE
@@ -413,6 +434,7 @@
     function initPhysics() {
       if (balloonBuilt) applyBalloon();
       restArr.set(posArr);
+      computeRestLengths();   // 돔 포함 실제 rest 길이 (평형 보장)
       velArr.fill(0);
       grabActive[0] = grabActive[1] = false;
       grabWeight[0].fill(0); grabWeight[1].fill(0);
@@ -581,6 +603,7 @@
     // ─────────────────────────────────────────────────────────────
     function simStep() {
       const pos  = posArr;
+      const prev = prevArr;
       const rest = restArr;
       const vel  = velArr;
       const kC   = T.sim.cohesion;
@@ -589,9 +612,14 @@
       const mv   = T.sim.maxVel;
       const mv2  = mv * mv;
 
+      // 직전 프레임 위치를 스냅샷 → 모든 이웃 힘을 동일한 상태에서 읽음(Jacobi).
+      // 제자리 갱신(Gauss-Seidel)은 격자를 훑는 순서 때문에 비대칭 힘 →
+      // 자가 회전/표류(나선 버그)를 유발. 스냅샷으로 그 에너지 주입을 제거.
+      prev.set(pos);
+
       for (let i = 0; i < VCOUNT; i++) {
         const i3 = i * 3;
-        const px = pos[i3], py = pos[i3+1], pz = pos[i3+2];
+        const px = prev[i3], py = prev[i3+1], pz = prev[i3+2];
 
         // ── cohesion: rest position으로 끌어당김
         let fx = (rest[i3]   - px) * kC;
@@ -601,58 +629,58 @@
         const row = (i / COLS) | 0;
         const col = i % COLS;
 
-        let ni, ni3, dx, dy, dz, d, s;
+        let ni3, dx, dy, dz, d, s;
 
-        // ── 축방향 스프링 (L/R: hStep, U/D: vStep)
+        // ── 축방향 스프링 (rest 길이 = 돔 포함 실제 거리)
         if (col > 0) {
-          ni = i-1; ni3 = ni*3;
-          dx = pos[ni3]-px; dy = pos[ni3+1]-py; dz = pos[ni3+2]-pz;
+          ni3 = (i-1)*3;
+          dx = prev[ni3]-px; dy = prev[ni3+1]-py; dz = prev[ni3+2]-pz;
           d  = Math.sqrt(dx*dx+dy*dy+dz*dz);
-          if (d > 1e-8) { s=(d-hStep)/d*kN; fx+=dx*s; fy+=dy*s; fz+=dz*s; }
+          if (d > 1e-8) { s=(d-rlH[i-1])/d*kN; fx+=dx*s; fy+=dy*s; fz+=dz*s; }
         }
         if (col < SEG) {
-          ni = i+1; ni3 = ni*3;
-          dx = pos[ni3]-px; dy = pos[ni3+1]-py; dz = pos[ni3+2]-pz;
+          ni3 = (i+1)*3;
+          dx = prev[ni3]-px; dy = prev[ni3+1]-py; dz = prev[ni3+2]-pz;
           d  = Math.sqrt(dx*dx+dy*dy+dz*dz);
-          if (d > 1e-8) { s=(d-hStep)/d*kN; fx+=dx*s; fy+=dy*s; fz+=dz*s; }
+          if (d > 1e-8) { s=(d-rlH[i])/d*kN; fx+=dx*s; fy+=dy*s; fz+=dz*s; }
         }
         if (row > 0) {
-          ni = i-COLS; ni3 = ni*3;
-          dx = pos[ni3]-px; dy = pos[ni3+1]-py; dz = pos[ni3+2]-pz;
+          ni3 = (i-COLS)*3;
+          dx = prev[ni3]-px; dy = prev[ni3+1]-py; dz = prev[ni3+2]-pz;
           d  = Math.sqrt(dx*dx+dy*dy+dz*dz);
-          if (d > 1e-8) { s=(d-vStep)/d*kN; fx+=dx*s; fy+=dy*s; fz+=dz*s; }
+          if (d > 1e-8) { s=(d-rlV[i-COLS])/d*kN; fx+=dx*s; fy+=dy*s; fz+=dz*s; }
         }
         if (row < SEG) {
-          ni = i+COLS; ni3 = ni*3;
-          dx = pos[ni3]-px; dy = pos[ni3+1]-py; dz = pos[ni3+2]-pz;
+          ni3 = (i+COLS)*3;
+          dx = prev[ni3]-px; dy = prev[ni3+1]-py; dz = prev[ni3+2]-pz;
           d  = Math.sqrt(dx*dx+dy*dy+dz*dz);
-          if (d > 1e-8) { s=(d-vStep)/d*kN; fx+=dx*s; fy+=dy*s; fz+=dz*s; }
+          if (d > 1e-8) { s=(d-rlV[i])/d*kN; fx+=dx*s; fy+=dy*s; fz+=dz*s; }
         }
 
         // ── 대각선 스프링 (shear 방지, 젤리 구조감)
         if (col > 0 && row > 0) {
-          ni = i-COLS-1; ni3 = ni*3;
-          dx = pos[ni3]-px; dy = pos[ni3+1]-py; dz = pos[ni3+2]-pz;
+          ni3 = (i-COLS-1)*3;
+          dx = prev[ni3]-px; dy = prev[ni3+1]-py; dz = prev[ni3+2]-pz;
           d  = Math.sqrt(dx*dx+dy*dy+dz*dz);
-          if (d > 1e-8) { s=(d-diagStep)/d*kN; fx+=dx*s; fy+=dy*s; fz+=dz*s; }
+          if (d > 1e-8) { s=(d-rlD1[i-COLS-1])/d*kN; fx+=dx*s; fy+=dy*s; fz+=dz*s; }
         }
         if (col < SEG && row > 0) {
-          ni = i-COLS+1; ni3 = ni*3;
-          dx = pos[ni3]-px; dy = pos[ni3+1]-py; dz = pos[ni3+2]-pz;
+          ni3 = (i-COLS+1)*3;
+          dx = prev[ni3]-px; dy = prev[ni3+1]-py; dz = prev[ni3+2]-pz;
           d  = Math.sqrt(dx*dx+dy*dy+dz*dz);
-          if (d > 1e-8) { s=(d-diagStep)/d*kN; fx+=dx*s; fy+=dy*s; fz+=dz*s; }
+          if (d > 1e-8) { s=(d-rlD2[i-COLS+1])/d*kN; fx+=dx*s; fy+=dy*s; fz+=dz*s; }
         }
         if (col > 0 && row < SEG) {
-          ni = i+COLS-1; ni3 = ni*3;
-          dx = pos[ni3]-px; dy = pos[ni3+1]-py; dz = pos[ni3+2]-pz;
+          ni3 = (i+COLS-1)*3;
+          dx = prev[ni3]-px; dy = prev[ni3+1]-py; dz = prev[ni3+2]-pz;
           d  = Math.sqrt(dx*dx+dy*dy+dz*dz);
-          if (d > 1e-8) { s=(d-diagStep)/d*kN; fx+=dx*s; fy+=dy*s; fz+=dz*s; }
+          if (d > 1e-8) { s=(d-rlD2[i])/d*kN; fx+=dx*s; fy+=dy*s; fz+=dz*s; }
         }
         if (col < SEG && row < SEG) {
-          ni = i+COLS+1; ni3 = ni*3;
-          dx = pos[ni3]-px; dy = pos[ni3+1]-py; dz = pos[ni3+2]-pz;
+          ni3 = (i+COLS+1)*3;
+          dx = prev[ni3]-px; dy = prev[ni3+1]-py; dz = prev[ni3+2]-pz;
           d  = Math.sqrt(dx*dx+dy*dy+dz*dz);
-          if (d > 1e-8) { s=(d-diagStep)/d*kN; fx+=dx*s; fy+=dy*s; fz+=dz*s; }
+          if (d > 1e-8) { s=(d-rlD1[i])/d*kN; fx+=dx*s; fy+=dy*s; fz+=dz*s; }
         }
 
         // ── 투명 버텍스: 물리 동결 (윤곽 유지)
