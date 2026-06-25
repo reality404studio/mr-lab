@@ -101,6 +101,8 @@
         push:     0.50,    // 손끝이 전하를 밀어내는 강성 (press → dent)
         pushR:    0.055,   // 손끝 누름 사거리 m
         smear:    0.40,    // 손끝 진행방향으로 표면을 끌어 옮김 (Move/Drag 브러시, 손속도의 배율)
+        rim:      0.020,   // 누름 둘레 고리를 바깥으로 밀어 둔덕 형성 (재료 보존감, 소성=자국 남음)
+        rimScale: 2.4,     // 고리 바깥 반경 = pushR * 이 값 (rim 작용 범위)
         // ── 응집·안전망 (cohesion과 분리: 소성이어도 덩어리가 흩어져 사라지지 않게)
         maxR:     0.22,    // 클러스터 중심에서 이 반경까지는 자유(자국 보존), 넘으면 끌어옴 m
         leash:    0.55,    // maxR 밖 전하를 중심으로 끌어오는 강성 (containment)
@@ -223,28 +225,29 @@
 
     // 전 재질이 하나의 음함수(메타볼) 백엔드 — Medium처럼 필드→마칭큐브로 매끈.
     // cohesion = 형상 기억(높음=탄성복원 / ≈0=소성, 자국 남음),
-    // damping = 생기, push = 누름(dent) 강성, smear = 손진행방향 끌림(Move/Drag).
-    // 잡기-당김(stretch)은 모두 공통. 탄성일수록 smear≈0(스냅백), 소성일수록 큼(자국 남음).
+    // damping = 생기, push = 누름(dent) 강성, smear = 손진행방향 끌림(Move/Drag),
+    // rim = 누름 둘레 둔덕(재료 보존감). 잡기-당김(stretch)은 모두 공통.
+    // 탄성일수록 smear·rim≈0(스냅백·흔적없음), 소성일수록 큼(자국·둔덕 남음).
     const MATERIALS = [
       { // 탄성 극단: 팽팽하고 즉시 스냅백
         name: 'Water Balloon',
         cohesion: 0.075, repelR: 0.065, repel: 0.60, bondDist: 0.130, damping: 0.90,
-        push: 0.55, pushR: 0.055, smear: 0.00, color: new THREE.Color(0x55ddff),
+        push: 0.55, pushR: 0.055, smear: 0.00, rim: 0.000, color: new THREE.Color(0x55ddff),
       },
       { // 탄성 폼: 눌리면 패였다 빠르게 차오름 (높은 cohesion)
         name: 'Marshmallow',
         cohesion: 0.050, repelR: 0.060, repel: 0.55, bondDist: 0.130, damping: 0.80,
-        push: 0.45, pushR: 0.055, smear: 0.10, color: new THREE.Color(0xfff0f3),
+        push: 0.45, pushR: 0.055, smear: 0.10, rim: 0.006, color: new THREE.Color(0xfff0f3),
       },
       { // 점탄성: 패이고 천천히 차오름 (낮은 cohesion = 느린 복원)
         name: 'Memory Foam',
         cohesion: 0.012, repelR: 0.060, repel: 0.50, bondDist: 0.135, damping: 0.88,
-        push: 0.50, pushR: 0.055, smear: 0.35, color: new THREE.Color(0xc8b8a0),
+        push: 0.50, pushR: 0.055, smear: 0.35, rim: 0.014, color: new THREE.Color(0xc8b8a0),
       },
-      { // 소성 극단(점토): 누른·당긴·문지른 자국이 남음 (cohesion≈0)
+      { // 소성 극단(점토): 누른·당긴·문지른 자국과 둘레 둔덕이 남음 (cohesion≈0)
         name: 'Putty',
         cohesion: 0.002, repelR: 0.060, repel: 0.48, bondDist: 0.150, damping: 0.60,
-        push: 0.55, pushR: 0.055, smear: 0.60, color: new THREE.Color(0xd9c8a0),
+        push: 0.55, pushR: 0.055, smear: 0.60, rim: 0.026, color: new THREE.Color(0xd9c8a0),
       },
     ];
     let activeMat = 0;
@@ -261,6 +264,7 @@
       T.sim.push     = m.push;
       T.sim.pushR    = m.pushR;
       T.sim.smear    = m.smear;
+      T.sim.rim      = m.rim;
       blobMat.uniforms.uColor.value.copy(m.color);
       effect.visible = true;
     }
@@ -466,22 +470,37 @@
 
       // ── 손끝 누름: 비잡힌 전하를 손끝에서 밀어냄 → 표면이 패임(dent).
       //    저-cohesion(소성)이면 자국이 남고, 고-cohesion(탄성)이면 차오름.
+      //    pushR 안 = 누름+스미어(접촉), pushR~rimR 고리 = rim 둔덕(재료 보존감).
       const pushR2 = T.sim.pushR * T.sim.pushR;
       const invPushR = 1 / T.sim.pushR;
+      const rimR = T.sim.pushR * T.sim.rimScale;
+      const rimR2 = rimR * rimR;
+      const ringW = rimR - T.sim.pushR;
       for (let h = 0; h < 2; h++) {
         if (!fingers[h].has) continue;
         for (let i = 0; i < N; i++) {
           if (i === grab[0] || i === grab[1]) continue;      // 잡힌 전하는 스프링이 담당
           const dsq = charges[i].pos.distanceToSquared(fingers[h].pos);
-          if (dsq >= pushR2 || dsq < 1e-8) continue;
+          if (dsq >= rimR2 || dsq < 1e-8) continue;
           const dist = Math.sqrt(dsq);
-          _d.copy(charges[i].pos).sub(fingers[h].pos).multiplyScalar(1 / dist);
-          force[i].addScaledVector(_d, (T.sim.pushR - dist) * T.sim.push);
-          // 탄젠셜 스미어(Move/Drag 브러시): 손끝 진행방향으로 표면 재료를 끌어 옮김.
-          //   저-cohesion(소성)이면 끌린 자국이 그대로 남아 "찰흙을 옆으로 발랐다"로 읽힘.
-          if (T.sim.smear > 0) {
-            const fall = (T.sim.pushR - dist) * invPushR;    // 1(중심) → 0(가장자리)
-            force[i].addScaledVector(fingerVel[h], T.sim.smear * fall);
+          if (dist < T.sim.pushR) {
+            // 접촉 구역: 누름(dent) + 스미어
+            _d.copy(charges[i].pos).sub(fingers[h].pos).multiplyScalar(1 / dist);
+            force[i].addScaledVector(_d, (T.sim.pushR - dist) * T.sim.push);
+            // 탄젠셜 스미어(Move/Drag 브러시): 손끝 진행방향으로 표면 재료를 끌어 옮김.
+            //   저-cohesion(소성)이면 끌린 자국이 그대로 남아 "찰흙을 옆으로 발랐다"로 읽힘.
+            if (T.sim.smear > 0) {
+              const fall = (T.sim.pushR - dist) * invPushR;  // 1(중심) → 0(가장자리)
+              force[i].addScaledVector(fingerVel[h], T.sim.smear * fall);
+            }
+          } else if (T.sim.rim > 0) {
+            // rim 둔덕: 누름 둘레 고리의 전하를 blob 중심 바깥으로 밀어 융기 형성.
+            //   누른 부피가 둘레로 되돌아오는 재료 보존감. 소성이면 손 떠나도 둔덕 잔존.
+            const t = (dist - T.sim.pushR) / ringW;          // 0(안쪽)~1(바깥)
+            const bump = 4 * t * (1 - t);                    // 고리 중앙에서 최대
+            _d.copy(charges[i].pos).sub(blobCenter);
+            const dc = _d.length();
+            if (dc > 1e-6) force[i].addScaledVector(_d, bump * T.sim.rim / dc);
           }
         }
       }
