@@ -155,10 +155,10 @@
         damp:      0.9,
       },
       push: {
-        offset:   0.045,  // 손바닥 중심 → 실제 접촉면(피부) 보정 (고양이 방향)
+        offset:   0.02,   // 손바닥 중심 → 실제 접촉면(피부) 보정 (작게: 멀리서 닿은 척 방지)
         bandLo:  -0.04,   // 접촉 z 하한 (local m) — 표면 안쪽 살짝
-        bandHi:   0.05,   // 접촉 z 상한 = BULGE + 이 값 (실제 닿아야 반응)
-        reachXY:  0.0,    // xy 접촉 여유 (0 = 윤곽 안에서만)
+        bandHi:   0.01,   // 접촉 z 상한 = BULGE + 이 값 (표면 바로 앞 1cm까지만 = 실제 닿아야 반응)
+        reachXY:  0.0,    // (미사용) xy는 alphaAtLocal 실루엣 판정으로 대체
         stick:    0.85,   // 닿은 채 손바닥 변위를 따라가는 비율 (저항 없는 추종)
         palmR:    0.18,   // 표면 cling 반경 (local m) — 손에 감기는 범위
         kPalm:    0.07,   // cling 강성 (표면이 손바닥에 붙는 정도)
@@ -689,6 +689,15 @@
       }
     }
 
+    // cat-local 점이 고양이 실루엣(알파) 안의 불투명 격자에 있는지.
+    // 평면 bbox 대신 이걸 써서 윤곽 밖·모서리의 "안 닿았는데 반응(AT 필드)"을 막는다.
+    function alphaAtLocal(lp) {
+      const col = Math.round((lp.x / T.cat.width  + 0.5) * SEG);
+      const row = Math.round((0.5 - lp.y / T.cat.height) * SEG);
+      if (col < 0 || col > SEG || row < 0 || row > SEG) return false;
+      return alphaMask[row * COLS + col] === 1;
+    }
+
     // ─────────────────────────────────────────────────────────────
     // PALM CONTACT — 손바닥 접촉 판정 (보정된 접촉면 기준)
     //   _invMat은 updateGrab에서 갱신됨(같은 프레임, catMesh 위치 변동 전)
@@ -711,9 +720,8 @@
         // 접촉점 → cat-local, 윤곽 안 + 표면 근처(z)일 때만 접촉
         palmLocalPt[h].copy(_palmC).applyMatrix4(_invMat);
         const lp   = palmLocalPt[h];
-        const inXY = Math.abs(lp.x) < T.cat.width  * 0.5 + T.push.reachXY &&
-                     Math.abs(lp.y) < T.cat.height * 0.5 + T.push.reachXY;
-        const inZ  = lp.z > T.push.bandLo && lp.z < BULGE + T.push.bandHi;
+        const inXY = alphaAtLocal(lp);                              // 실루엣 안에서만 (bbox AT필드 제거)
+        const inZ  = lp.z > T.push.bandLo && lp.z < BULGE + T.push.bandHi; // 표면 바로 앞까지만
         if (inXY && inZ) palmStick[h] = true;
       }
     }
