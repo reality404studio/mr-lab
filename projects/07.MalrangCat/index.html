@@ -418,6 +418,52 @@
     catMesh.add(catMeshBack);       // 자식 → catMesh 변형/가시성/핀치이동 따라감
 
     // ─────────────────────────────────────────────────────────────
+    // AUDIO — 터치 시 랜덤 야옹 + 쓰다듬는 동안 골골(purr). 공간 오디오로 고양이에서 남.
+    //   AudioContext는 제스처(버튼 클릭/마우스다운) 때 resume — 자동재생 정책 회피.
+    // ─────────────────────────────────────────────────────────────
+    const listener = new THREE.AudioListener();
+    camera.add(listener);                 // XR에서 camera matrixWorld가 머리 추적 → 리스너도 추적
+    const audioLoader = new THREE.AudioLoader();
+
+    const MEOW_FILES   = ['cat-meow-1.wav', 'cat-meow2.wav', 'cat-meow3.wav'];
+    const meowBuffers  = new Array(MEOW_FILES.length).fill(null);
+    MEOW_FILES.forEach((f, i) => audioLoader.load(f, b => { meowBuffers[i] = b; }));
+
+    const meowVoice = new THREE.PositionalAudio(listener);
+    meowVoice.setRefDistance(0.6);
+    meowVoice.setRolloffFactor(0.6);      // 완만한 거리 감쇠 (멀어도 들리게)
+    catMesh.add(meowVoice);
+
+    const purrVoice = new THREE.PositionalAudio(listener);
+    purrVoice.setRefDistance(0.6);
+    purrVoice.setRolloffFactor(0.6);
+    purrVoice.setLoop(true);
+    purrVoice.setVolume(0);
+    catMesh.add(purrVoice);
+    let purrBuffer = null;
+    audioLoader.load('purring.wav', b => { purrBuffer = b; });
+
+    let lastMeowAt  = -1e9;               // 야옹 쿨다운용
+    let contactPrev = false;              // 접촉 상승엣지 감지용
+
+    function resumeAudio() {
+      const ctx = listener.context;
+      if (ctx && ctx.state === 'suspended') ctx.resume();
+    }
+
+    function playMeow(nowS) {
+      if (nowS - lastMeowAt < 0.45) return;          // 연타 방지
+      const ready = meowBuffers.filter(Boolean);
+      if (!ready.length) return;
+      const buf = ready[(Math.random() * ready.length) | 0];
+      if (meowVoice.isPlaying) meowVoice.stop();
+      meowVoice.setBuffer(buf);
+      meowVoice.setPlaybackRate(0.94 + Math.random() * 0.12); // 살짝 음정 변주
+      meowVoice.play();
+      lastMeowAt = nowS;
+    }
+
+    // ─────────────────────────────────────────────────────────────
     // PHYSICS BUFFERS (로컬 메시 공간)
     // ─────────────────────────────────────────────────────────────
     const posArr  = catGeo.attributes.position.array;  // 앞면 지오메트리 버퍼 직접 참조
@@ -1106,6 +1152,22 @@
         catMat.uniforms.uFingerCount.value = fc;
       }
 
+      // ── 사운드: 접촉 시작 엣지 → 랜덤 야옹 / 지속 접촉 → 골골(purr) 페이드
+      const contact = grabActive[0] || grabActive[1] || palmStick[0] || palmStick[1] ||
+                      holdActive[0] || holdActive[1];
+      const nowS = performance.now() * 0.001;
+      if (contact && !contactPrev) playMeow(nowS);   // 닿는 순간 한 번
+      contactPrev = contact;
+
+      if (purrBuffer) {
+        const target = contact ? 0.5 : 0;            // 쓰다듬는 동안만 골골
+        if (target > 0 && !purrVoice.isPlaying) { purrVoice.setBuffer(purrBuffer); purrVoice.play(); }
+        const v  = purrVoice.getVolume();
+        const nv = v + (target - v) * 0.05;          // 부드러운 페이드 인/아웃
+        purrVoice.setVolume(nv);
+        if (target === 0 && nv < 0.01 && purrVoice.isPlaying) purrVoice.stop();
+      }
+
       if (DEBUG) {
         dbgEl.textContent =
           `mode: ${MOUSEMODE ? 'mouse' : 'XR'}  spin:${spinning ? '🔄' : '○'}\n` +
@@ -1156,6 +1218,7 @@
 
       window.addEventListener('mousedown', e => {
         if (!placed) return;
+        resumeAudio();
         isDown = true;
         if (!trackMouse(e.clientX, e.clientY)) return;
         fingers[0].pos.copy(hitPoint);
@@ -1218,6 +1281,7 @@
 
       window.addEventListener('touchstart', e => {
         if (!placed) return;
+        resumeAudio();
         isDown = true;
         const t = e.touches[0];
         if (!trackMouse(t.clientX, t.clientY)) return;
@@ -1247,6 +1311,7 @@
 
     if (!MOUSEMODE) {
       btnXR.addEventListener('click', async () => {
+        resumeAudio();   // 제스처 시점에 오디오 컨텍스트 활성화 (XR 진입 후 야옹 가능)
         if (!navigator.xr) {
           errMsg.textContent = 'WebXR를 지원하지 않는 기기입니다.';
           return;
