@@ -95,13 +95,15 @@
   <script type="importmap">
   {
     "imports": {
-      "three": "https://unpkg.com/three@0.165.0/build/three.module.js"
+      "three": "https://unpkg.com/three@0.165.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.165.0/examples/jsm/"
     }
   }
   </script>
 
   <script type="module">
     import * as THREE from 'three';
+    import { XRHandModelFactory } from 'three/addons/webxr/XRHandModelFactory.js';
 
     // ─────────────────────────────────────────────────────────────
     // FLAGS
@@ -634,6 +636,75 @@
     // ─────────────────────────────────────────────────────────────
     const hands = MOUSEMODE ? [] : [renderer.xr.getHand(0), renderer.xr.getHand(1)];
     hands.forEach(h => scene.add(h));
+
+    // ─────────────────────────────────────────────────────────────
+    // HAND GLOVE — 실제 손 위 은은한 프레넬 림 (고양이와 같은 골든 톤)
+    //   XRHandModelFactory 'mesh' = 관절 따라 변형되는 스킨드 손 메시(GLB 비동기 로드).
+    //   머티리얼만 교체: 중앙 투명 + 가장자리만 발광(additive) → 얇은 빛 장갑.
+    // ─────────────────────────────────────────────────────────────
+    const gloveVert = /* glsl */`
+      #include <common>
+      #include <skinning_pars_vertex>
+      varying vec3 vN;
+      varying vec3 vV;
+      void main() {
+        #include <skinbase_vertex>
+        #include <beginnormal_vertex>
+        #include <skinnormal_vertex>
+        #include <begin_vertex>
+        #include <skinning_vertex>
+        vec4 mv = modelViewMatrix * vec4(transformed, 1.0);
+        vN = normalize(normalMatrix * objectNormal);
+        vV = normalize(-mv.xyz);
+        gl_Position = projectionMatrix * mv;
+      }
+    `;
+    const gloveFrag = /* glsl */`
+      uniform vec3  uColor;
+      uniform float uIntensity;
+      varying vec3  vN;
+      varying vec3  vV;
+      void main() {
+        // 가장자리(grazing)일수록 1 → 중앙은 거의 0(투명)
+        float fres = pow(1.0 - max(dot(normalize(vN), normalize(vV)), 0.0), 3.0);
+        gl_FragColor = vec4(uColor * fres * uIntensity, fres);
+      }
+    `;
+    function makeGloveMat() {
+      return new THREE.ShaderMaterial({
+        uniforms: {
+          uColor:     { value: new THREE.Color(1.0, 0.82, 0.42) }, // 고양이 골든 글로우와 동일
+          uIntensity: { value: 0.45 },                             // 은은하게 (↑밝게 / ↓더 연하게)
+        },
+        vertexShader:   gloveVert,
+        fragmentShader: gloveFrag,
+        transparent:    true,
+        depthWrite:     false,
+        blending:       THREE.AdditiveBlending,
+        side:           THREE.DoubleSide,
+      });
+    }
+
+    if (!MOUSEMODE) {
+      const handFactory = new XRHandModelFactory();
+      for (let h = 0; h < 2; h++) {
+        hands[h].add(handFactory.createHandModel(hands[h], 'mesh'));
+      }
+    }
+
+    // 손 GLB는 비동기 로드 → 등장한 SkinnedMesh의 머티리얼을 글러브로 교체(1회).
+    const _gloveDone = new WeakSet();
+    function skinGloves() {
+      for (let h = 0; h < hands.length; h++) {
+        hands[h].traverse((o) => {
+          if (o.isSkinnedMesh && !_gloveDone.has(o)) {
+            o.material      = makeGloveMat();
+            o.frustumCulled = false; // 손 근접 시 컬링 방지
+            _gloveDone.add(o);
+          }
+        });
+      }
+    }
 
     function readFingers() {
       for (let h = 0; h < 2; h++) {
@@ -1375,6 +1446,7 @@
         needsPlacement = false;
       }
 
+      if (!MOUSEMODE) skinGloves();
       if (placed) updateCat();
       renderer.render(scene, camera);
     });
