@@ -976,39 +976,17 @@
     // MESH RIGID UPDATE — 잡아당길 때 고양이 전체가 밀리고 복귀
     // ─────────────────────────────────────────────────────────────
     function updateMeshRigid() {
-      let moved = false;
-
-      // ── 핀치 홀드: 집어 든 채 손을 움직이면 고양이 전체가 손을 따라옴
+      // ── 몸통 이동(A축)은 오직 "핀치-홀드 추종" 하나뿐.
+      //   제거된 입력들(모두 "겉도는 느낌"의 원인):
+      //     · palmStick → palmVel  (쓰다듬으면 밀림 — 표면 cling만 남기고 몸통이동 제거)
+      //     · grabActive → meshVel (단순 잡기 몸통이동 — 핀치-당기기로 통합)
+      //     · meshVel 글라이드      (손 뗀 뒤 잔여 표류)
+      //   손바닥/검지 잡기는 simStep의 표면 변형(B축)만 담당한다.
+      //   holdActive는 grabActive(실제 버텍스 잡음) AND pinching 일 때만 켜지므로(updatePalm)
+      //   허공 핀치로는 몸통이 절대 움직이지 않는다.
       for (let h = 0; h < 2; h++) {
         if (!holdActive[h] || !fingers[h].has) continue;
-        catMesh.position.addScaledVector(fingerVel[h], T.hold.stick); // 즉시 추종
-        meshVel.copy(fingerVel[h]).multiplyScalar(T.hold.stick);      // 해제 후 글라이드용
-        moved = true;
-      }
-
-      // 검지 잡기(핀치 아님) → 손 속도 일부만 몸통에 (잡고 끌면 살짝 따라옴)
-      if (!moved) {
-        for (let h = 0; h < 2; h++) {
-          if (grabActive[h] && !holdActive[h] && fingerSpeed[h] > 0.001) {
-            meshVel.addScaledVector(fingerVel[h], T.rigid.grabPropK);
-          }
-        }
-      }
-
-      // ── 손바닥 sticky-follow: 닿은 채 움직이면 손바닥 변위를 직접 따라감
-      //   (속도 누적/홈 스프링 없음 → 저항 없이 손에 붙어 끌림)
-      for (let h = 0; h < 2; h++) {
-        if (!palmStick[h]) continue;
-        if (palmVel[h].lengthSq() < T.push.minSpeed * T.push.minSpeed) { moved = true; continue; }
-        catMesh.position.addScaledVector(palmVel[h], T.push.stick); // 즉시 추종
-        meshVel.copy(palmVel[h]).multiplyScalar(T.push.stick);      // 해제 후 짧은 글라이드용
-        moved = true;
-      }
-
-      // 손으로 잡고/밀고 있지 않을 때만 관성 적용 (글라이드 + 잔여 감쇠)
-      if (!moved) {
-        meshVel.multiplyScalar(T.rigid.damp);
-        catMesh.position.add(meshVel);
+        catMesh.position.addScaledVector(fingerVel[h], T.hold.stick); // 집어 든 손만 저항감 있게 추종
       }
     }
 
