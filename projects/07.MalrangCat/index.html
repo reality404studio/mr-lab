@@ -168,6 +168,8 @@
         pinchOn:  0.030,  // 엄지-검지 거리 이하 → 핀치 시작 (m)
         pinchOff: 0.055,  // 이 이상 벌어지면 핀치 해제 (히스테리시스)
         stick:    0.85,   // 집고 옮길 때 손을 따라가는 비율 (1=딱붙음)
+        rotStick:   1.0,  // 양손 회전 추종 비율 (1=손 비튼 만큼 그대로)
+        rotMaxStep: 0.35, // 프레임당 최대 회전(rad) — 추적 글리치 스핀 방지
       },
     };
 
@@ -476,6 +478,14 @@
     // ─────────────────────────────────────────────────────────────
     const meshVel  = new THREE.Vector3();
     const meshHome = new THREE.Vector3(); // 배치 직후 원위치
+
+    // ── 양손 핀치 회전용 temp
+    const _hA     = new THREE.Vector3();
+    const _hB     = new THREE.Vector3();
+    const _cenNow = new THREE.Vector3();
+    const _qSpin  = new THREE.Quaternion();
+    const _yAxis  = new THREE.Vector3(0, 1, 0);
+    let   spinning = false; // 디버그/관측용 — 이번 프레임 양손 회전 중?
 
     // ─────────────────────────────────────────────────────────────
     // HELPERS
@@ -984,17 +994,58 @@
     // MESH RIGID UPDATE — 잡아당길 때 고양이 전체가 밀리고 복귀
     // ─────────────────────────────────────────────────────────────
     function updateMeshRigid() {
-      // ── 몸통 이동(A축)은 오직 "핀치-홀드 추종" 하나뿐.
-      //   제거된 입력들(모두 "겉도는 느낌"의 원인):
-      //     · palmStick → palmVel  (쓰다듬으면 밀림 — 표면 cling만 남기고 몸통이동 제거)
-      //     · grabActive → meshVel (단순 잡기 몸통이동 — 핀치-당기기로 통합)
-      //     · meshVel 글라이드      (손 뗀 뒤 잔여 표류)
-      //   손바닥/검지 잡기는 simStep의 표면 변형(B축)만 담당한다.
-      //   holdActive는 grabActive(실제 버텍스 잡음) AND pinching 일 때만 켜지므로(updatePalm)
-      //   허공 핀치로는 몸통이 절대 움직이지 않는다.
+      // ── 몸통 변형(A축)은 오직 핀치-홀드에서만.
+      //   · 한 손 핀치-홀드  → 위치 이동(추종)
+      //   · 양손 핀치-홀드   → 두 손 중점 기준 Y축 회전 + 중점 이동 (현실 물건 비틀듯)
+      //   holdActive = pinching && grabActive 라 허공·단순접촉으론 절대 안 움직인다.
+      //   (제거된 입력: palmStick/단순 grab 몸통이동 + meshVel 글라이드 — "겉도는 느낌"의 원인)
+      spinning = false;
+      const twoHand = holdActive[0] && holdActive[1] && fingers[0].has && fingers[1].has;
+
+      if (twoHand) {
+        spinning = true;
+        _hA.copy(fingers[0].pos);   // A 현재
+        _hB.copy(fingers[1].pos);   // B 현재
+        // 직전 손끝 = 현재 - 이번 프레임 변위(fingerVel)
+        const a0x = _hA.x - fingerVel[0].x, a0y = _hA.y - fingerVel[0].y, a0z = _hA.z - fingerVel[0].z;
+        const b0x = _hB.x - fingerVel[1].x, b0y = _hB.y - fingerVel[1].y, b0z = _hB.z - fingerVel[1].z;
+
+        // ── 중점 이동(translation): 두 손이 같은 방향으로 움직이면 따라 이동
+        _cenNow.addVectors(_hA, _hB).multiplyScalar(0.5);
+        catMesh.position.x += _cenNow.x - (a0x + b0x) * 0.5;
+        catMesh.position.y += _cenNow.y - (a0y + b0y) * 0.5;
+        catMesh.position.z += _cenNow.z - (a0z + b0z) * 0.5;
+
+        // ── XZ(수평) 평면 두 손 벡터 각도 변화 → Y축 회전 (위아래 떨림 무시)
+        let dAng = Math.atan2(_hB.z - _hA.z, _hB.x - _hA.x) -
+                   Math.atan2(b0z - a0z, b0x - a0x);
+        if (dAng >  Math.PI) dAng -= 2 * Math.PI;
+        else if (dAng < -Math.PI) dAng += 2 * Math.PI;
+        // 추적 글리치 스핀 방지 클램프 + 추종 비율
+        const maxs = T.hold.rotMaxStep;
+        if (dAng >  maxs) dAng =  maxs;
+        else if (dAng < -maxs) dAng = -maxs;
+        dAng *= T.hold.rotStick;
+
+        if (dAng !== 0) {
+          // atan2(z,x) 각도를 +dAng 따라가려면 월드 +Y축으로 θ=-dAng 회전
+          const th = -dAng, cs = Math.cos(th), sn = Math.sin(th);
+          // 중점 피벗 기준 position 회전 (월드 +Y)
+          const px = catMesh.position.x - _cenNow.x;
+          const pz = catMesh.position.z - _cenNow.z;
+          catMesh.position.x = _cenNow.x + px * cs + pz * sn;
+          catMesh.position.z = _cenNow.z - px * sn + pz * cs;
+          // 본체 방향 회전
+          _qSpin.setFromAxisAngle(_yAxis, th);
+          catMesh.quaternion.premultiply(_qSpin);
+        }
+        return;
+      }
+
+      // ── 한 손 핀치-홀드: 집어 든 손만 저항감 있게 위치 추종
       for (let h = 0; h < 2; h++) {
         if (!holdActive[h] || !fingers[h].has) continue;
-        catMesh.position.addScaledVector(fingerVel[h], T.hold.stick); // 집어 든 손만 저항감 있게 추종
+        catMesh.position.addScaledVector(fingerVel[h], T.hold.stick);
       }
     }
 
@@ -1025,7 +1076,7 @@
 
       if (DEBUG) {
         dbgEl.textContent =
-          `mode: ${MOUSEMODE ? 'mouse' : 'XR'}\n` +
+          `mode: ${MOUSEMODE ? 'mouse' : 'XR'}  spin:${spinning ? '🔄' : '○'}\n` +
           `L: ${fingers[0].has ? '✓' : '✗'} grab:${grabActive[0] ? '●' : '○'} hold:${holdActive[0] ? '✊' : '○'} palm:${palmStick[0] ? '✋' : '○'}\n` +
           `R: ${fingers[1].has ? '✓' : '✗'} grab:${grabActive[1] ? '●' : '○'} hold:${holdActive[1] ? '✊' : '○'} palm:${palmStick[1] ? '✋' : '○'}`;
       }
