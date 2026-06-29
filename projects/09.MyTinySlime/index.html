@@ -1083,54 +1083,21 @@
       setTimeout(() => { try { if (cloudRecorder?.state === 'recording') cloudRecorder.stop(); } catch (e) { } }, CLOUD_CHUNK_MS);
     }
 
-    // 페이지 로드 시 브라우저 메모리(localStorage)에 저장된 클라우드플레어 키가 없다면 안전하게 물어봅니다.
-    // 이렇게 하면 코드에 토큰을 하드코딩하지 않고도 단일 HTML을 안전하게 공유할 수 있습니다.
-    let CF_ACCOUNT_ID = localStorage.getItem('cf_account_id') || '';
-    let CF_API_TOKEN = localStorage.getItem('cf_api_token') || '';
-
-    if (!CF_ACCOUNT_ID || !CF_API_TOKEN) {
-      // 사용 편의를 위해 처음 1회만 물어봅니다.
-      CF_ACCOUNT_ID = prompt("Cloudflare ACCOUNT ID를 입력해주세요:") || '';
-      CF_API_TOKEN = prompt("Cloudflare API 토큰(Token)을 입력해주세요:") || '';
-      if (CF_ACCOUNT_ID && CF_API_TOKEN) {
-        localStorage.setItem('cf_account_id', CF_ACCOUNT_ID);
-        localStorage.setItem('cf_api_token', CF_API_TOKEN);
-      }
-    }
-
     async function transcribeCloud(blob) {
       if (cloudBusy) return;
-      if (!CF_ACCOUNT_ID || !CF_API_TOKEN) {
-        setVoiceStatus('Key missing');
-        UI.toast('Cloudflare ID와 토큰이 필요합니다. 새로고침 후 입력해주세요.');
-        return;
-      }
-
       cloudBusy = true;
       setVoiceStatus('transcribing');
       try {
-        // 1. 가짜 주소 '/api/voice' 대신 진짜 클라우드플레어 Whisper 엔드포인트 주소로 변경합니다.
-        const URL = `https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/ai/run/@cf/openai/whisper`;
-
-        // 2. 클라우드플레어 전송 스펙에 맞춰 blob 데이터를 바이너리 버퍼로 풀어줍니다.
-        const audioBuffer = await blob.arrayBuffer();
-
-        const r = await fetch(URL, {
+        const r = await fetch('/api/voice', {
           method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${CF_API_TOKEN}`, // 인증 토큰 주입
-            'Content-Type': 'application/octet-stream' // 바이너리 전송 명시
-          },
-          body: audioBuffer
+          headers: { 'Content-Type': 'application/octet-stream' },
+          body: await blob.arrayBuffer()
         });
 
         if (!r.ok) throw new Error('voice status ' + r.status);
         const data = await r.json();
-
-        // 3. 클라우드플레어 응답 구조인 data.result.text에 맞춰 에러 처리를 우회합니다.
-        if (!data.success) throw new Error(data.errors?.[0]?.message || 'CF API Error');
-
-        const text = (data.result?.text || '').trim();
+        if (data.error) throw new Error(data.error);
+        const text = (data.text || '').trim();
         const now = performance.now();
         if (text.length > 1 && !(text === lastVoiceText && now - lastVoiceAt < 4500)) {
           setVoiceStatus('heard');

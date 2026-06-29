@@ -12,8 +12,16 @@
 const DEFAULT_STT_MODEL = '@cf/openai/whisper';
 const MAX_AUDIO_BYTES = 5 * 1024 * 1024;
 
-export async function onRequestPost({ request, env }) {
+export async function onRequest({ request, env }) {
   const t0 = Date.now();
+
+  if (request.method === 'OPTIONS') {
+    return new Response(null, { status: 204, headers: corsHeaders() });
+  }
+
+  if (request.method !== 'POST') {
+    return json({ text: '', error: `method ${request.method} not supported`, latencyMs: 0 }, 200);
+  }
 
   if (!env.AI || typeof env.AI.run !== 'function') {
     return json({ text: '', error: 'missing Workers AI binding named AI', latencyMs: 0 }, 200);
@@ -50,6 +58,14 @@ function extractText(result) {
 function json(obj, status = 200) {
   return new Response(JSON.stringify(obj), {
     status,
-    headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }
+    headers: { ...corsHeaders(), 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }
   });
+}
+
+function corsHeaders() {
+  return {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type',
+  };
 }
