@@ -7,6 +7,7 @@ Public mixed-reality and WebXR prototypes.
 - `projects/01.MIRROR`: Mirror Dance prototype.
 - `projects/02.MR_TEST`: MR Snake Quest Browser prototype.
 - `projects/03.TINYMYSELF`: Godeok Storage WebXR horror demo.
+- `projects/09.MyTinySlime`: Slimei — XR tamagotchi slime trained by natural language (Gemma 4 / Cerebras).
 
 ## Local-Only Folders
 

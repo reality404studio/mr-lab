@@ -1,0 +1,633 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Slimei — XR Tamagotchi</title>
+<style>
+  :root{
+    --ink:#e8e2ff; --dim:#9a90c0; --line:#2a2440;
+    --good:#7de0a0; --bad:#e0556b; --zap:#ffd45e;
+    --mono:"DejaVu Sans Mono",ui-monospace,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%;overflow:hidden;background:#0d0b14}
+  body{font-family:var(--mono);color:var(--ink);-webkit-user-select:none;user-select:none}
+  canvas{display:block;position:fixed;inset:0}
+
+  /* ---- DOM overlay (shows in AR via dom-overlay) ---- */
+  #ui{position:fixed;inset:0;pointer-events:none;z-index:10}
+
+  /* status panel: ASCII only, retro tamagotchi */
+  #panel{
+    position:absolute;top:14px;left:14px;
+    background:rgba(13,11,20,.62);border:1px solid var(--line);
+    border-radius:10px;padding:11px 13px;line-height:1.55;
+    font-size:13px;letter-spacing:1px;min-width:172px;
+    backdrop-filter:blur(3px);
+  }
+  #panel .name{color:#fff;letter-spacing:2px;font-size:12px}
+  #panel .row{color:var(--dim);font-size:11px}
+  #panel .hearts{color:#ff7aa8;letter-spacing:2px}
+  #panel .hunger{color:#ffcaa0;letter-spacing:2px}
+  #panel .mood{color:var(--ink)}
+
+  /* latency badge — the Cerebras "speed made visible" */
+  #zap{
+    position:absolute;top:14px;right:14px;
+    background:rgba(13,11,20,.62);border:1px solid var(--line);
+    border-radius:10px;padding:8px 12px;font-size:14px;letter-spacing:1px;
+    color:var(--zap);min-width:96px;text-align:center;backdrop-filter:blur(3px);
+    transition:transform .12s ease;
+  }
+  #zap.pulse{transform:scale(1.18)}
+  #zap small{display:block;color:var(--dim);font-size:9px;letter-spacing:2px;margin-top:2px}
+
+  /* learned toast */
+  #toast{
+    position:absolute;top:64px;left:50%;transform:translateX(-50%) translateY(-8px);
+    background:rgba(125,224,160,.14);border:1px solid rgba(125,224,160,.5);
+    color:var(--good);border-radius:999px;padding:7px 16px;font-size:13px;letter-spacing:1px;
+    opacity:0;transition:opacity .25s,transform .25s;white-space:nowrap;
+  }
+  #toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+
+  /* subtitle (the spoken / triggered line) */
+  #subtitle{
+    position:absolute;left:50%;bottom:108px;transform:translateX(-50%);
+    background:rgba(13,11,20,.7);border:1px solid var(--line);border-radius:12px;
+    padding:11px 20px;font-size:18px;letter-spacing:.5px;color:#fff;
+    max-width:84vw;text-align:center;opacity:0;transition:opacity .2s;backdrop-filter:blur(3px);
+  }
+  #subtitle.show{opacity:1}
+  #subtitle b{color:var(--zap);font-weight:400}
+
+  /* bottom hint / controls */
+  #dock{
+    position:absolute;left:50%;bottom:30px;transform:translateX(-50%);
+    display:flex;gap:9px;align-items:center;pointer-events:auto;flex-wrap:wrap;
+    justify-content:center;max-width:94vw;
+  }
+  .btn{
+    pointer-events:auto;cursor:pointer;
+    background:rgba(20,16,34,.85);border:1px solid var(--line);color:var(--ink);
+    border-radius:999px;padding:11px 16px;font-family:var(--mono);font-size:13px;letter-spacing:1px;
+  }
+  .btn:active{transform:scale(.96)}
+  .btn.primary{background:#5b46c8;border-color:#7a64e0;color:#fff}
+  .btn.ghost{background:rgba(20,16,34,.55);color:var(--dim)}
+
+  /* center splash / enter button */
+  #splash{
+    position:absolute;inset:0;display:flex;flex-direction:column;
+    align-items:center;justify-content:center;gap:16px;pointer-events:auto;
+    background:radial-gradient(60% 60% at 50% 42%,rgba(91,70,200,.18),rgba(13,11,20,.0));
+  }
+  #splash h1{font-size:22px;letter-spacing:8px;font-weight:400;color:#fff}
+  #splash p{font-size:12px;letter-spacing:1px;color:var(--dim);text-align:center;line-height:1.7;max-width:340px}
+  #splash .big{font-size:16px;padding:15px 30px}
+  #status{font-size:11px;color:var(--dim);letter-spacing:1px;min-height:14px}
+  .hide{display:none!important}
+  #hint{font-size:11px;color:var(--dim);letter-spacing:1px;text-align:center}
+</style>
+</head>
+<body>
+<div id="ui">
+  <div id="panel">
+    <div class="name" id="p-name">SLIMEI</div>
+    <div class="hearts" id="p-aff">♡♡♡♡♡</div>
+    <div class="hunger" id="p-hun">□□□□□</div>
+    <div class="row mood" id="p-mood">Mood : Normal</div>
+    <div class="row" id="p-learned">Learned : 0</div>
+  </div>
+
+  <div id="zap">⚡ —<small>GEMMA · CEREBRAS</small></div>
+  <div id="toast"></div>
+  <div id="subtitle"></div>
+
+  <div id="dock" class="hide">
+    <button class="btn primary" id="next">▶  다음 대사</button>
+    <button class="btn" id="mic">🎤 말하기</button>
+    <button class="btn ghost" id="reset">↺</button>
+  </div>
+
+  <div id="splash">
+    <h1>S L I M E I</h1>
+    <p>책상 위에 사는 작은 슬라임.<br>말로 가르치면, 기억하고 자란다.</p>
+    <button class="btn primary big" id="enter">로딩 중…</button>
+    <div id="status"></div>
+    <div id="hint"></div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+/* ============================================================
+   Slimei — XR Tamagotchi (single-file hackathon build)
+   - Quest 3 WebXR passthrough (immersive-ar) + hit-test 스폰
+   - Desktop fallback: y=0 즉시 스폰
+   - 슬라임: 두께기반 blob 셰이더 (계란후라이 회피)
+   - 자연어 → intent: Gemma 4 / Cerebras (서버 프록시) + 로컬 폴백
+   ============================================================ */
+const R = 0.08;                 // 슬라임 반지름 (책상용 8cm)
+const PURPLE = new THREE.Color('#b8a7f2');
+
+// ---------- renderer / scene (passthrough = 투명 배경) ----------
+const renderer = new THREE.WebGLRenderer({antialias:true, alpha:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.xr.enabled = true;
+renderer.xr.setReferenceSpaceType('local');
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(55, innerWidth/innerHeight, 0.01, 50);
+camera.position.set(0, 0.26, 0.64);
+camera.lookAt(0, R, 0);
+
+scene.add(new THREE.AmbientLight(0xffffff, .55));
+const key = new THREE.DirectionalLight(0xffffff, .8); key.position.set(1,3,2); scene.add(key);
+
+// ---------- tiny WebAudio SFX (cute blips, no assets) ----------
+const SFX = (()=>{ let ac;
+  const beep=(f,d,t,g=.05,wob=0)=>{ try{ ac=ac||new (window.AudioContext||window.webkitAudioContext)();
+    const o=ac.createOscillator(),v=ac.createGain(); o.type=t; o.frequency.value=f;
+    if(wob){o.frequency.linearRampToValueAtTime(f*wob, ac.currentTime+d);}
+    v.gain.value=g; v.gain.exponentialRampToValueAtTime(.0001, ac.currentTime+d);
+    o.connect(v).connect(ac.destination); o.start(); o.stop(ac.currentTime+d);}catch(e){} };
+  return {
+    pop:()=>beep(520,.12,'sine',.06,1.7),
+    nom:()=>{beep(300,.09,'triangle',.06);setTimeout(()=>beep(360,.09,'triangle',.06),100);},
+    happy:()=>{[660,830,990].forEach((f,i)=>setTimeout(()=>beep(f,.12,'sine',.05),i*90));},
+    love:()=>{beep(700,.18,'sine',.05,1.4);setTimeout(()=>beep(1040,.2,'sine',.05),120);},
+    spawn:()=>beep(420,.22,'sine',.06,1.8),
+  };
+})();
+
+// ============================================================
+//  SLIME  (geometry + blob shader + face + shadow + animation)
+// ============================================================
+const Slime = (()=>{
+  const group = new THREE.Group();
+  group.visible = false;
+
+  // --- blob 셰이더: 알파를 시선 통과 두께(dot(N,V))로 구동 ---
+  const mat = new THREE.ShaderMaterial({
+    transparent:true, depthWrite:false, side:THREE.FrontSide, blending:THREE.NormalBlending,
+    uniforms:{
+      uTime:{value:0}, uBreath:{value:1},
+      uColor:{value:PURPLE.clone()}, uRim:{value:new THREE.Color('#ffffff')}, uGlow:{value:0},
+    },
+    vertexShader:`
+      varying vec3 vN; varying vec3 vWPos;
+      uniform float uTime, uBreath;
+      void main(){
+        vec3 p = position;
+        float b = sin(uTime*1.6)*0.05*uBreath;   // 숨쉬기 (procedural, no rig)
+        p.y  *= 1.0 + b;
+        p.xz *= 1.0 - b*0.5;
+        vec4 wp = modelMatrix * vec4(p,1.0);
+        vWPos = wp.xyz;
+        vN = normalize(mat3(modelMatrix) * normal);
+        gl_Position = projectionMatrix * viewMatrix * wp;
+      }`,
+    fragmentShader:`
+      varying vec3 vN; varying vec3 vWPos;
+      uniform vec3 uColor, uRim; uniform float uGlow;
+      void main(){
+        vec3 N = normalize(vN);
+        vec3 V = normalize(cameraPosition - vWPos);   // three가 XR에서도 채워줌
+        float facing = abs(dot(N,V));
+        float thick  = pow(facing, 1.3);              // 가운데 진하고 가장자리로 소멸
+        float alpha  = thick * 0.92;
+        vec3 col = mix(uColor*0.55, uColor, thick);
+        float rim = pow(1.0 - facing, 2.5);           // 젖은 림 (은은하게)
+        col += rim * uRim * (0.22 + uGlow*0.5);
+        vec3 L = normalize(vec3(0.4,1.0,0.3));        // fake SSS 톱라이트 랩
+        float wrap = dot(N,L)*0.5 + 0.5;
+        col *= 0.72 + 0.5*wrap;
+        gl_FragColor = vec4(col, alpha);
+      }`,
+  });
+  const mesh = new THREE.Mesh(new THREE.SphereGeometry(1, 64, 48), mat);
+  mesh.scale.setScalar(R); mesh.position.y = R;
+  group.add(mesh);
+
+  // --- contact shadow (책상에 붙어있다는 접지감) ---
+  const shTex = (()=>{ const c=document.createElement('canvas'); c.width=c.height=128;
+    const g=c.getContext('2d'), rad=g.createRadialGradient(64,64,4,64,64,60);
+    rad.addColorStop(0,'rgba(20,10,40,.55)'); rad.addColorStop(1,'rgba(20,10,40,0)');
+    g.fillStyle=rad; g.fillRect(0,0,128,128); return new THREE.CanvasTexture(c); })();
+  const shadow = new THREE.Mesh(new THREE.PlaneGeometry(R*3.2,R*3.2),
+    new THREE.MeshBasicMaterial({map:shTex, transparent:true, depthWrite:false}));
+  shadow.rotation.x = -Math.PI/2; shadow.position.y = 0.001; group.add(shadow);
+
+  // --- face: ASCII 텍스트 스프라이트 (always billboard) ---
+  const faces = {
+    normal:'o o', happy:'^ ^', excited:'* *', sleepy:'- -',
+    confused:'@ @', love:'♥ ♥', eat:'> <', dead:'x x'
+  };
+  function drawFace(eyes, mouth){
+    const c=document.createElement('canvas'); c.width=c.height=256;
+    const x=c.getContext('2d'); x.clearRect(0,0,256,256);
+    x.fillStyle='#3a2f63'; x.font='bold 104px monospace';
+    x.textAlign='center'; x.textBaseline='middle';
+    x.fillText(eyes, 128, 116);
+    if(mouth){ x.font='bold 56px monospace'; x.fillText(mouth,128,182); }
+    const t=new THREE.CanvasTexture(c); t.needsUpdate=true; return t;
+  }
+  const faceMat = new THREE.SpriteMaterial({map:drawFace(faces.normal,'‿'), transparent:true, depthTest:false, depthWrite:false});
+  const faceSpr = new THREE.Sprite(faceMat);
+  faceSpr.scale.set(R*1.7, R*1.7, 1); faceSpr.position.y = R; group.add(faceSpr);
+
+  const mouths = {normal:'‿', happy:'‿', excited:'o', love:'♥', confused:'', sleepy:'', eat:'O', dead:''};
+  function setFace(name){
+    const e = faces[name]||faces.normal;
+    faceMat.map.dispose(); faceMat.map = drawFace(e, mouths[name]); faceMat.needsUpdate=true;
+  }
+
+  // --- animation: 누적식 action 큐 (절차적 squash&stretch) ---
+  const actions = [];
+  const ease = p => p<.5 ? 2*p*p : 1-Math.pow(-2*p+2,2)/2;
+  let look = 0, lookTarget = 0;     // 좌우 기울임(호기심/추적)
+
+  function add(dur, fn){ actions.push({t0:performance.now()/1000, dur, fn}); }
+
+  function jump(p, h=0.05){
+    const up = Math.sin(Math.PI*p)*h;
+    const land = Math.exp(-Math.pow((p)/0.12,2)) + Math.exp(-Math.pow((p-1)/0.12,2));
+    const sy = 1 + 0.22*Math.sin(Math.PI*p) - 0.18*land;
+    return {dy:up, sy};
+  }
+
+  // public-ish animation API
+  function bounce(h=0.06){ SFX.pop(); add(0.5, p=>jump(p,h)); }
+  function happy(){ SFX.happy(); setFace('happy'); mat.uniforms.uGlow.value=1;
+    [0,0.18,0.36].forEach(d=>setTimeout(()=>add(0.42,p=>jump(p,0.05)), d*1000));
+    setTimeout(()=>{mat.uniforms.uGlow.value=0; setFace('normal');},1600); }
+  function eat(){ SFX.nom(); setFace('eat');
+    add(1.0, p=>{ const s=1 - 0.34*Math.abs(Math.sin(p*Math.PI*2)); return {sy:s, sxz:1+ (1-s)*0.7}; });
+    setTimeout(()=>{ setFace('excited'); mat.uniforms.uGlow.value=1; },1000);
+    setTimeout(()=>{ setFace('normal'); mat.uniforms.uGlow.value=0; },2000); }
+  function sleep(){ setFace('sleepy'); mat.uniforms.uBreath.value=0.4;
+    add(9999, ()=>({sy:0.55, sxz:1.32})); }
+  function wake(){ mat.uniforms.uBreath.value=1; actions.length=0; setFace('normal'); }
+  function lookAt(worldPos){ const dx = worldPos.x - group.position.x; lookTarget = Math.max(-0.5,Math.min(0.5, dx*4)); setFace('confused'); }
+
+  // hop 이동: group.position 을 직접 보간 + 통통
+  function hopTo(target, faceDuring='confused', onDone){
+    const start = group.position.clone();
+    const dur = 0.95;
+    setFace(faceDuring);
+    add(dur, p=>{
+      const e = ease(p);
+      group.position.x = start.x + (target.x-start.x)*e;
+      group.position.z = start.z + (target.z-start.z)*e;
+      lookTarget = Math.max(-0.4,Math.min(0.4,(target.x-group.position.x)*6));
+      const hop = Math.abs(Math.sin(p*Math.PI*2))*0.05;
+      const land = Math.exp(-Math.pow((p-.5)/0.08,2))+Math.exp(-Math.pow((p-1)/0.08,2));
+      return {dy:hop, sy:1 - 0.16*land + 0.1*Math.sin(p*Math.PI*2)};
+    });
+    SFX.pop(); setTimeout(SFX.pop,300); setTimeout(SFX.pop,600);
+    if(onDone) setTimeout(onDone, dur*1000);
+  }
+
+  function update(time){
+    mat.uniforms.uTime.value = time;
+    let dy=0, sy=1, sxz=1;
+    dy += Math.sin(time*1.6)*0.004;                 // idle bob
+    for(let i=actions.length-1;i>=0;i--){
+      const a=actions[i]; const p=(time - a.t0)/a.dur;
+      if(p>=1 && a.dur<999){ actions.splice(i,1); continue; }
+      const r=a.fn(Math.min(p,1))||{}; dy+=r.dy||0; sy*=(r.sy!=null?r.sy:1); sxz*=(r.sxz!=null?r.sxz:1);
+    }
+    mesh.position.y = R + dy;
+    mesh.scale.set(R*sxz, R*sy, R*sxz);
+    look += (lookTarget - look)*0.15; if(Math.abs(lookTarget)<0.01) lookTarget*=0;
+    mesh.rotation.z = -look*0.5;
+    faceSpr.position.set(mesh.position.x, mesh.position.y, mesh.position.z);
+    shadow.scale.setScalar(1 + (1-sy)*0.6);          // 눌릴수록 그림자 확장
+    const m=shadow.material; m.opacity = 0.9*Math.max(0, 1 - dy*6);
+  }
+
+  function tint(c){ mat.uniforms.uColor.value.copy(c); }
+
+  return {group, mesh, setFace, bounce, happy, eat, sleep, wake, lookAt, hopTo, update, tint, faces};
+})();
+scene.add(Slime.group);
+
+// reticle (십자선/링) — hit-test 위치 표시
+const reticle = new THREE.Mesh(
+  new THREE.RingGeometry(0.045, 0.06, 32).rotateX(-Math.PI/2),
+  new THREE.MeshBasicMaterial({color:0xb8a7f2, transparent:true, opacity:0.9})
+);
+reticle.matrixAutoUpdate = false; reticle.visible = false; scene.add(reticle);
+
+// ============================================================
+//  STATE  (memory + stats)
+// ============================================================
+const State = {
+  spawned:false, sleeping:false,
+  memory:{ name:null, favoriteFood:null, foodLocation:null, homeLocation:null },
+  affection:35, hunger:62,
+  learnedCount(){ return ['name','favoriteFood','foodLocation','homeLocation']
+      .filter(k=>this.memory[k]!=null).length; },
+  mood(){
+    if(this.sleeping) return 'Sleepy';
+    if(this.hunger>72) return 'Hungry';
+    if(this.affection>82) return 'Love';
+    if(this.affection>55) return 'Happy';
+    return 'Normal';
+  }
+};
+
+// ============================================================
+//  UI  (ASCII status / toast / subtitle / latency)
+// ============================================================
+const UI = (()=>{
+  const $=id=>document.getElementById(id);
+  const bar=(n,full,empty)=>full.repeat(n)+empty.repeat(5-n);
+  function render(){
+    $('p-name').textContent = (State.memory.name? State.memory.name.toUpperCase() : 'SLIMEI');
+    $('p-aff').textContent  = bar(Math.round(State.affection/20),'♥','♡');
+    $('p-hun').textContent  = bar(Math.round(State.hunger/20),'■','□');
+    $('p-mood').textContent = 'Mood : '+State.mood();
+    $('p-learned').textContent = 'Learned : '+State.learnedCount();
+  }
+  let toastT;
+  function toast(msg){ const t=$('toast'); t.textContent=msg; t.classList.add('show');
+    clearTimeout(toastT); toastT=setTimeout(()=>t.classList.remove('show'),2200); }
+  let subT;
+  function subtitle(text){ const s=$('subtitle'); s.innerHTML='“'+text+'”'; s.classList.add('show');
+    clearTimeout(subT); subT=setTimeout(()=>s.classList.remove('show'),3400); }
+  function latency(ms){ const z=$('zap'); z.innerHTML='⚡ '+ms+'ms<small>GEMMA · CEREBRAS</small>';
+    z.classList.add('pulse'); setTimeout(()=>z.classList.remove('pulse'),140); }
+  return {render, toast, subtitle, latency};
+})();
+UI.render();
+
+// ============================================================
+//  AI  (자연어 → intent)  : 서버 프록시(Gemma/Cerebras) + 로컬 폴백
+// ============================================================
+async function parseIntent(text, expected){
+  const t0 = performance.now();
+  try{
+    const r = await fetch('/api/intent', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ text, memory:State.memory })
+    });
+    if(!r.ok) throw new Error('bad status '+r.status);
+    const data = await r.json();
+    data.latencyMs = data.latencyMs || Math.round(performance.now()-t0);
+    if(!data.intent) throw new Error('no intent');
+    return data;
+  }catch(e){
+    // 폴백: 데모가 절대 죽지 않게.
+    // 스크립트(authored)에서 expected가 오면 그걸 권위로 삼아 결정론적으로 동작.
+    const local = localIntent(text);
+    const intent = expected || local.intent;
+    const name = local.name || extractName(text);
+    return { intent, name, food:local.food, fallback:true, latencyMs: Math.round(performance.now()-t0) };
+  }
+}
+function extractName(t){ const m=(t||'').match(/([가-힣A-Za-z]{1,6}?)(?:이라고|라고|이야|야)/); return (m&&m[1])||'Bean'; }
+function localIntent(t){
+  const s=(t||'').toLowerCase();
+  // 이름은 "명명 맥락"이 있을 때만 (이름/불러/이라고/call you) — 본문에 박힌 이름 오인 방지
+  if(/이름|불러|이라고|라고\s*부|name|call\s*you/.test(s)) return {intent:'setName', name:extractName(t)};
+  if(/밥자리|먹이자리|여기가|food\s*spot|here.*food|here.*eat/.test(s)) return {intent:'setFoodLocation'};
+  if(/배고|먹|밥|hungry|eat|feed|food/.test(s)) return {intent:'feed'};
+  if(/잘했|착하|최고|good|nice|great|예쁘|기특/.test(s)) return {intent:'praise'};
+  if(/자자|잘자|sleep|코자|졸/.test(s)) return {intent:'sleep'};
+  if(/이리|이리와|가까이|come|here\b/.test(s)) return {intent:'come'};
+  if(/쓰다듬|예뻐|pet|쓰담/.test(s)) return {intent:'pet'};
+  return {intent:'idle'};
+}
+
+// ============================================================
+//  DISPATCH  intent → 슬라임 행동 + 스탯
+// ============================================================
+function worldNearCamera(){
+  // 카메라 전방 바닥점 (come here용) — 슬라임 표면 평면 위로
+  const dir = new THREE.Vector3(); camera.getWorldPosition(dir);
+  const p = new THREE.Vector3(); camera.getWorldDirection(p);
+  const target = dir.clone().add(p.multiplyScalar(0.35));
+  target.y = Slime.group.position.y;
+  return target;
+}
+function dispatch(parsed){
+  const it = parsed.intent;
+  if(State.sleeping && it!=='idle'){ State.sleeping=false; Slime.wake(); }
+  switch(it){
+    case 'setName':{
+      State.memory.name = (parsed.name||'Bean').replace(/[\.\,!\?]/g,'');
+      Slime.setFace('happy'); Slime.bounce(0.07); SFX.pop();
+      UI.toast('Learned: name ▸ '+State.memory.name);
+      State.affection = Math.min(100, State.affection+4);
+      setTimeout(()=>Slime.setFace('normal'),1200); break;
+    }
+    case 'setFood':{
+      State.memory.favoriteFood = parsed.food||'pudding';
+      Slime.setFace('excited'); Slime.bounce(0.05);
+      UI.toast('Learned: favoriteFood ✓'); break;
+    }
+    case 'setFoodLocation':{
+      State.memory.foodLocation = lastHitPoint
+        ? lastHitPoint.clone() : Slime.group.position.clone().add(new THREE.Vector3(0.26,0,0));
+      Slime.lookAt(State.memory.foodLocation);
+      UI.toast('Learned: foodLocation ✓'); SFX.pop();
+      setTimeout(()=>Slime.setFace('normal'),1400); break;
+    }
+    case 'feed':{
+      const dest = State.memory.foodLocation;
+      if(dest){
+        Slime.hopTo(dest, 'confused', ()=>{ Slime.eat();
+          State.hunger=Math.max(0,State.hunger-42); State.affection=Math.min(100,State.affection+5);
+          UI.render(); });
+      }else{ Slime.eat(); State.hunger=Math.max(0,State.hunger-42); State.affection=Math.min(100,State.affection+5); }
+      break;
+    }
+    case 'praise':{
+      Slime.happy(); State.affection=Math.min(100,State.affection+5); SFX.happy(); break;
+    }
+    case 'sleep':{
+      State.sleeping=true; Slime.sleep(); break;
+    }
+    case 'come':{
+      Slime.hopTo(worldNearCamera(), 'love', ()=>{ Slime.setFace('love'); SFX.love();
+        Slime.bounce(0.04); State.affection=Math.min(100,State.affection+3); UI.render();
+        setTimeout(()=>Slime.setFace('normal'),1600); });
+      break;
+    }
+    case 'pet':{
+      Slime.setFace('love'); Slime.bounce(0.03); SFX.love();
+      State.affection=Math.min(100,State.affection+3);
+      setTimeout(()=>Slime.setFace('normal'),1200); break;
+    }
+    default: Slime.bounce(0.03);
+  }
+  // 무드 색 살짝 반영 (배고프면 채도↓, 사랑 가득이면 분홍기)
+  const c = PURPLE.clone();
+  if(State.hunger>72) c.lerp(new THREE.Color('#9c9ab0'),0.4);
+  if(State.affection>82) c.lerp(new THREE.Color('#f7a6d6'),0.35);
+  Slime.tint(c);
+  UI.render();
+}
+
+// 자연어 한 줄을 처리하는 단일 진입점 (음성/스크립트/버튼 공통)
+async function say(text, expected){
+  UI.subtitle(text);
+  const parsed = await parseIntent(text, expected);
+  UI.latency(parsed.latencyMs||120);
+  dispatch(parsed);
+}
+
+// ============================================================
+//  DEMO SCRIPT  (촬영 안전판: 트리거→자막→진짜 LLM 호출)
+//  tamagochi.md / demo.md 60초 플로우 그대로
+// ============================================================
+const SCRIPT = [
+  { line:'너 이름은 콩이야',          expect:'setName' },
+  { line:'여기가 네 밥자리야',         expect:'setFoodLocation' },
+  { line:'콩아, 너 좀 배고파 보인다',  expect:'feed' },
+  { line:'잘했어 콩!',               expect:'praise' },
+  { line:'이리 와 자식아',            expect:'come' },
+];
+let scriptStep = 0;
+function nextScript(){
+  if(!State.spawned) return;
+  if(scriptStep >= SCRIPT.length){ Slime.happy(); UI.toast('demo complete ♥'); return; }
+  const s = SCRIPT[scriptStep++];
+  say(s.line, s.expect);
+}
+
+// ============================================================
+//  WEB SPEECH STT  (보너스 — 있으면 진짜 음성으로)
+// ============================================================
+let recog=null;
+(()=>{ const SR = window.SpeechRecognition||window.webkitSpeechRecognition; if(!SR) return;
+  recog = new SR(); recog.lang='ko-KR'; recog.interimResults=false; recog.maxAlternatives=1;
+  recog.onresult = e=>{ const t=e.results[0][0].transcript; say(t); };
+  recog.onerror = ()=>{}; })();
+function listen(){ if(!recog){ UI.toast('voice unsupported — 버튼 사용'); return; }
+  try{ recog.start(); UI.toast('listening…'); }catch(e){} }
+
+// ============================================================
+//  SPAWN / PLACEMENT
+// ============================================================
+let lastHitPoint = null;        // 최근 hit-test 지점 (foodLocation 캡처용)
+function spawnAt(pos){
+  Slime.group.position.copy(pos);
+  Slime.group.visible = true;
+  Slime.setFace('normal');
+  State.spawned = true;
+  SFX.spawn(); Slime.bounce(0.05);
+  document.getElementById('dock').classList.remove('hide');
+  reticle.material.opacity = 0.28;   // 스폰 후엔 흐리게 유지(밥자리 조준용)
+  UI.toast('Slimei is here ♡');
+}
+
+// ============================================================
+//  AR SESSION  (immersive-ar + hit-test)
+// ============================================================
+let hitTestSource=null, localSpace=null, arActive=false;
+async function enterAR(){
+  const session = await navigator.xr.requestSession('immersive-ar', {
+    requiredFeatures:['hit-test'],
+    optionalFeatures:['local-floor','dom-overlay'],
+    domOverlay:{ root: document.getElementById('ui') }
+  });
+  arActive = true;
+  document.getElementById('splash').classList.add('hide');
+  await renderer.xr.setSession(session);
+  localSpace = await session.requestReferenceSpace('local');
+  const viewer = await session.requestReferenceSpace('viewer');
+  hitTestSource = await session.requestHitTestSource({ space: viewer });
+
+  session.addEventListener('select', ()=>{
+    if(!State.spawned){ if(reticle.visible){ const p=new THREE.Vector3().setFromMatrixPosition(reticle.matrix); spawnAt(p); } }
+    else { nextScript(); }            // 스폰 후 트리거 = 다음 대사
+  });
+  session.addEventListener('end', ()=>{ arActive=false; hitTestSource=null;
+    document.getElementById('splash').classList.remove('hide'); });
+}
+
+// ============================================================
+//  DESKTOP FALLBACK  (y=0 즉시 스폰 + 마우스 회전)
+// ============================================================
+function startDesktop(){
+  document.getElementById('splash').classList.add('hide');
+  scene.background = new THREE.Color('#161226');   // 가짜 패스스루(어두운 책상)
+  const grid = new THREE.GridHelper(2, 20, 0x2a2440, 0x201b34);
+  grid.position.y = 0; scene.add(grid);
+  spawnAt(new THREE.Vector3(0,0,0));
+  // 데모용 기본 밥자리 (오른쪽 책상)
+  State.memory.foodLocation = new THREE.Vector3(0.26,0,0.02);
+  // 마우스 오빗 (가벼운 수동 구현)
+  let drag=false, px=0, py=0, az=0.0, el=0.32, rad=0.7;
+  const place=()=>{ camera.position.set(Math.sin(az)*Math.cos(el)*rad, Math.sin(el)*rad+0.05, Math.cos(az)*Math.cos(el)*rad); camera.lookAt(0,R,0); };
+  place();
+  addEventListener('mousedown',e=>{drag=true;px=e.clientX;py=e.clientY;});
+  addEventListener('mouseup',()=>drag=false);
+  addEventListener('mousemove',e=>{ if(!drag)return; az-=(e.clientX-px)*0.006; el=Math.max(0.05,Math.min(1.2,el+(e.clientY-py)*0.005)); px=e.clientX;py=e.clientY; place(); });
+  addEventListener('wheel',e=>{ rad=Math.max(0.3,Math.min(1.6,rad+e.deltaY*0.0008)); place(); },{passive:true});
+}
+
+// 키보드 (데스크톱 테스트/촬영 편의)
+addEventListener('keydown', e=>{
+  if(e.key===' '||e.key==='Enter'){ e.preventDefault(); nextScript(); }
+  if(e.key==='v') listen();
+  const map={'1':'setName','2':'setFoodLocation','3':'feed','4':'praise','5':'come','0':'sleep'};
+  if(map[e.key]) say(SCRIPT.find(s=>s.expect===map[e.key])?.line||map[e.key], map[e.key]);
+});
+
+// ============================================================
+//  BOOT  (XR 지원 감지 → 버튼/폴백)
+// ============================================================
+(async()=>{
+  const enter=document.getElementById('enter'), status=document.getElementById('status'), hint=document.getElementById('hint');
+  // ?preview = 데스크톱 미리보기 즉시 시작 (촬영 리허설/디버그)
+  if(/[?&]preview/.test(location.search)){ startDesktop(); }
+  let arSupported=false;
+  try{ arSupported = navigator.xr && await navigator.xr.isSessionSupported('immersive-ar'); }catch(e){}
+  if(arSupported){
+    enter.textContent='ENTER AR  ▸  슬라임 깨우기';
+    hint.textContent='AR 진입 → 책상을 보면 레티클 표시 → 트리거로 스폰 → 트리거로 다음 대사';
+    status.textContent='Quest 3 passthrough ready';
+    enter.onclick=()=>enterAR().catch(err=>{status.textContent='AR 실패: '+err.message;});
+  }else{
+    enter.textContent='데스크톱으로 시작 (미리보기)';
+    hint.textContent='Space=다음 대사 · 1~5=비트 점프 · 0=잠 · v=음성 · 드래그=회전';
+    status.textContent='immersive-ar 미지원 — 데스크톱 폴백';
+    enter.onclick=startDesktop;
+  }
+  // 버튼 와이어링
+  document.getElementById('next').onclick=nextScript;
+  document.getElementById('mic').onclick=listen;
+  document.getElementById('reset').onclick=()=>location.reload();
+})();
+
+// ============================================================
+//  RENDER LOOP
+// ============================================================
+const clock = new THREE.Clock();
+renderer.setAnimationLoop((t, frame)=>{
+  const time = clock.getElapsedTime();
+  // hit-test (AR)
+  if(frame && hitTestSource && localSpace){
+    const hits = frame.getHitTestResults(hitTestSource);
+    if(hits.length){
+      const pose = hits[0].getPose(localSpace);
+      reticle.visible = true;
+      reticle.matrix.fromArray(pose.transform.matrix);
+      lastHitPoint = new THREE.Vector3().setFromMatrixPosition(reticle.matrix);
+    } else if(!State.spawned){ reticle.visible=false; }
+  }
+  Slime.update(time);
+  renderer.render(scene, camera);
+});
+
+addEventListener('resize', ()=>{ camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth,innerHeight); });
+</script>
+</body>
+</html>

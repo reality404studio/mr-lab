@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Slimei — blob shader</title>
+<style>
+  :root{
+    --bg:#0d0b14;
+    --ink:#cfc6e8;
+    --dim:#6a6286;
+    --line:#272135;
+    --bad:#e0556b;
+    --good:#7de0a0;
+    --mono:"DejaVu Sans Mono",ui-monospace,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    background:var(--bg);color:var(--ink);font-family:var(--mono);
+    display:flex;flex-direction:column;min-height:100vh;
+  }
+  header{
+    padding:18px 20px 10px;border-bottom:1px solid var(--line);
+  }
+  header h1{font-size:13px;font-weight:400;letter-spacing:3px;color:var(--ink)}
+  header p{font-size:11px;color:var(--dim);margin-top:4px;letter-spacing:1px}
+  #stage{flex:1;position:relative;min-height:380px}
+  canvas{display:block;width:100%;height:100%}
+  .labels{
+    position:absolute;inset:0;pointer-events:none;
+    display:grid;grid-template-columns:1fr 1fr;
+  }
+  .cell{
+    display:flex;flex-direction:column;justify-content:flex-end;
+    align-items:center;padding-bottom:18px;gap:3px;
+  }
+  .tag{font-size:11px;letter-spacing:2px}
+  .tag.bad{color:var(--bad)}
+  .tag.good{color:var(--good)}
+  .sub{font-size:10px;color:var(--dim);text-align:center;max-width:240px;line-height:1.5}
+  .divider{
+    position:absolute;left:50%;top:0;bottom:0;width:1px;background:var(--line);
+  }
+  footer{
+    border-top:1px solid var(--line);padding:12px 20px;
+    font-size:10px;color:var(--dim);letter-spacing:1px;line-height:1.7;
+  }
+  footer b{color:var(--ink);font-weight:400}
+  @media (max-width:560px){
+    .sub{max-width:150px}
+    .tag{font-size:10px}
+  }
+</style>
+</head>
+<body>
+  <header>
+    <h1>S L I M E I &nbsp;·&nbsp; B L O B &nbsp; S H A D E R</h1>
+    <p>왜 "계란후라이"가 되는가 — 같은 구체, 다른 처리</p>
+  </header>
+
+  <div id="stage">
+    <canvas id="c"></canvas>
+    <div class="divider"></div>
+    <div class="labels">
+      <div class="cell">
+        <div class="tag bad">✗ 코어구체 + 상수알파</div>
+        <div class="sap sub">불투명 코어 + DoubleSide 껍질<br>depthWrite ON + 스페큘러 노른자</div>
+      </div>
+      <div class="cell">
+        <div class="tag good">✓ 두께기반 단일메시</div>
+        <div class="sub">alpha ∝ dot(N,V) · depthWrite OFF<br>가운데 진하게 가장자리로 소멸</div>
+      </div>
+    </div>
+  </div>
+
+  <footer>
+    <b>핵심:</b> 오른쪽은 시선이 통과하는 두께(facing ratio)로 알파를 구동 → 동심원 껍질이 사라지고 자연스러운 그라데이션.
+    이 셰이더를 MeshPhysicalMaterial 대신 ShaderMaterial로 쓰거나, 오른쪽 알파식을 onBeforeCompile로 주입하면 됩니다.
+  </footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({canvas, antialias:true, alpha:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(35, 2, 0.1, 100);
+camera.position.set(0, 0.2, 6);
+
+scene.add(new THREE.AmbientLight(0xffffff, 0.4));
+const key = new THREE.DirectionalLight(0xffffff, 0.9);
+key.position.set(2, 4, 3); scene.add(key);
+
+const PURPLE = new THREE.Color('#b7a6f0');
+
+// ---------- LEFT: the "fried egg" (intentionally wrong) ----------
+const badGroup = new THREE.Group();
+badGroup.position.x = -1.7;
+// opaque inner core  → the "yolk"
+const core = new THREE.Mesh(
+  new THREE.SphereGeometry(0.62, 48, 48),
+  new THREE.MeshStandardMaterial({color:PURPLE, roughness:0.25, metalness:0.0})
+);
+badGroup.add(core);
+// translucent outer shell, constant opacity, double-sided, depthWrite ON
+const shell = new THREE.Mesh(
+  new THREE.SphereGeometry(1.0, 48, 48),
+  new THREE.MeshPhysicalMaterial({
+    color:PURPLE, transparent:true, opacity:0.45,
+    roughness:0.1, transmission:0.0, side:THREE.DoubleSide,
+    depthWrite:true            // ← the culprit: closed transparent mesh sorts badly
+  })
+);
+badGroup.add(shell);
+scene.add(badGroup);
+
+// ---------- RIGHT: thickness-based blob (the fix) ----------
+const vert = `
+  varying vec3 vN;
+  varying vec3 vWPos;
+  uniform float uTime;
+  void main(){
+    vec3 p = position;
+    // breathing squash & stretch (procedural, no rig)
+    float b = sin(uTime*1.6)*0.05;
+    p.y *= 1.0 + b;
+    p.xz *= 1.0 - b*0.5;
+    vec4 wp = modelMatrix * vec4(p,1.0);
+    vWPos = wp.xyz;
+    vN = normalize(mat3(modelMatrix) * normal);
+    gl_Position = projectionMatrix * viewMatrix * wp;
+  }
+`;
+const frag = `
+  varying vec3 vN;
+  varying vec3 vWPos;
+  uniform vec3  uColor;
+  uniform vec3  uRim;
+  uniform vec3  uCam;
+  void main(){
+    vec3 N = normalize(vN);
+    vec3 V = normalize(uCam - vWPos);
+    // facing = 1 at silhouette center, 0 at rim  → proxy for view-through thickness
+    float facing = abs(dot(N, V));
+    float thick  = pow(facing, 1.3);
+
+    // alpha from thickness: dense center, fades to transparent rim (the gradient)
+    float alpha = thick * 0.9;
+
+    // color denser where thicker
+    vec3 col = mix(uColor*0.55, uColor, thick);
+
+    // subtle rim sheen (wet jelly look) — bright at edge, kept gentle
+    float rim = pow(1.0 - facing, 2.5);
+    col += rim * uRim * 0.22;
+
+    // soft top-light wrap for a hint of volume (fake SSS)
+    vec3 L = normalize(vec3(0.4, 1.0, 0.3));
+    float wrap = dot(N, L) * 0.5 + 0.5;
+    col *= 0.72 + 0.5 * wrap;
+
+    gl_FragColor = vec4(col, alpha);
+  }
+`;
+const goodMat = new THREE.ShaderMaterial({
+  vertexShader:vert, fragmentShader:frag,
+  uniforms:{
+    uTime:{value:0},
+    uColor:{value:PURPLE.clone()},
+    uRim:{value:new THREE.Color('#ffffff')},
+    uCam:{value:new THREE.Vector3()}
+  },
+  transparent:true,
+  depthWrite:false,            // ← stop closed-mesh self-occlusion hard edges
+  side:THREE.FrontSide,        // single-sided, single mesh, no inner core
+  blending:THREE.NormalBlending
+});
+const good = new THREE.Mesh(new THREE.SphereGeometry(1.0, 64, 64), goodMat);
+good.position.x = 1.7;
+scene.add(good);
+
+// simple face (o o) on the good slime, billboarded — on-brand Tamagotchi touch
+function makeFace(txt){
+  const cv = document.createElement('canvas'); cv.width=cv.height=128;
+  const x = cv.getContext('2d');
+  x.fillStyle='#2a2440'; x.font='bold 54px monospace';
+  x.textAlign='center'; x.textBaseline='middle';
+  x.fillText(txt, 64, 70);
+  const tex = new THREE.CanvasTexture(cv);
+  const spr = new THREE.Sprite(new THREE.SpriteMaterial({map:tex, transparent:true, depthTest:false}));
+  spr.scale.set(0.9,0.9,1);
+  return spr;
+}
+const face = makeFace('o o');
+face.position.set(1.7, 0.05, 0.95);
+scene.add(face);
+
+function resize(){
+  const w = stageW(), h = stageH();
+  renderer.setSize(w, h, false);
+  camera.aspect = w/h; camera.updateProjectionMatrix();
+}
+function stageW(){ return document.getElementById('stage').clientWidth; }
+function stageH(){ return document.getElementById('stage').clientHeight; }
+addEventListener('resize', resize); resize();
+
+const clock = new THREE.Clock();
+function tick(){
+  const t = clock.getElapsedTime();
+  goodMat.uniforms.uTime.value = t;
+  goodMat.uniforms.uCam.value.copy(camera.position);
+
+  // gentle bob so the gradient reads in motion
+  good.position.y = Math.sin(t*1.6)*0.03;
+  badGroup.position.y = Math.sin(t*1.6)*0.03;
+  badGroup.rotation.y = t*0.4;
+  good.rotation.y = t*0.4;
+  face.position.y = 0.05 + Math.sin(t*1.6)*0.03;
+
+  renderer.render(scene, camera);
+  requestAnimationFrame(tick);
+}
+tick();
+</script>
+</body>
+</html>
