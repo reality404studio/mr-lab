@@ -89,6 +89,10 @@
   #status{font-size:11px;color:var(--dim);letter-spacing:1px;min-height:14px}
   .hide{display:none!important}
   #hint{font-size:11px;color:var(--dim);letter-spacing:1px;text-align:center}
+  body.xr-active #panel,
+  body.xr-active #zap,
+  body.xr-active #toast,
+  body.xr-active #subtitle{display:none}
 </style>
 </head>
 <body>
@@ -364,6 +368,111 @@ const State = {
 };
 
 // ============================================================
+//  XR HUD  (DOM overlay가 안 보이는 Quest용 3D UI)
+//  카메라 기준 가장자리 배치: 정보는 보이되 슬라임/손 상호작용 영역은 비운다.
+// ============================================================
+const XRHUD = (()=>{
+  const camPos = new THREE.Vector3(), camQuat = new THREE.Quaternion(), world = new THREE.Vector3();
+  const nodes = [];
+  const bar=(n,full,empty)=>full.repeat(n)+empty.repeat(5-n);
+  let toastUntil = 0, subtitleUntil = 0;
+
+  function roundRect(ctx,x,y,w,h,r){
+    ctx.beginPath();
+    ctx.moveTo(x+r,y); ctx.lineTo(x+w-r,y); ctx.quadraticCurveTo(x+w,y,x+w,y+r);
+    ctx.lineTo(x+w,y+h-r); ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);
+    ctx.lineTo(x+r,y+h); ctx.quadraticCurveTo(x,y+h,x,y+h-r);
+    ctx.lineTo(x,y+r); ctx.quadraticCurveTo(x,y,x+r,y); ctx.closePath();
+  }
+  function fillPanel(ctx,w,h,bg='rgba(13,11,20,.68)',stroke='rgba(180,165,255,.35)'){
+    ctx.clearRect(0,0,w,h);
+    roundRect(ctx,10,10,w-20,h-20,24);
+    ctx.fillStyle=bg; ctx.fill();
+    ctx.strokeStyle=stroke; ctx.lineWidth=2; ctx.stroke();
+  }
+  function makeNode(width, height, canvasW, canvasH, offset){
+    const canvas=document.createElement('canvas'); canvas.width=canvasW; canvas.height=canvasH;
+    const ctx=canvas.getContext('2d');
+    const texture=new THREE.CanvasTexture(canvas);
+    texture.minFilter=THREE.LinearFilter; texture.magFilter=THREE.LinearFilter;
+    const material=new THREE.MeshBasicMaterial({map:texture, transparent:true, depthTest:false, depthWrite:false});
+    material.toneMapped = false;
+    const mesh=new THREE.Mesh(new THREE.PlaneGeometry(width,height), material);
+    mesh.renderOrder = 10000; mesh.visible = false;
+    scene.add(mesh);
+    const node={mesh, canvas, ctx, texture, offset:new THREE.Vector3(offset[0],offset[1],offset[2])};
+    nodes.push(node); return node;
+  }
+  const panel = makeNode(0.31,0.155,512,256,[-0.285,0.165,-0.74]);
+  const zap = makeNode(0.22,0.07,512,160,[0.285,0.17,-0.74]);
+  const toastNode = makeNode(0.42,0.065,768,128,[0,0.035,-0.78]);
+  const subtitleNode = makeNode(0.58,0.082,1024,160,[0,-0.215,-0.82]);
+
+  function drawFit(ctx,text,x,y,maxWidth,size,color,align='center'){
+    let s=size;
+    ctx.textAlign=align; ctx.textBaseline='middle'; ctx.fillStyle=color;
+    do{ ctx.font=`400 ${s}px "DejaVu Sans Mono", monospace`; if(ctx.measureText(text).width<=maxWidth) break; s-=2; }
+    while(s>18);
+    ctx.fillText(text,x,y);
+  }
+
+  function renderStatus(){
+    const ctx=panel.ctx, w=panel.canvas.width, h=panel.canvas.height;
+    fillPanel(ctx,w,h);
+    ctx.textAlign='left'; ctx.textBaseline='middle';
+    ctx.font='400 31px "DejaVu Sans Mono", monospace'; ctx.fillStyle='#ffffff';
+    ctx.fillText(State.memory.name ? State.memory.name.toUpperCase() : 'SLIMEI', 32, 48);
+    ctx.font='400 29px "DejaVu Sans Mono", monospace'; ctx.fillStyle='#ff7aa8';
+    ctx.fillText(bar(Math.round(State.affection/20),'♥','♡'), 32, 92);
+    ctx.fillStyle='#ffcaa0'; ctx.fillText(bar(Math.round(State.hunger/20),'■','□'), 32, 132);
+    ctx.font='400 22px "DejaVu Sans Mono", monospace'; ctx.fillStyle='#e8e2ff';
+    ctx.fillText('Mood : '+State.mood(), 32, 176);
+    ctx.fillStyle='#9a90c0'; ctx.fillText('Learned : '+State.learnedCount(), 32, 212);
+    panel.texture.needsUpdate=true;
+  }
+  function latency(ms){
+    const ctx=zap.ctx, w=zap.canvas.width, h=zap.canvas.height;
+    fillPanel(ctx,w,h,'rgba(13,11,20,.62)','rgba(255,212,94,.42)');
+    drawFit(ctx, ms==='—' ? '⚡ —' : '⚡ '+ms+'ms',w/2,58,w-42,40,'#ffd45e');
+    drawFit(ctx,'GEMMA · CEREBRAS',w/2,112,w-54,18,'#9a90c0');
+    zap.texture.needsUpdate=true;
+  }
+  function toast(msg){
+    const ctx=toastNode.ctx, w=toastNode.canvas.width, h=toastNode.canvas.height;
+    fillPanel(ctx,w,h,'rgba(125,224,160,.16)','rgba(125,224,160,.60)');
+    drawFit(ctx,msg,w/2,h/2,w-52,30,'#7de0a0');
+    toastNode.texture.needsUpdate=true;
+    toastUntil = performance.now()/1000 + 2.2;
+  }
+  function subtitle(text){
+    const ctx=subtitleNode.ctx, w=subtitleNode.canvas.width, h=subtitleNode.canvas.height;
+    fillPanel(ctx,w,h,'rgba(13,11,20,.72)','rgba(180,165,255,.38)');
+    drawFit(ctx,'“'+text+'”',w/2,h/2,w-64,34,'#ffffff');
+    subtitleNode.texture.needsUpdate=true;
+    subtitleUntil = performance.now()/1000 + 3.4;
+  }
+  function update(){
+    const now = performance.now()/1000;
+    const visible = !!(arActive && renderer.xr.isPresenting);
+    panel.mesh.visible = zap.mesh.visible = visible;
+    toastNode.mesh.visible = visible && now < toastUntil;
+    subtitleNode.mesh.visible = visible && now < subtitleUntil;
+    if(!visible) return;
+    const xrCam = renderer.xr.getCamera ? renderer.xr.getCamera(camera) : camera;
+    xrCam.updateMatrixWorld?.();
+    xrCam.getWorldPosition(camPos); xrCam.getWorldQuaternion(camQuat);
+    for(const n of nodes){
+      if(!n.mesh.visible) continue;
+      world.copy(n.offset).applyQuaternion(camQuat);
+      n.mesh.position.copy(camPos).add(world);
+      n.mesh.quaternion.copy(camQuat);
+    }
+  }
+  latency('—'); renderStatus();
+  return {renderStatus, latency, toast, subtitle, update};
+})();
+
+// ============================================================
 //  UI  (ASCII status / toast / subtitle / latency)
 // ============================================================
 const UI = (()=>{
@@ -375,14 +484,18 @@ const UI = (()=>{
     $('p-hun').textContent  = bar(Math.round(State.hunger/20),'■','□');
     $('p-mood').textContent = 'Mood : '+State.mood();
     $('p-learned').textContent = 'Learned : '+State.learnedCount();
+    XRHUD.renderStatus();
   }
   let toastT;
   function toast(msg){ const t=$('toast'); t.textContent=msg; t.classList.add('show');
+    XRHUD.toast(msg);
     clearTimeout(toastT); toastT=setTimeout(()=>t.classList.remove('show'),2200); }
   let subT;
   function subtitle(text){ const s=$('subtitle'); s.innerHTML='“'+text+'”'; s.classList.add('show');
+    XRHUD.subtitle(text);
     clearTimeout(subT); subT=setTimeout(()=>s.classList.remove('show'),3400); }
   function latency(ms){ const z=$('zap'); z.innerHTML='⚡ '+ms+'ms<small>GEMMA · CEREBRAS</small>';
+    XRHUD.latency(ms);
     z.classList.add('pulse'); setTimeout(()=>z.classList.remove('pulse'),140); }
   return {render, toast, subtitle, latency};
 })();
@@ -782,6 +895,7 @@ async function enterAR(){
     domOverlay:{ root: document.getElementById('ui') }
   });
   arActive = true;
+  document.body.classList.add('xr-active');
   document.getElementById('splash').classList.add('hide');
   await renderer.xr.setSession(session);
   localSpace = await session.requestReferenceSpace('local');
@@ -793,6 +907,7 @@ async function enterAR(){
     else { nextScript(); }            // 스폰 후 트리거 = 다음 대사
   });
   session.addEventListener('end', ()=>{ arActive=false; hitTestSource=null; HandInteraction.reset();
+    document.body.classList.remove('xr-active');
     document.getElementById('splash').classList.remove('hide'); });
 }
 
@@ -869,6 +984,7 @@ renderer.setAnimationLoop((t, frame)=>{
   }
   HandInteraction.update(frame, time);
   Slime.update(time);
+  XRHUD.update();
   renderer.render(scene, camera);
 });
 
