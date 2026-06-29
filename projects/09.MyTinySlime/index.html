@@ -255,9 +255,11 @@ const Slime = (()=>{
   function drawFace(eyes){
     const c=document.createElement('canvas'); c.width=c.height=256;
     const x=c.getContext('2d'); x.clearRect(0,0,256,256);
-    x.fillStyle='#3a2f63'; x.font='bold 112px monospace';   // 눈만 — 입 없음
+    const pair = (eyes||'o o').split(' ');
+    x.fillStyle='#3a2f63'; x.font='bold 78px monospace';   // 112px의 70%, 살짝 위쪽에 모은 눈
     x.textAlign='center'; x.textBaseline='middle';
-    x.fillText(eyes, 128, 132);
+    x.fillText(pair[0]||'o', 104, 108);
+    x.fillText(pair[1]||pair[0]||'o', 152, 108);
     const t=new THREE.CanvasTexture(c); t.needsUpdate=true; return t;
   }
   const faceMat = new THREE.SpriteMaterial({map:drawFace(faces.normal), transparent:true, depthTest:false, depthWrite:false});
