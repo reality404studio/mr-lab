@@ -130,7 +130,7 @@
    - 자연어 → intent: Gemma 4 / Cerebras (서버 프록시) + 로컬 폴백
    ============================================================ */
 const R = 0.08;                 // 슬라임 반지름 (책상용 8cm)
-const PURPLE = new THREE.Color('#b8a7f2');
+const PURPLE = new THREE.Color('#c4b6ff');   // 밝은 캔디 라벤더 (탱글 젤리)
 
 // ---------- renderer / scene (passthrough = 투명 배경) ----------
 const renderer = new THREE.WebGLRenderer({antialias:true, alpha:true});
@@ -171,9 +171,9 @@ const Slime = (()=>{
   const group = new THREE.Group();
   group.visible = false;
 
-  // --- blob 셰이더: 알파를 시선 통과 두께(dot(N,V))로 구동 ---
+  // --- jelly 셰이더: 솔리드 바디 + 젖은 광택 + 프레넬 림 (먼지구름 X) ---
   const mat = new THREE.ShaderMaterial({
-    transparent:true, depthWrite:false, side:THREE.FrontSide, blending:THREE.NormalBlending,
+    transparent:true, depthWrite:true, side:THREE.FrontSide, blending:THREE.NormalBlending,
     uniforms:{
       uTime:{value:0}, uBreath:{value:1},
       uColor:{value:PURPLE.clone()}, uRim:{value:new THREE.Color('#ffffff')}, uGlow:{value:0},
@@ -183,9 +183,12 @@ const Slime = (()=>{
       uniform float uTime, uBreath;
       void main(){
         vec3 p = position;
-        float b = sin(uTime*1.6)*0.05*uBreath;   // 숨쉬기 (procedural, no rig)
+        float b = sin(uTime*1.6)*0.06*uBreath;   // 숨쉬기 (procedural, no rig)
         p.y  *= 1.0 + b;
         p.xz *= 1.0 - b*0.5;
+        // 탱글거리는 표면 지글 (jelly jiggle)
+        float j = sin(uTime*3.1 + p.y*7.0)*0.014*uBreath;
+        p.x *= 1.0 + j; p.z *= 1.0 - j;
         vec4 wp = modelMatrix * vec4(p,1.0);
         vWPos = wp.xyz;
         vN = normalize(mat3(modelMatrix) * normal);
@@ -198,14 +201,30 @@ const Slime = (()=>{
         vec3 N = normalize(vN);
         vec3 V = normalize(cameraPosition - vWPos);   // three가 XR에서도 채워줌
         float facing = abs(dot(N,V));
-        float thick  = pow(facing, 1.3);              // 가운데 진하고 가장자리로 소멸
-        float alpha  = thick * 0.92;
-        vec3 col = mix(uColor*0.55, uColor, thick);
-        float rim = pow(1.0 - facing, 2.5);           // 젖은 림 (은은하게)
-        col += rim * uRim * (0.22 + uGlow*0.5);
-        vec3 L = normalize(vec3(0.4,1.0,0.3));        // fake SSS 톱라이트 랩
+
+        // 솔리드 바디: 중앙은 거의 불투명, 실루엣 가장자리만 살짝 투명 → '먼지'가 아니라 '물체'
+        float edge  = pow(1.0 - facing, 3.0);
+        float alpha = mix(0.985, 0.66, edge);
+
+        // 내부 그라데이션(부피감 유지) — 밝게
+        float thick = pow(facing, 0.7);
+        vec3  body  = mix(uColor*0.80, uColor*1.14, thick);
+
+        // 톱라이트 랩 (둥근 입체)
+        vec3 L = normalize(vec3(0.35, 0.9, 0.45));
         float wrap = dot(N,L)*0.5 + 0.5;
-        col *= 0.72 + 0.5*wrap;
+        vec3 col = body * (0.84 + 0.40*wrap);
+
+        // 젖은 젤리 광택 (Blinn-Phong) — 부드러운 글로시 + 작고 또렷한 촉촉 점
+        vec3  H = normalize(L + V);
+        float ndh = max(dot(N,H), 0.0);
+        col += pow(ndh,  42.0) * (0.85 + uGlow*0.4);
+        col += pow(ndh, 150.0) * 0.75;
+
+        // 프레넬 림 시인 (젖은 가장자리 + happy때 글로우)
+        float fres = pow(1.0 - facing, 4.0);
+        col += fres * uRim * (0.35 + uGlow*0.45);
+
         gl_FragColor = vec4(col, alpha);
       }`,
   });
