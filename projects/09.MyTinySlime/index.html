@@ -110,15 +110,15 @@
   <div id="subtitle"></div>
 
   <div id="dock" class="hide">
-    <button class="btn primary" id="next">▶  다음 대사</button>
-    <button class="btn" id="mic">🎤 말하기</button>
+    <button class="btn primary" id="next">▶  Next line</button>
+    <button class="btn" id="mic">🎤 Speak</button>
     <button class="btn ghost" id="reset">↺</button>
   </div>
 
   <div id="splash">
     <h1>S L I M E I</h1>
-    <p>책상 위에 사는 작은 슬라임.<br>말로 가르치면, 기억하고 자란다.</p>
-    <button class="btn primary big" id="enter">로딩 중…</button>
+    <p>A tiny slime living on your desk.<br>Teach it with your voice. It remembers.</p>
+    <button class="btn primary big" id="enter">Loading…</button>
     <div id="status"></div>
     <div id="hint"></div>
   </div>
@@ -249,14 +249,14 @@ const Slime = (()=>{
 
   // --- face: ASCII 텍스트 스프라이트 (always billboard) ---
   const faces = {
-    normal:'o o', happy:'^ ^', excited:'* *', sleepy:'- -',
-    confused:'@ @', surprised:'O O', love:'♥ ♥', eat:'> <', dead:'x x'
+    normal:'o  o', happy:'^  ^', excited:'*  *', sleepy:'-  -',
+    confused:'@  @', surprised:'O  O', love:'♥  ♥', eat:'>  <', dead:'x  x'
   };
   function drawFace(eyes){
     const c=document.createElement('canvas'); c.width=c.height=256;
     const x=c.getContext('2d'); x.clearRect(0,0,256,256);
-    const pair = (eyes||'o o').split(' ');
-    x.fillStyle='#3a2f63'; x.font='bold 78px monospace';   // 112px의 70%, 살짝 위쪽에 모은 눈
+    const pair = (eyes||'o  o').match(/\S+/g) || ['o','o'];
+    x.fillStyle='#3a2f63'; x.font='bold 78px monospace';   // 70% size, slightly higher, close-set eyes
     x.textAlign='center'; x.textBaseline='middle';
     x.fillText(pair[0]||'o', 104, 108);
     x.fillText(pair[1]||pair[0]||'o', 152, 108);
@@ -540,7 +540,13 @@ async function parseIntent(text, expected){
     return { intent, name, food:local.food, fallback:true, latencyMs: Math.round(performance.now()-t0) };
   }
 }
-function extractName(t){ const m=(t||'').match(/([가-힣A-Za-z]{1,6}?)(?:이라고|라고|이야|야)/); return (m&&m[1])||'Bean'; }
+function extractName(t){
+  const s = t || '';
+  const en = s.match(/(?:call\s+you|name\s+is|named)\s+([A-Za-z]{1,12})/i);
+  if(en) return en[1];
+  const ko = s.match(/([가-힣A-Za-z]{1,6}?)(?:이라고|라고|이야|야)/);
+  return (ko&&ko[1])||'Bean';
+}
 function localIntent(t){
   const s=(t||'').toLowerCase();
   // 이름은 "명명 맥락"이 있을 때만 (이름/불러/이라고/call you) — 본문에 박힌 이름 오인 방지
@@ -664,7 +670,7 @@ const HandInteraction = (()=>{
     if(time-lastPokeAt<0.75) return;
     lastPokeAt = time; petScore = 0;
     Slime.boing();
-    UI.toast('뚀잉!');
+    UI.toast('Boing!');
   }
 
   function triggerPet(time){
@@ -673,7 +679,7 @@ const HandInteraction = (()=>{
     Slime.setFace('happy'); Slime.bounce(0.025); SFX.love();
     State.affection = Math.min(100, State.affection + 3);
     UI.render();
-    UI.toast('쓰담쓰담 ^ ^');
+    UI.toast('Petting ^ ^');
     setTimeout(()=>Slime.setFace('normal'),1300);
   }
 
@@ -754,11 +760,11 @@ const HandInteraction = (()=>{
 //  tamagochi.md / demo.md 60초 플로우 그대로
 // ============================================================
 const SCRIPT = [
-  { line:'너 이름은 콩이야',          expect:'setName' },
-  { line:'여기가 네 밥자리야',         expect:'setFoodLocation' },
-  { line:'콩아, 너 좀 배고파 보인다',  expect:'feed' },
-  { line:'잘했어 콩!',               expect:'praise' },
-  { line:'이리 와 자식아',            expect:'come' },
+  { line:"I'll call you Bean",       expect:'setName' },
+  { line:'This is your food spot',   expect:'setFoodLocation' },
+  { line:'Bean, you look hungry',    expect:'feed' },
+  { line:'Good job, Bean!',          expect:'praise' },
+  { line:'Come here, Bean',          expect:'come' },
 ];
 let scriptStep = 0;
 function nextScript(){
@@ -775,7 +781,7 @@ function nextScript(){
 // ============================================================
 let recog=null, recogWant=false, recogLive=false;
 (()=>{ const SR = window.SpeechRecognition||window.webkitSpeechRecognition; if(!SR) return;
-  recog = new SR(); recog.lang='ko-KR';
+  recog = new SR(); recog.lang='en-US';
   recog.continuous=true; recog.interimResults=true; recog.maxAlternatives=1;
   recog.onstart  = ()=>{ recogLive=true; micUI(true); setVoiceStatus('web listening'); };
   recog.onresult = e=>{
@@ -785,7 +791,7 @@ let recog=null, recogWant=false, recogLive=false;
     }
   };
   recog.onerror = ev=>{
-    if(ev.error==='not-allowed'){ recogWant=false; micUI(false); setVoiceStatus('blocked'); UI.toast('마이크 권한이 필요해요'); return; }
+    if(ev.error==='not-allowed'){ recogWant=false; micUI(false); setVoiceStatus('blocked'); UI.toast('Microphone permission needed'); return; }
     if(ev.error==='service-not-allowed'||ev.error==='network'||ev.error==='language-not-supported'){
       recogWant=false; try{recog.stop();}catch(e){}
       setVoiceStatus('cloud fallback');
@@ -808,7 +814,7 @@ function stopListening(){
   setVoiceStatus('off');
 }
 function toggleListening(){ (recogWant||cloudWant) ? stopListening() : startListening(); }
-function micUI(on){ const b=document.getElementById('mic'); if(b) b.textContent = on?'🎙 듣는 중…':'🎤 말하기'; }
+function micUI(on){ const b=document.getElementById('mic'); if(b) b.textContent = on?'🎙 Listening…':'🎤 Speak'; }
 
 const CLOUD_CHUNK_MS = 2600;
 let cloudWant=false, cloudLive=false, cloudStream=null, cloudRecorder=null, cloudBusy=false;
@@ -823,7 +829,7 @@ function bestAudioMime(){
 async function startCloudListening(){
   if(!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder){
     setVoiceStatus('unsupported');
-    UI.toast('이 브라우저는 음성인식 미지원 — 버튼/Space 사용'); return;
+    UI.toast('Voice input unsupported — use trigger/Space'); return;
   }
   if(cloudLive) return;
   cloudWant=true; cloudErrorShown=false;
@@ -832,10 +838,10 @@ async function startCloudListening(){
     cloudStream = await navigator.mediaDevices.getUserMedia({
       audio:{ echoCancellation:true, noiseSuppression:true, autoGainControl:true }
     });
-    cloudLive=true; micUI(true); setVoiceStatus('cloud listening'); UI.toast('마이크 듣는 중');
+    cloudLive=true; micUI(true); setVoiceStatus('cloud listening'); UI.toast('Listening...');
     recordCloudChunk();
   }catch(e){
-    cloudWant=false; cloudLive=false; micUI(false); setVoiceStatus('blocked'); UI.toast('마이크 권한이 필요해요');
+    cloudWant=false; cloudLive=false; micUI(false); setVoiceStatus('blocked'); UI.toast('Microphone permission needed');
   }
 }
 
@@ -850,7 +856,7 @@ function recordCloudChunk(){
   const chunks=[], mime=bestAudioMime();
   try{
     cloudRecorder = new MediaRecorder(cloudStream, mime?{mimeType:mime}:undefined);
-  }catch(e){ setVoiceStatus('record error'); stopCloudListening(); UI.toast('녹음 시작 실패 — 버튼/Space 사용'); return; }
+  }catch(e){ setVoiceStatus('record error'); stopCloudListening(); UI.toast('Recording failed — use trigger/Space'); return; }
   cloudRecorder.ondataavailable = e=>{ if(e.data && e.data.size) chunks.push(e.data); };
   cloudRecorder.onstop = ()=>{
     const blob = new Blob(chunks, {type:cloudRecorder?.mimeType || mime || 'audio/webm'});
@@ -859,7 +865,7 @@ function recordCloudChunk(){
     else if(cloudWant) setVoiceStatus('cloud listening');
     if(cloudWant) setTimeout(recordCloudChunk, 80);
   };
-  cloudRecorder.onerror = ()=>{ setVoiceStatus('record error'); if(!cloudErrorShown){ cloudErrorShown=true; UI.toast('음성 녹음 오류 — 버튼/Space 사용'); } };
+  cloudRecorder.onerror = ()=>{ setVoiceStatus('record error'); if(!cloudErrorShown){ cloudErrorShown=true; UI.toast('Recording error — use trigger/Space'); } };
   cloudRecorder.start();
   setVoiceStatus('recording');
   setTimeout(()=>{ try{ if(cloudRecorder?.state==='recording') cloudRecorder.stop(); }catch(e){} }, CLOUD_CHUNK_MS);
@@ -886,7 +892,7 @@ async function transcribeCloud(blob){
     }else if(cloudWant) setVoiceStatus('cloud listening');
   }catch(e){
     setVoiceStatus('STT error');
-    if(!cloudErrorShown){ cloudErrorShown=true; UI.toast('STT 실패: '+String(e.message||e).slice(0,34)); }
+    if(!cloudErrorShown){ cloudErrorShown=true; UI.toast('STT error: '+String(e.message||e).slice(0,34)); }
   }finally{ cloudBusy=false; }
 }
 
@@ -973,14 +979,14 @@ addEventListener('keydown', e=>{
   let arSupported=false;
   try{ arSupported = navigator.xr && await navigator.xr.isSessionSupported('immersive-ar'); }catch(e){}
   if(arSupported){
-    enter.textContent='ENTER AR  ▸  슬라임 깨우기';
-    hint.textContent='AR 진입 → 책상에 스폰 → 손가락으로 찌르기/쓰다듬기 → 트리거로 다음 대사';
+    enter.textContent='ENTER AR  ▸  Wake Slimei';
+    hint.textContent='Enter AR → place Slimei on your desk → poke/pet with your hand → trigger for next line';
     status.textContent='Quest 3 passthrough ready';
-    enter.onclick=()=>{ primeMic(); enterAR().catch(err=>{status.textContent='AR 실패: '+err.message;}); };  // 같은 탭 제스처로 마이크 권한+세션
+    enter.onclick=()=>{ primeMic(); enterAR().catch(err=>{status.textContent='AR failed: '+err.message;}); };  // same tap gesture for mic permission + XR session
   }else{
-    enter.textContent='데스크톱으로 시작 (미리보기)';
-    hint.textContent='Space=다음 대사 · 1~5=비트 점프 · 0=잠 · v=음성 · 드래그=회전';
-    status.textContent='immersive-ar 미지원 — 데스크톱 폴백';
+    enter.textContent='Start desktop preview';
+    hint.textContent='Space=next line · 1-5=jump to beat · 0=sleep · v=voice · drag=orbit';
+    status.textContent='immersive-ar unavailable — desktop fallback';
     enter.onclick=()=>{ primeMic(); startDesktop(); };
   }
   // 버튼 와이어링
