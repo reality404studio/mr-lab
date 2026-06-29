@@ -1,190 +1,377 @@
 <!DOCTYPE html>
 <html lang="ko">
+
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-<title>Slimei — XR Tamagotchi</title>
-<style>
-  :root{
-    --ink:#e8e2ff; --dim:#9a90c0; --line:#2a2440;
-    --good:#7de0a0; --bad:#e0556b; --zap:#ffd45e;
-    --mono:"DejaVu Sans Mono",ui-monospace,Menlo,Consolas,monospace;
-  }
-  *{box-sizing:border-box;margin:0;padding:0}
-  html,body{height:100%;overflow:hidden;background:#0d0b14}
-  body{font-family:var(--mono);color:var(--ink);-webkit-user-select:none;user-select:none}
-  canvas{display:block;position:fixed;inset:0}
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <title>Slimei — XR Tamagotchi</title>
+  <style>
+    :root {
+      --ink: #e8e2ff;
+      --dim: #9a90c0;
+      --line: #2a2440;
+      --good: #7de0a0;
+      --bad: #e0556b;
+      --zap: #ffd45e;
+      --mono: "DejaVu Sans Mono", ui-monospace, Menlo, Consolas, monospace;
+    }
 
-  /* ---- DOM overlay (shows in AR via dom-overlay) ---- */
-  #ui{position:fixed;inset:0;pointer-events:none;z-index:10}
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0
+    }
 
-  /* status panel: ASCII only, retro tamagotchi */
-  #panel{
-    position:absolute;top:14px;left:14px;
-    background:rgba(13,11,20,.62);border:1px solid var(--line);
-    border-radius:10px;padding:11px 13px;line-height:1.55;
-    font-size:13px;letter-spacing:1px;min-width:172px;
-    backdrop-filter:blur(3px);
-  }
-  #panel .name{color:#fff;letter-spacing:2px;font-size:12px}
-  #panel .row{color:var(--dim);font-size:11px}
-  #panel .hearts{color:#ff7aa8;letter-spacing:2px}
-  #panel .hunger{color:#ffcaa0;letter-spacing:2px}
-  #panel .mood{color:var(--ink)}
+    html,
+    body {
+      height: 100%;
+      overflow: hidden;
+      background: #0d0b14
+    }
 
-  /* latency badge — the Cerebras "speed made visible" */
-  #zap{
-    position:absolute;top:14px;right:14px;
-    background:rgba(13,11,20,.62);border:1px solid var(--line);
-    border-radius:10px;padding:8px 12px;font-size:14px;letter-spacing:1px;
-    color:var(--zap);min-width:96px;text-align:center;backdrop-filter:blur(3px);
-    transition:transform .12s ease;
-  }
-  #zap.pulse{transform:scale(1.18)}
-  #zap small{display:block;color:var(--dim);font-size:9px;letter-spacing:2px;margin-top:2px}
+    body {
+      font-family: var(--mono);
+      color: var(--ink);
+      -webkit-user-select: none;
+      user-select: none
+    }
 
-  /* learned toast */
-  #toast{
-    position:absolute;top:64px;left:50%;transform:translateX(-50%) translateY(-8px);
-    background:rgba(125,224,160,.14);border:1px solid rgba(125,224,160,.5);
-    color:var(--good);border-radius:999px;padding:7px 16px;font-size:13px;letter-spacing:1px;
-    opacity:0;transition:opacity .25s,transform .25s;white-space:nowrap;
-  }
-  #toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+    canvas {
+      display: block;
+      position: fixed;
+      inset: 0
+    }
 
-  /* subtitle (the spoken / triggered line) */
-  #subtitle{
-    position:absolute;left:50%;bottom:108px;transform:translateX(-50%);
-    background:rgba(13,11,20,.7);border:1px solid var(--line);border-radius:12px;
-    padding:11px 20px;font-size:18px;letter-spacing:.5px;color:#fff;
-    max-width:84vw;text-align:center;opacity:0;transition:opacity .2s;backdrop-filter:blur(3px);
-  }
-  #subtitle.show{opacity:1}
-  #subtitle b{color:var(--zap);font-weight:400}
+    /* ---- DOM overlay (shows in AR via dom-overlay) ---- */
+    #ui {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 10
+    }
 
-  /* bottom hint / controls */
-  #dock{
-    position:absolute;left:50%;bottom:30px;transform:translateX(-50%);
-    display:flex;gap:9px;align-items:center;pointer-events:auto;flex-wrap:wrap;
-    justify-content:center;max-width:94vw;
-  }
-  .btn{
-    pointer-events:auto;cursor:pointer;
-    background:rgba(20,16,34,.85);border:1px solid var(--line);color:var(--ink);
-    border-radius:999px;padding:11px 16px;font-family:var(--mono);font-size:13px;letter-spacing:1px;
-  }
-  .btn:active{transform:scale(.96)}
-  .btn.primary{background:#5b46c8;border-color:#7a64e0;color:#fff}
-  .btn.ghost{background:rgba(20,16,34,.55);color:var(--dim)}
+    /* status panel: ASCII only, retro tamagotchi */
+    #panel {
+      position: absolute;
+      top: 14px;
+      left: 14px;
+      background: rgba(13, 11, 20, .62);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 11px 13px;
+      line-height: 1.55;
+      font-size: 13px;
+      letter-spacing: 1px;
+      min-width: 172px;
+      backdrop-filter: blur(3px);
+    }
 
-  /* center splash / enter button */
-  #splash{
-    position:absolute;inset:0;display:flex;flex-direction:column;
-    align-items:center;justify-content:center;gap:16px;pointer-events:auto;
-    background:radial-gradient(60% 60% at 50% 42%,rgba(91,70,200,.18),rgba(13,11,20,.0));
-  }
-  #splash h1{font-size:22px;letter-spacing:8px;font-weight:400;color:#fff}
-  #splash p{font-size:12px;letter-spacing:1px;color:var(--dim);text-align:center;line-height:1.7;max-width:340px}
-  #splash .big{font-size:16px;padding:15px 30px}
-  #status{font-size:11px;color:var(--dim);letter-spacing:1px;min-height:14px}
-  .hide{display:none!important}
-  #hint{font-size:11px;color:var(--dim);letter-spacing:1px;text-align:center}
-  body.xr-active #panel,
-  body.xr-active #zap,
-  body.xr-active #toast,
-  body.xr-active #subtitle{display:none}
-</style>
+    #panel .name {
+      color: #fff;
+      letter-spacing: 2px;
+      font-size: 12px
+    }
+
+    #panel .row {
+      color: var(--dim);
+      font-size: 11px
+    }
+
+    #panel .hearts {
+      color: #ff7aa8;
+      letter-spacing: 2px
+    }
+
+    #panel .hunger {
+      color: #ffcaa0;
+      letter-spacing: 2px
+    }
+
+    #panel .mood {
+      color: var(--ink)
+    }
+
+    /* latency badge — the Cerebras "speed made visible" */
+    #zap {
+      position: absolute;
+      top: 14px;
+      right: 14px;
+      background: rgba(13, 11, 20, .62);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 8px 12px;
+      font-size: 14px;
+      letter-spacing: 1px;
+      color: var(--zap);
+      min-width: 96px;
+      text-align: center;
+      backdrop-filter: blur(3px);
+      transition: transform .12s ease;
+    }
+
+    #zap.pulse {
+      transform: scale(1.18)
+    }
+
+    #zap small {
+      display: block;
+      color: var(--dim);
+      font-size: 9px;
+      letter-spacing: 2px;
+      margin-top: 2px
+    }
+
+    /* learned toast */
+    #toast {
+      position: absolute;
+      top: 64px;
+      left: 50%;
+      transform: translateX(-50%) translateY(-8px);
+      background: rgba(125, 224, 160, .14);
+      border: 1px solid rgba(125, 224, 160, .5);
+      color: var(--good);
+      border-radius: 999px;
+      padding: 7px 16px;
+      font-size: 13px;
+      letter-spacing: 1px;
+      opacity: 0;
+      transition: opacity .25s, transform .25s;
+      white-space: nowrap;
+    }
+
+    #toast.show {
+      opacity: 1;
+      transform: translateX(-50%) translateY(0)
+    }
+
+    /* subtitle (the spoken / triggered line) */
+    #subtitle {
+      position: absolute;
+      left: 50%;
+      bottom: 108px;
+      transform: translateX(-50%);
+      background: rgba(13, 11, 20, .7);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 11px 20px;
+      font-size: 18px;
+      letter-spacing: .5px;
+      color: #fff;
+      max-width: 84vw;
+      text-align: center;
+      opacity: 0;
+      transition: opacity .2s;
+      backdrop-filter: blur(3px);
+    }
+
+    #subtitle.show {
+      opacity: 1
+    }
+
+    #subtitle b {
+      color: var(--zap);
+      font-weight: 400
+    }
+
+    /* bottom hint / controls */
+    #dock {
+      position: absolute;
+      left: 50%;
+      bottom: 30px;
+      transform: translateX(-50%);
+      display: flex;
+      gap: 9px;
+      align-items: center;
+      pointer-events: auto;
+      flex-wrap: wrap;
+      justify-content: center;
+      max-width: 94vw;
+    }
+
+    .btn {
+      pointer-events: auto;
+      cursor: pointer;
+      background: rgba(20, 16, 34, .85);
+      border: 1px solid var(--line);
+      color: var(--ink);
+      border-radius: 999px;
+      padding: 11px 16px;
+      font-family: var(--mono);
+      font-size: 13px;
+      letter-spacing: 1px;
+    }
+
+    .btn:active {
+      transform: scale(.96)
+    }
+
+    .btn.primary {
+      background: #5b46c8;
+      border-color: #7a64e0;
+      color: #fff
+    }
+
+    .btn.ghost {
+      background: rgba(20, 16, 34, .55);
+      color: var(--dim)
+    }
+
+    /* center splash / enter button */
+    #splash {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 16px;
+      pointer-events: auto;
+      background: radial-gradient(60% 60% at 50% 42%, rgba(91, 70, 200, .18), rgba(13, 11, 20, .0));
+    }
+
+    #splash h1 {
+      font-size: 22px;
+      letter-spacing: 8px;
+      font-weight: 400;
+      color: #fff
+    }
+
+    #splash p {
+      font-size: 12px;
+      letter-spacing: 1px;
+      color: var(--dim);
+      text-align: center;
+      line-height: 1.7;
+      max-width: 340px
+    }
+
+    #splash .big {
+      font-size: 16px;
+      padding: 15px 30px
+    }
+
+    #status {
+      font-size: 11px;
+      color: var(--dim);
+      letter-spacing: 1px;
+      min-height: 14px
+    }
+
+    .hide {
+      display: none !important
+    }
+
+    #hint {
+      font-size: 11px;
+      color: var(--dim);
+      letter-spacing: 1px;
+      text-align: center
+    }
+
+    body.xr-active #panel,
+    body.xr-active #zap,
+    body.xr-active #toast,
+    body.xr-active #subtitle {
+      display: none
+    }
+  </style>
 </head>
+
 <body>
-<div id="ui">
-  <div id="panel">
-    <div class="name" id="p-name">SLIMEI</div>
-    <div class="hearts" id="p-aff">♡♡♡♡♡</div>
-    <div class="hunger" id="p-hun">□□□□□</div>
-    <div class="row mood" id="p-mood">Mood : Normal</div>
-    <div class="row" id="p-learned">Learned : 0</div>
+  <div id="ui">
+    <div id="panel">
+      <div class="name" id="p-name">SLIMEI</div>
+      <div class="hearts" id="p-aff">♡♡♡♡♡</div>
+      <div class="hunger" id="p-hun">□□□□□</div>
+      <div class="row mood" id="p-mood">Mood : Normal</div>
+      <div class="row" id="p-learned">Learned : 0</div>
+    </div>
+
+    <div id="zap">⚡ —<small>GEMMA · CEREBRAS</small></div>
+    <div id="toast"></div>
+    <div id="subtitle"></div>
+
+    <div id="dock" class="hide">
+      <button class="btn primary" id="next">▶ Next line</button>
+      <button class="btn" id="mic">🎤 Speak</button>
+      <button class="btn ghost" id="reset">↺</button>
+    </div>
+
+    <div id="splash">
+      <h1>S L I M E I</h1>
+      <p>A tiny slime living on your desk.<br>Teach it with your voice. It remembers.</p>
+      <button class="btn primary big" id="enter">Loading…</button>
+      <div id="status"></div>
+      <div id="hint"></div>
+    </div>
   </div>
 
-  <div id="zap">⚡ —<small>GEMMA · CEREBRAS</small></div>
-  <div id="toast"></div>
-  <div id="subtitle"></div>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script>
+    /* ============================================================
+       Slimei — XR Tamagotchi (single-file hackathon build)
+       - Quest 3 WebXR passthrough (immersive-ar) + hit-test 스폰
+       - Quest 3 WebXR hand-tracking: poke / pet reactions
+       - Desktop fallback: y=0 즉시 스폰
+       - 슬라임: 두께기반 blob 셰이더 (계란후라이 회피)
+       - 자연어 → intent: Gemma 4 / Cerebras (서버 프록시) + 로컬 폴백
+       ============================================================ */
+    const R = 0.08;                 // 슬라임 반지름 (책상용 8cm)
+    const PURPLE = new THREE.Color('#c4b6ff');   // 밝은 캔디 라벤더 (탱글 젤리)
 
-  <div id="dock" class="hide">
-    <button class="btn primary" id="next">▶  Next line</button>
-    <button class="btn" id="mic">🎤 Speak</button>
-    <button class="btn ghost" id="reset">↺</button>
-  </div>
+    // ---------- renderer / scene (passthrough = 투명 배경) ----------
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    renderer.setSize(innerWidth, innerHeight);
+    renderer.xr.enabled = true;
+    renderer.xr.setReferenceSpaceType('local');
+    document.body.appendChild(renderer.domElement);
 
-  <div id="splash">
-    <h1>S L I M E I</h1>
-    <p>A tiny slime living on your desk.<br>Teach it with your voice. It remembers.</p>
-    <button class="btn primary big" id="enter">Loading…</button>
-    <div id="status"></div>
-    <div id="hint"></div>
-  </div>
-</div>
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.01, 50);
+    camera.position.set(0, 0.26, 0.64);
+    camera.lookAt(0, R, 0);
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-<script>
-/* ============================================================
-   Slimei — XR Tamagotchi (single-file hackathon build)
-   - Quest 3 WebXR passthrough (immersive-ar) + hit-test 스폰
-   - Quest 3 WebXR hand-tracking: poke / pet reactions
-   - Desktop fallback: y=0 즉시 스폰
-   - 슬라임: 두께기반 blob 셰이더 (계란후라이 회피)
-   - 자연어 → intent: Gemma 4 / Cerebras (서버 프록시) + 로컬 폴백
-   ============================================================ */
-const R = 0.08;                 // 슬라임 반지름 (책상용 8cm)
-const PURPLE = new THREE.Color('#c4b6ff');   // 밝은 캔디 라벤더 (탱글 젤리)
+    scene.add(new THREE.AmbientLight(0xffffff, .55));
+    const key = new THREE.DirectionalLight(0xffffff, .8); key.position.set(1, 3, 2); scene.add(key);
 
-// ---------- renderer / scene (passthrough = 투명 배경) ----------
-const renderer = new THREE.WebGLRenderer({antialias:true, alpha:true});
-renderer.setPixelRatio(Math.min(devicePixelRatio,2));
-renderer.setSize(innerWidth, innerHeight);
-renderer.xr.enabled = true;
-renderer.xr.setReferenceSpaceType('local');
-document.body.appendChild(renderer.domElement);
+    // ---------- tiny WebAudio SFX (cute blips, no assets) ----------
+    const SFX = (() => {
+      let ac;
+      const beep = (f, d, t, g = .05, wob = 0) => {
+        try {
+          ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+          const o = ac.createOscillator(), v = ac.createGain(); o.type = t; o.frequency.value = f;
+          if (wob) { o.frequency.linearRampToValueAtTime(f * wob, ac.currentTime + d); }
+          v.gain.value = g; v.gain.exponentialRampToValueAtTime(.0001, ac.currentTime + d);
+          o.connect(v).connect(ac.destination); o.start(); o.stop(ac.currentTime + d);
+        } catch (e) { }
+      };
+      return {
+        pop: () => beep(520, .12, 'sine', .06, 1.7),
+        nom: () => { beep(300, .09, 'triangle', .06); setTimeout(() => beep(360, .09, 'triangle', .06), 100); },
+        happy: () => { [660, 830, 990].forEach((f, i) => setTimeout(() => beep(f, .12, 'sine', .05), i * 90)); },
+        love: () => { beep(700, .18, 'sine', .05, 1.4); setTimeout(() => beep(1040, .2, 'sine', .05), 120); },
+        boing: () => { beep(280, .08, 'sine', .07, 1.9); setTimeout(() => beep(760, .16, 'triangle', .05, 1.25), 70); },
+        spawn: () => beep(420, .22, 'sine', .06, 1.8),
+      };
+    })();
 
-const scene = new THREE.Scene();
-const camera = new THREE.PerspectiveCamera(55, innerWidth/innerHeight, 0.01, 50);
-camera.position.set(0, 0.26, 0.64);
-camera.lookAt(0, R, 0);
+    // ============================================================
+    //  SLIME  (geometry + blob shader + face + shadow + animation)
+    // ============================================================
+    const Slime = (() => {
+      const group = new THREE.Group();
+      group.visible = false;
 
-scene.add(new THREE.AmbientLight(0xffffff, .55));
-const key = new THREE.DirectionalLight(0xffffff, .8); key.position.set(1,3,2); scene.add(key);
-
-// ---------- tiny WebAudio SFX (cute blips, no assets) ----------
-const SFX = (()=>{ let ac;
-  const beep=(f,d,t,g=.05,wob=0)=>{ try{ ac=ac||new (window.AudioContext||window.webkitAudioContext)();
-    const o=ac.createOscillator(),v=ac.createGain(); o.type=t; o.frequency.value=f;
-    if(wob){o.frequency.linearRampToValueAtTime(f*wob, ac.currentTime+d);}
-    v.gain.value=g; v.gain.exponentialRampToValueAtTime(.0001, ac.currentTime+d);
-    o.connect(v).connect(ac.destination); o.start(); o.stop(ac.currentTime+d);}catch(e){} };
-  return {
-    pop:()=>beep(520,.12,'sine',.06,1.7),
-    nom:()=>{beep(300,.09,'triangle',.06);setTimeout(()=>beep(360,.09,'triangle',.06),100);},
-    happy:()=>{[660,830,990].forEach((f,i)=>setTimeout(()=>beep(f,.12,'sine',.05),i*90));},
-    love:()=>{beep(700,.18,'sine',.05,1.4);setTimeout(()=>beep(1040,.2,'sine',.05),120);},
-    boing:()=>{beep(280,.08,'sine',.07,1.9);setTimeout(()=>beep(760,.16,'triangle',.05,1.25),70);},
-    spawn:()=>beep(420,.22,'sine',.06,1.8),
-  };
-})();
-
-// ============================================================
-//  SLIME  (geometry + blob shader + face + shadow + animation)
-// ============================================================
-const Slime = (()=>{
-  const group = new THREE.Group();
-  group.visible = false;
-
-  // --- jelly 셰이더: 솔리드 바디 + 젖은 광택 + 프레넬 림 (먼지구름 X) ---
-  const mat = new THREE.ShaderMaterial({
-    transparent:true, depthWrite:true, side:THREE.FrontSide, blending:THREE.NormalBlending,
-    uniforms:{
-      uTime:{value:0}, uBreath:{value:1},
-      uColor:{value:PURPLE.clone()}, uRim:{value:new THREE.Color('#ffffff')}, uGlow:{value:0},
-    },
-    vertexShader:`
+      // --- jelly 셰이더: 솔리드 바디 + 젖은 광택 + 프레넬 림 (먼지구름 X) ---
+      const mat = new THREE.ShaderMaterial({
+        transparent: true, depthWrite: true, side: THREE.FrontSide, blending: THREE.NormalBlending,
+        uniforms: {
+          uTime: { value: 0 }, uBreath: { value: 1 },
+          uColor: { value: PURPLE.clone() }, uRim: { value: new THREE.Color('#ffffff') }, uGlow: { value: 0 },
+        },
+        vertexShader: `
       varying vec3 vN; varying vec3 vWPos;
       uniform float uTime, uBreath;
       void main(){
@@ -200,7 +387,7 @@ const Slime = (()=>{
         vN = normalize(mat3(modelMatrix) * normal);
         gl_Position = projectionMatrix * viewMatrix * wp;
       }`,
-    fragmentShader:`
+        fragmentShader: `
       varying vec3 vN; varying vec3 vWPos;
       uniform vec3 uColor, uRim; uniform float uGlow;
       void main(){
@@ -233,791 +420,853 @@ const Slime = (()=>{
 
         gl_FragColor = vec4(col, alpha);
       }`,
-  });
-  const mesh = new THREE.Mesh(new THREE.SphereGeometry(1, 64, 48), mat);
-  mesh.scale.setScalar(R); mesh.position.y = R;
-  group.add(mesh);
+      });
+      const mesh = new THREE.Mesh(new THREE.SphereGeometry(1, 64, 48), mat);
+      mesh.scale.setScalar(R); mesh.position.y = R;
+      group.add(mesh);
 
-  // --- contact shadow (책상에 붙어있다는 접지감) ---
-  const shTex = (()=>{ const c=document.createElement('canvas'); c.width=c.height=128;
-    const g=c.getContext('2d'), rad=g.createRadialGradient(64,64,4,64,64,60);
-    rad.addColorStop(0,'rgba(20,10,40,.55)'); rad.addColorStop(1,'rgba(20,10,40,0)');
-    g.fillStyle=rad; g.fillRect(0,0,128,128); return new THREE.CanvasTexture(c); })();
-  const shadow = new THREE.Mesh(new THREE.PlaneGeometry(R*3.2,R*3.2),
-    new THREE.MeshBasicMaterial({map:shTex, transparent:true, depthWrite:false}));
-  shadow.rotation.x = -Math.PI/2; shadow.position.y = 0.001; group.add(shadow);
+      // --- contact shadow (책상에 붙어있다는 접지감) ---
+      const shTex = (() => {
+        const c = document.createElement('canvas'); c.width = c.height = 128;
+        const g = c.getContext('2d'), rad = g.createRadialGradient(64, 64, 4, 64, 64, 60);
+        rad.addColorStop(0, 'rgba(20,10,40,.55)'); rad.addColorStop(1, 'rgba(20,10,40,0)');
+        g.fillStyle = rad; g.fillRect(0, 0, 128, 128); return new THREE.CanvasTexture(c);
+      })();
+      const shadow = new THREE.Mesh(new THREE.PlaneGeometry(R * 3.2, R * 3.2),
+        new THREE.MeshBasicMaterial({ map: shTex, transparent: true, depthWrite: false }));
+      shadow.rotation.x = -Math.PI / 2; shadow.position.y = 0.001; group.add(shadow);
 
-  // --- face: ASCII 텍스트 스프라이트 (always billboard) ---
-  const faces = {
-    normal:'o  o', happy:'^  ^', excited:'*  *', sleepy:'-  -',
-    confused:'@  @', surprised:'O  O', love:'♥  ♥', eat:'>  <', dead:'x  x'
-  };
-  function drawFace(eyes){
-    const c=document.createElement('canvas'); c.width=c.height=256;
-    const x=c.getContext('2d'); x.clearRect(0,0,256,256);
-    const pair = (eyes||'o  o').match(/\S+/g) || ['o','o'];
-    x.fillStyle='#3a2f63'; x.font='bold 78px monospace';   // 70% size, slightly higher, close-set eyes
-    x.textAlign='center'; x.textBaseline='middle';
-    x.fillText(pair[0]||'o', 104, 108);
-    x.fillText(pair[1]||pair[0]||'o', 152, 108);
-    const t=new THREE.CanvasTexture(c); t.needsUpdate=true; return t;
-  }
-  const faceMat = new THREE.SpriteMaterial({map:drawFace(faces.normal), transparent:true, depthTest:false, depthWrite:false});
-  const faceSpr = new THREE.Sprite(faceMat);
-  faceSpr.scale.set(R*1.7, R*1.7, 1); faceSpr.position.y = R; group.add(faceSpr);
+      // --- face: ASCII 텍스트 스프라이트 (always billboard) ---
+      const faces = {
+        normal: 'o  o', happy: '^  ^', excited: '*  *', sleepy: '-  -',
+        confused: '@  @', surprised: 'O  O', love: '♥  ♥', eat: '>  <', dead: 'x  x'
+      };
+      function drawFace(eyes) {
+        const c = document.createElement('canvas'); c.width = c.height = 256;
+        const x = c.getContext('2d'); x.clearRect(0, 0, 256, 256);
+        const pair = (eyes || 'o  o').match(/\S+/g) || ['o', 'o'];
+        x.fillStyle = '#3a2f63'; x.font = 'bold 78px monospace';   // 70% size, slightly higher, close-set eyes
+        x.textAlign = 'center'; x.textBaseline = 'middle';
+        x.fillText(pair[0] || 'o', 104, 108);
+        x.fillText(pair[1] || pair[0] || 'o', 152, 108);
+        const t = new THREE.CanvasTexture(c); t.needsUpdate = true; return t;
+      }
+      const faceMat = new THREE.SpriteMaterial({ map: drawFace(faces.normal), transparent: true, depthTest: false, depthWrite: false });
+      const faceSpr = new THREE.Sprite(faceMat);
+      faceSpr.scale.set(R * 1.7, R * 1.7, 1); faceSpr.position.y = R; group.add(faceSpr);
 
-  function setFace(name){
-    const e = faces[name]||faces.normal;
-    faceMat.map.dispose(); faceMat.map = drawFace(e); faceMat.needsUpdate=true;
-  }
+      function setFace(name) {
+        const e = faces[name] || faces.normal;
+        faceMat.map.dispose(); faceMat.map = drawFace(e); faceMat.needsUpdate = true;
+      }
 
-  // --- animation: 누적식 action 큐 (절차적 squash&stretch) ---
-  const actions = [];
-  const ease = p => p<.5 ? 2*p*p : 1-Math.pow(-2*p+2,2)/2;
-  let look = 0, lookTarget = 0;     // 좌우 기울임(호기심/추적)
+      // --- animation: 누적식 action 큐 (절차적 squash&stretch) ---
+      const actions = [];
+      const ease = p => p < .5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2;
+      let look = 0, lookTarget = 0;     // 좌우 기울임(호기심/추적)
 
-  function add(dur, fn){ actions.push({t0:performance.now()/1000, dur, fn}); }
+      function add(dur, fn) { actions.push({ t0: performance.now() / 1000, dur, fn }); }
 
-  function jump(p, h=0.05){
-    const up = Math.sin(Math.PI*p)*h;
-    const land = Math.exp(-Math.pow((p)/0.12,2)) + Math.exp(-Math.pow((p-1)/0.12,2));
-    const sy = 1 + 0.22*Math.sin(Math.PI*p) - 0.18*land;
-    return {dy:up, sy};
-  }
+      function jump(p, h = 0.05) {
+        const up = Math.sin(Math.PI * p) * h;
+        const land = Math.exp(-Math.pow((p) / 0.12, 2)) + Math.exp(-Math.pow((p - 1) / 0.12, 2));
+        const sy = 1 + 0.22 * Math.sin(Math.PI * p) - 0.18 * land;
+        return { dy: up, sy };
+      }
 
-  // public-ish animation API
-  function bounce(h=0.06){ SFX.pop(); add(0.5, p=>jump(p,h)); }
-  function boing(){ SFX.boing(); setFace('surprised'); mat.uniforms.uGlow.value=.7;
-    add(0.58, p=>{ const j=jump(p,0.095); const wob=Math.sin(p*Math.PI*4); return {dy:j.dy, sy:j.sy+0.16*wob, sxz:1-0.10*wob}; });
-    setTimeout(()=>{mat.uniforms.uGlow.value=0; setFace('normal');},900); }
-  function happy(){ SFX.happy(); setFace('happy'); mat.uniforms.uGlow.value=1;
-    [0,0.18,0.36].forEach(d=>setTimeout(()=>add(0.42,p=>jump(p,0.05)), d*1000));
-    setTimeout(()=>{mat.uniforms.uGlow.value=0; setFace('normal');},1600); }
-  function eat(){ SFX.nom(); setFace('eat');
-    add(1.0, p=>{ const s=1 - 0.34*Math.abs(Math.sin(p*Math.PI*2)); return {sy:s, sxz:1+ (1-s)*0.7}; });
-    setTimeout(()=>{ setFace('excited'); mat.uniforms.uGlow.value=1; },1000);
-    setTimeout(()=>{ setFace('normal'); mat.uniforms.uGlow.value=0; },2000); }
-  function sleep(){ setFace('sleepy'); mat.uniforms.uBreath.value=0.4;
-    add(9999, ()=>({sy:0.55, sxz:1.32})); }
-  function wake(){ mat.uniforms.uBreath.value=1; actions.length=0; setFace('normal'); }
-  function lookAt(worldPos){ const dx = worldPos.x - group.position.x; lookTarget = Math.max(-0.5,Math.min(0.5, dx*4)); setFace('confused'); }
+      // public-ish animation API
+      function bounce(h = 0.06) { SFX.pop(); add(0.5, p => jump(p, h)); }
+      function boing() {
+        SFX.boing(); setFace('surprised'); mat.uniforms.uGlow.value = .7;
+        add(0.58, p => { const j = jump(p, 0.095); const wob = Math.sin(p * Math.PI * 4); return { dy: j.dy, sy: j.sy + 0.16 * wob, sxz: 1 - 0.10 * wob }; });
+        setTimeout(() => { mat.uniforms.uGlow.value = 0; setFace('normal'); }, 900);
+      }
+      function happy() {
+        SFX.happy(); setFace('happy'); mat.uniforms.uGlow.value = 1;
+        [0, 0.18, 0.36].forEach(d => setTimeout(() => add(0.42, p => jump(p, 0.05)), d * 1000));
+        setTimeout(() => { mat.uniforms.uGlow.value = 0; setFace('normal'); }, 1600);
+      }
+      function eat() {
+        SFX.nom(); setFace('eat');
+        add(1.0, p => { const s = 1 - 0.34 * Math.abs(Math.sin(p * Math.PI * 2)); return { sy: s, sxz: 1 + (1 - s) * 0.7 }; });
+        setTimeout(() => { setFace('excited'); mat.uniforms.uGlow.value = 1; }, 1000);
+        setTimeout(() => { setFace('normal'); mat.uniforms.uGlow.value = 0; }, 2000);
+      }
+      function sleep() {
+        setFace('sleepy'); mat.uniforms.uBreath.value = 0.4;
+        add(9999, () => ({ sy: 0.55, sxz: 1.32 }));
+      }
+      function wake() { mat.uniforms.uBreath.value = 1; actions.length = 0; setFace('normal'); }
+      function lookAt(worldPos) { const dx = worldPos.x - group.position.x; lookTarget = Math.max(-0.5, Math.min(0.5, dx * 4)); setFace('confused'); }
 
-  // hop 이동: group.position 을 직접 보간 + 통통
-  function hopTo(target, faceDuring='confused', onDone){
-    const start = group.position.clone();
-    const dur = 0.95;
-    setFace(faceDuring);
-    add(dur, p=>{
-      const e = ease(p);
-      group.position.x = start.x + (target.x-start.x)*e;
-      group.position.z = start.z + (target.z-start.z)*e;
-      lookTarget = Math.max(-0.4,Math.min(0.4,(target.x-group.position.x)*6));
-      const hop = Math.abs(Math.sin(p*Math.PI*2))*0.05;
-      const land = Math.exp(-Math.pow((p-.5)/0.08,2))+Math.exp(-Math.pow((p-1)/0.08,2));
-      return {dy:hop, sy:1 - 0.16*land + 0.1*Math.sin(p*Math.PI*2)};
-    });
-    SFX.pop(); setTimeout(SFX.pop,300); setTimeout(SFX.pop,600);
-    if(onDone) setTimeout(onDone, dur*1000);
-  }
+      // hop 이동: group.position 을 직접 보간 + 통통
+      function hopTo(target, faceDuring = 'confused', onDone) {
+        const start = group.position.clone();
+        const dur = 0.95;
+        setFace(faceDuring);
+        add(dur, p => {
+          const e = ease(p);
+          group.position.x = start.x + (target.x - start.x) * e;
+          group.position.z = start.z + (target.z - start.z) * e;
+          lookTarget = Math.max(-0.4, Math.min(0.4, (target.x - group.position.x) * 6));
+          const hop = Math.abs(Math.sin(p * Math.PI * 2)) * 0.05;
+          const land = Math.exp(-Math.pow((p - .5) / 0.08, 2)) + Math.exp(-Math.pow((p - 1) / 0.08, 2));
+          return { dy: hop, sy: 1 - 0.16 * land + 0.1 * Math.sin(p * Math.PI * 2) };
+        });
+        SFX.pop(); setTimeout(SFX.pop, 300); setTimeout(SFX.pop, 600);
+        if (onDone) setTimeout(onDone, dur * 1000);
+      }
 
-  function update(time){
-    mat.uniforms.uTime.value = time;
-    let dy=0, sy=1, sxz=1;
-    dy += Math.sin(time*1.6)*0.004;                 // idle bob
-    for(let i=actions.length-1;i>=0;i--){
-      const a=actions[i]; const p=(time - a.t0)/a.dur;
-      if(p>=1 && a.dur<999){ actions.splice(i,1); continue; }
-      const r=a.fn(Math.min(p,1))||{}; dy+=r.dy||0; sy*=(r.sy!=null?r.sy:1); sxz*=(r.sxz!=null?r.sxz:1);
-    }
-    mesh.position.y = R + dy;
-    mesh.scale.set(R*sxz, R*sy, R*sxz);
-    look += (lookTarget - look)*0.15; if(Math.abs(lookTarget)<0.01) lookTarget*=0;
-    mesh.rotation.z = -look*0.5;
-    faceSpr.position.set(mesh.position.x, mesh.position.y, mesh.position.z);
-    shadow.scale.setScalar(1 + (1-sy)*0.6);          // 눌릴수록 그림자 확장
-    const m=shadow.material; m.opacity = 0.9*Math.max(0, 1 - dy*6);
-  }
-
-  function tint(c){ mat.uniforms.uColor.value.copy(c); }
-
-  return {group, mesh, setFace, bounce, boing, happy, eat, sleep, wake, lookAt, hopTo, update, tint, faces};
-})();
-scene.add(Slime.group);
-
-// reticle (십자선/링) — hit-test 위치 표시
-const reticle = new THREE.Mesh(
-  new THREE.RingGeometry(0.045, 0.06, 32).rotateX(-Math.PI/2),
-  new THREE.MeshBasicMaterial({color:0xb8a7f2, transparent:true, opacity:0.9})
-);
-reticle.matrixAutoUpdate = false; reticle.visible = false; scene.add(reticle);
-
-// ============================================================
-//  STATE  (memory + stats)
-// ============================================================
-const State = {
-  spawned:false, sleeping:false, deskY:0,
-  memory:{ name:null, favoriteFood:null, foodLocation:null, homeLocation:null },
-  affection:35, hunger:62,
-  learnedCount(){ return ['name','favoriteFood','foodLocation','homeLocation']
-      .filter(k=>this.memory[k]!=null).length; },
-  mood(){
-    if(this.sleeping) return 'Sleepy';
-    if(this.hunger>72) return 'Hungry';
-    if(this.affection>82) return 'Love';
-    if(this.affection>55) return 'Happy';
-    return 'Normal';
-  }
-};
-const VoiceState = { status:'Mic : off' };
-
-// ============================================================
-//  XR HUD  (DOM overlay가 안 보이는 Quest용 3D UI)
-//  카메라 기준 가장자리 배치: 정보는 보이되 슬라임/손 상호작용 영역은 비운다.
-// ============================================================
-const XRHUD = (()=>{
-  const camPos = new THREE.Vector3(), camQuat = new THREE.Quaternion(), world = new THREE.Vector3();
-  const nodes = [];
-  const bar=(n,full,empty)=>full.repeat(n)+empty.repeat(5-n);
-  let toastUntil = 0, subtitleUntil = 0;
-
-  function roundRect(ctx,x,y,w,h,r){
-    ctx.beginPath();
-    ctx.moveTo(x+r,y); ctx.lineTo(x+w-r,y); ctx.quadraticCurveTo(x+w,y,x+w,y+r);
-    ctx.lineTo(x+w,y+h-r); ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);
-    ctx.lineTo(x+r,y+h); ctx.quadraticCurveTo(x,y+h,x,y+h-r);
-    ctx.lineTo(x,y+r); ctx.quadraticCurveTo(x,y,x+r,y); ctx.closePath();
-  }
-  function fillPanel(ctx,w,h,bg='rgba(13,11,20,.68)',stroke='rgba(180,165,255,.35)'){
-    ctx.clearRect(0,0,w,h);
-    roundRect(ctx,10,10,w-20,h-20,24);
-    ctx.fillStyle=bg; ctx.fill();
-    ctx.strokeStyle=stroke; ctx.lineWidth=2; ctx.stroke();
-  }
-  function makeNode(width, height, canvasW, canvasH, offset){
-    const canvas=document.createElement('canvas'); canvas.width=canvasW; canvas.height=canvasH;
-    const ctx=canvas.getContext('2d');
-    const texture=new THREE.CanvasTexture(canvas);
-    texture.minFilter=THREE.LinearFilter; texture.magFilter=THREE.LinearFilter;
-    const material=new THREE.MeshBasicMaterial({map:texture, transparent:true, depthTest:false, depthWrite:false});
-    material.toneMapped = false;
-    const mesh=new THREE.Mesh(new THREE.PlaneGeometry(width,height), material);
-    mesh.renderOrder = 10000; mesh.visible = false;
-    scene.add(mesh);
-    const node={mesh, canvas, ctx, texture, offset:new THREE.Vector3(offset[0],offset[1],offset[2])};
-    nodes.push(node); return node;
-  }
-  const panel = makeNode(0.31,0.155,512,256,[-0.285,0.165,-0.74]);
-  const zap = makeNode(0.22,0.07,512,160,[0.285,0.17,-0.74]);
-  const toastNode = makeNode(0.42,0.065,768,128,[0,0.035,-0.78]);
-  const subtitleNode = makeNode(0.58,0.082,1024,160,[0,-0.215,-0.82]);
-
-  function drawFit(ctx,text,x,y,maxWidth,size,color,align='center'){
-    let s=size;
-    ctx.textAlign=align; ctx.textBaseline='middle'; ctx.fillStyle=color;
-    do{ ctx.font=`400 ${s}px "DejaVu Sans Mono", monospace`; if(ctx.measureText(text).width<=maxWidth) break; s-=2; }
-    while(s>18);
-    ctx.fillText(text,x,y);
-  }
-
-  function renderStatus(){
-    const ctx=panel.ctx, w=panel.canvas.width, h=panel.canvas.height;
-    fillPanel(ctx,w,h);
-    ctx.textAlign='left'; ctx.textBaseline='middle';
-    ctx.font='400 31px "DejaVu Sans Mono", monospace'; ctx.fillStyle='#ffffff';
-    ctx.fillText(State.memory.name ? State.memory.name.toUpperCase() : 'SLIMEI', 32, 48);
-    ctx.font='400 29px "DejaVu Sans Mono", monospace'; ctx.fillStyle='#ff7aa8';
-    ctx.fillText(bar(Math.round(State.affection/20),'♥','♡'), 32, 92);
-    ctx.fillStyle='#ffcaa0'; ctx.fillText(bar(Math.round(State.hunger/20),'■','□'), 32, 132);
-    ctx.font='400 22px "DejaVu Sans Mono", monospace'; ctx.fillStyle='#e8e2ff';
-    ctx.fillText('Mood : '+State.mood(), 32, 176);
-    ctx.fillStyle='#9a90c0'; ctx.fillText('Learned : '+State.learnedCount(), 32, 212);
-    ctx.font='400 18px "DejaVu Sans Mono", monospace'; ctx.fillStyle='#7de0a0';
-    ctx.fillText(VoiceState.status, 32, 236);
-    panel.texture.needsUpdate=true;
-  }
-  function latency(ms){
-    const ctx=zap.ctx, w=zap.canvas.width, h=zap.canvas.height;
-    fillPanel(ctx,w,h,'rgba(13,11,20,.62)','rgba(255,212,94,.42)');
-    drawFit(ctx, ms==='—' ? '⚡ —' : '⚡ '+ms+'ms',w/2,58,w-42,40,'#ffd45e');
-    drawFit(ctx,'GEMMA · CEREBRAS',w/2,112,w-54,18,'#9a90c0');
-    zap.texture.needsUpdate=true;
-  }
-  function toast(msg){
-    const ctx=toastNode.ctx, w=toastNode.canvas.width, h=toastNode.canvas.height;
-    fillPanel(ctx,w,h,'rgba(125,224,160,.16)','rgba(125,224,160,.60)');
-    drawFit(ctx,msg,w/2,h/2,w-52,30,'#7de0a0');
-    toastNode.texture.needsUpdate=true;
-    toastUntil = performance.now()/1000 + 2.2;
-  }
-  function subtitle(text){
-    const ctx=subtitleNode.ctx, w=subtitleNode.canvas.width, h=subtitleNode.canvas.height;
-    fillPanel(ctx,w,h,'rgba(13,11,20,.72)','rgba(180,165,255,.38)');
-    drawFit(ctx,'“'+text+'”',w/2,h/2,w-64,34,'#ffffff');
-    subtitleNode.texture.needsUpdate=true;
-    subtitleUntil = performance.now()/1000 + 3.4;
-  }
-  function update(){
-    const now = performance.now()/1000;
-    const visible = !!(arActive && renderer.xr.isPresenting);
-    panel.mesh.visible = zap.mesh.visible = visible;
-    toastNode.mesh.visible = visible && now < toastUntil;
-    subtitleNode.mesh.visible = visible && now < subtitleUntil;
-    if(!visible) return;
-    const xrCam = renderer.xr.getCamera ? renderer.xr.getCamera(camera) : camera;
-    xrCam.updateMatrixWorld?.();
-    xrCam.getWorldPosition(camPos); xrCam.getWorldQuaternion(camQuat);
-    for(const n of nodes){
-      if(!n.mesh.visible) continue;
-      world.copy(n.offset).applyQuaternion(camQuat);
-      n.mesh.position.copy(camPos).add(world);
-      n.mesh.quaternion.copy(camQuat);
-    }
-  }
-  latency('—'); renderStatus();
-  return {renderStatus, latency, toast, subtitle, update};
-})();
-
-// ============================================================
-//  UI  (ASCII status / toast / subtitle / latency)
-// ============================================================
-const UI = (()=>{
-  const $=id=>document.getElementById(id);
-  const bar=(n,full,empty)=>full.repeat(n)+empty.repeat(5-n);
-  function render(){
-    $('p-name').textContent = (State.memory.name? State.memory.name.toUpperCase() : 'SLIMEI');
-    $('p-aff').textContent  = bar(Math.round(State.affection/20),'♥','♡');
-    $('p-hun').textContent  = bar(Math.round(State.hunger/20),'■','□');
-    $('p-mood').textContent = 'Mood : '+State.mood();
-    $('p-learned').textContent = 'Learned : '+State.learnedCount();
-    XRHUD.renderStatus();
-  }
-  let toastT;
-  function toast(msg){ const t=$('toast'); t.textContent=msg; t.classList.add('show');
-    XRHUD.toast(msg);
-    clearTimeout(toastT); toastT=setTimeout(()=>t.classList.remove('show'),2200); }
-  let subT;
-  function subtitle(text){ const s=$('subtitle'); s.innerHTML='“'+text+'”'; s.classList.add('show');
-    XRHUD.subtitle(text);
-    clearTimeout(subT); subT=setTimeout(()=>s.classList.remove('show'),3400); }
-  function latency(ms){ const z=$('zap'); z.innerHTML='⚡ '+ms+'ms<small>GEMMA · CEREBRAS</small>';
-    XRHUD.latency(ms);
-    z.classList.add('pulse'); setTimeout(()=>z.classList.remove('pulse'),140); }
-  return {render, toast, subtitle, latency};
-})();
-UI.render();
-
-function setVoiceStatus(status){
-  VoiceState.status = 'Mic : ' + status;
-  XRHUD.renderStatus();
-}
-
-// ============================================================
-//  AI  (자연어 → intent)  : 서버 프록시(Gemma/Cerebras) + 로컬 폴백
-// ============================================================
-async function parseIntent(text, expected){
-  const t0 = performance.now();
-  try{
-    const r = await fetch('/api/intent', {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ text, memory:State.memory })
-    });
-    if(!r.ok) throw new Error('bad status '+r.status);
-    const data = await r.json();
-    data.latencyMs = data.latencyMs || Math.round(performance.now()-t0);
-    // 서버가 닿아도 idle/에러면(예: 키 미설정·모델 거부) authored 스크립트 intent를 우선 →
-    // 촬영 중 스크립트가 항상 의도대로 동작. (자유 음성은 expected가 없어 idle 그대로)
-    if(expected && (!data.intent || data.intent==='idle' || data.error)){
-      data.intent = expected; data.fallback = true;
-    }
-    if(!data.intent) throw new Error('no intent');
-    return data;
-  }catch(e){
-    // 폴백: 데모가 절대 죽지 않게.
-    // 스크립트(authored)에서 expected가 오면 그걸 권위로 삼아 결정론적으로 동작.
-    const local = localIntent(text);
-    const intent = expected || local.intent;
-    const name = local.name || extractName(text);
-    return { intent, name, food:local.food, fallback:true, latencyMs: Math.round(performance.now()-t0) };
-  }
-}
-function extractName(t){
-  const s = t || '';
-  const en = s.match(/(?:call\s+you|name\s+is|named)\s+([A-Za-z]{1,12})/i);
-  if(en) return en[1];
-  const ko = s.match(/([가-힣A-Za-z]{1,6}?)(?:이라고|라고|이야|야)/);
-  return (ko&&ko[1])||'Bean';
-}
-function localIntent(t){
-  const s=(t||'').toLowerCase();
-  // 이름은 "명명 맥락"이 있을 때만 (이름/불러/이라고/call you) — 본문에 박힌 이름 오인 방지
-  if(/이름|불러|이라고|라고\s*부|name|call\s*you/.test(s)) return {intent:'setName', name:extractName(t)};
-  if(/밥자리|먹이자리|여기가|food\s*spot|here.*food|here.*eat/.test(s)) return {intent:'setFoodLocation'};
-  if(/배고|먹|밥|hungry|eat|feed|food/.test(s)) return {intent:'feed'};
-  if(/잘했|착하|최고|good|nice|great|예쁘|기특/.test(s)) return {intent:'praise'};
-  if(/자자|잘자|sleep|코자|졸/.test(s)) return {intent:'sleep'};
-  if(/이리|이리와|가까이|come|here\b/.test(s)) return {intent:'come'};
-  if(/쓰다듬|예뻐|pet|쓰담/.test(s)) return {intent:'pet'};
-  return {intent:'idle'};
-}
-
-// ============================================================
-//  DISPATCH  intent → 슬라임 행동 + 스탯
-// ============================================================
-function worldNearCamera(){
-  // 카메라 전방 바닥점 (come here용) — 슬라임 표면 평면 위로
-  const dir = new THREE.Vector3(); camera.getWorldPosition(dir);
-  const p = new THREE.Vector3(); camera.getWorldDirection(p);
-  const target = dir.clone().add(p.multiplyScalar(0.35));
-  target.y = Slime.group.position.y;
-  return target;
-}
-function dispatch(parsed){
-  const it = parsed.intent;
-  if(State.sleeping && it!=='idle'){ State.sleeping=false; Slime.wake(); }
-  switch(it){
-    case 'setName':{
-      State.memory.name = (parsed.name||'Bean').replace(/[\.\,!\?]/g,'');
-      Slime.setFace('happy'); Slime.bounce(0.07); SFX.pop();
-      UI.toast('Learned: name ▸ '+State.memory.name);
-      State.affection = Math.min(100, State.affection+4);
-      setTimeout(()=>Slime.setFace('normal'),1200); break;
-    }
-    case 'setFood':{
-      State.memory.favoriteFood = parsed.food||'pudding';
-      Slime.setFace('excited'); Slime.bounce(0.05);
-      UI.toast('Learned: favoriteFood ✓'); break;
-    }
-    case 'setFoodLocation':{
-      State.memory.foodLocation = lastHitPoint
-        ? lastHitPoint.clone() : Slime.group.position.clone().add(new THREE.Vector3(0.26,0,0));
-      Slime.lookAt(State.memory.foodLocation);
-      UI.toast('Learned: foodLocation ✓'); SFX.pop();
-      setTimeout(()=>Slime.setFace('normal'),1400); break;
-    }
-    case 'feed':{
-      const dest = State.memory.foodLocation;
-      if(dest){
-        Slime.hopTo(dest, 'confused', ()=>{ Slime.eat();
-          State.hunger=Math.max(0,State.hunger-42); State.affection=Math.min(100,State.affection+5);
-          UI.render(); });
-      }else{ Slime.eat(); State.hunger=Math.max(0,State.hunger-42); State.affection=Math.min(100,State.affection+5); }
-      break;
-    }
-    case 'praise':{
-      Slime.happy(); State.affection=Math.min(100,State.affection+5); SFX.happy(); break;
-    }
-    case 'sleep':{
-      State.sleeping=true; Slime.sleep(); break;
-    }
-    case 'come':{
-      Slime.hopTo(worldNearCamera(), 'love', ()=>{ Slime.setFace('love'); SFX.love();
-        Slime.bounce(0.04); State.affection=Math.min(100,State.affection+3); UI.render();
-        setTimeout(()=>Slime.setFace('normal'),1600); });
-      break;
-    }
-    case 'pet':{
-      Slime.setFace('love'); Slime.bounce(0.03); SFX.love();
-      State.affection=Math.min(100,State.affection+3);
-      setTimeout(()=>Slime.setFace('normal'),1200); break;
-    }
-    default: Slime.bounce(0.03);
-  }
-  // 무드 색 살짝 반영 (배고프면 채도↓, 사랑 가득이면 분홍기)
-  const c = PURPLE.clone();
-  if(State.hunger>72) c.lerp(new THREE.Color('#9c9ab0'),0.4);
-  if(State.affection>82) c.lerp(new THREE.Color('#f7a6d6'),0.35);
-  Slime.tint(c);
-  UI.render();
-}
-
-// 자연어 한 줄을 처리하는 단일 진입점 (음성/스크립트/버튼 공통)
-async function say(text, expected){
-  UI.subtitle(text);
-  const parsed = await parseIntent(text, expected);
-  UI.latency(parsed.latencyMs||120);
-  dispatch(parsed);
-}
-
-// ============================================================
-//  HAND TRACKING  (Quest 3 WebXR hand joints → poke / pet)
-// ============================================================
-const HandInteraction = (()=>{
-  const JOINTS = [
-    'wrist',
-    'thumb-tip',
-    'index-finger-tip',
-    'middle-finger-tip',
-    'ring-finger-tip',
-    'pinky-finger-tip'
-  ];
-  const TOUCH_JOINTS = new Set(JOINTS.slice(1));
-  const prev = new Map();
-  const center = new THREE.Vector3();
-  const top = new THREE.Vector3();
-  const p = new THREE.Vector3();
-  const nearest = new THREE.Vector3();
-  let lastFrameTime = 0;
-  let lastNoticeAt = -10;
-  let lastPokeAt = -10;
-  let lastPetAt = -10;
-  let petScore = 0;
-
-  function reset(){
-    prev.clear(); lastFrameTime=0; lastNoticeAt=-10; lastPokeAt=-10; lastPetAt=-10; petScore=0;
-  }
-
-  function triggerPoke(time){
-    if(time-lastPokeAt<0.75) return;
-    lastPokeAt = time; petScore = 0;
-    Slime.boing();
-    UI.toast('Boing!');
-  }
-
-  function triggerPet(time){
-    if(time-lastPetAt<1.5) return;
-    lastPetAt = time; petScore = 0;
-    Slime.setFace('happy'); Slime.bounce(0.025); SFX.love();
-    State.affection = Math.min(100, State.affection + 3);
-    UI.render();
-    UI.toast('Petting ^ ^');
-    setTimeout(()=>Slime.setFace('normal'),1300);
-  }
-
-  function jointPose(frame, hand, name){
-    const space = hand.get?.(name);
-    if(!space || !localSpace || !frame.getJointPose) return null;
-    try{ return frame.getJointPose(space, localSpace); }catch(e){ return null; }
-  }
-
-  function update(frame, time){
-    if(!frame || !State.spawned || !localSpace) return;
-    const session = renderer.xr.getSession?.() || frame.session;
-    if(!session?.inputSources) return;
-
-    const dt = Math.max(0.001, Math.min(0.08, lastFrameTime ? time-lastFrameTime : 0.016));
-    lastFrameTime = time;
-    Slime.mesh.getWorldPosition(center);
-    top.copy(center); top.y += R*0.72;
-
-    let nearestD = Infinity;
-    let sawHand = false;
-    let petCandidate = false;
-
-    let sourceIndex = 0;
-    for(const input of session.inputSources){
-      const hand = input.hand;
-      if(!hand) { sourceIndex++; continue; }
-      sawHand = true;
-      const prefix = (input.handedness || 'hand') + ':' + sourceIndex + ':';
-
-      for(const name of JOINTS){
-        const pose = jointPose(frame, hand, name);
-        if(!pose) continue;
-        const jp = pose.transform.position;
-        p.set(jp.x, jp.y, jp.z);
-
-        const key = prefix + name;
-        let old = prev.get(key);
-        let speed = 0;
-        if(old){ speed = p.distanceTo(old) / dt; old.copy(p); }
-        else { old = p.clone(); prev.set(key, old); }
-
-        const d = p.distanceTo(center);
-        if(d < nearestD){ nearestD = d; nearest.copy(p); }
-
-        if(TOUCH_JOINTS.has(name) && d < R*1.2 && speed > 0.22){
-          triggerPoke(time);
-          continue;
+      function update(time) {
+        mat.uniforms.uTime.value = time;
+        let dy = 0, sy = 1, sxz = 1;
+        dy += Math.sin(time * 1.6) * 0.004;                 // idle bob
+        for (let i = actions.length - 1; i >= 0; i--) {
+          const a = actions[i]; const p = (time - a.t0) / a.dur;
+          if (p >= 1 && a.dur < 999) { actions.splice(i, 1); continue; }
+          const r = a.fn(Math.min(p, 1)) || {}; dy += r.dy || 0; sy *= (r.sy != null ? r.sy : 1); sxz *= (r.sxz != null ? r.sxz : 1);
         }
+        mesh.position.y = R + dy;
+        mesh.scale.set(R * sxz, R * sy, R * sxz);
+        look += (lookTarget - look) * 0.15; if (Math.abs(lookTarget) < 0.01) lookTarget *= 0;
+        mesh.rotation.z = -look * 0.5;
+        faceSpr.position.set(mesh.position.x, mesh.position.y, mesh.position.z);
+        shadow.scale.setScalar(1 + (1 - sy) * 0.6);          // 눌릴수록 그림자 확장
+        const m = shadow.material; m.opacity = 0.9 * Math.max(0, 1 - dy * 6);
+      }
 
-        const overTop = p.y > center.y + R*0.22 && p.y < center.y + R*1.65;
-        const closeToHead = p.distanceTo(top) < R*1.75;
-        if((TOUCH_JOINTS.has(name) || name==='wrist') && overTop && closeToHead && speed < 0.55){
-          petCandidate = true;
+      function tint(c) { mat.uniforms.uColor.value.copy(c); }
+
+      return { group, mesh, setFace, bounce, boing, happy, eat, sleep, wake, lookAt, hopTo, update, tint, faces };
+    })();
+    scene.add(Slime.group);
+
+    // reticle (십자선/링) — hit-test 위치 표시
+    const reticle = new THREE.Mesh(
+      new THREE.RingGeometry(0.045, 0.06, 32).rotateX(-Math.PI / 2),
+      new THREE.MeshBasicMaterial({ color: 0xb8a7f2, transparent: true, opacity: 0.9 })
+    );
+    reticle.matrixAutoUpdate = false; reticle.visible = false; scene.add(reticle);
+
+    // ============================================================
+    //  STATE  (memory + stats)
+    // ============================================================
+    const State = {
+      spawned: false, sleeping: false, deskY: 0,
+      memory: { name: null, favoriteFood: null, foodLocation: null, homeLocation: null },
+      affection: 35, hunger: 62,
+      learnedCount() {
+        return ['name', 'favoriteFood', 'foodLocation', 'homeLocation']
+          .filter(k => this.memory[k] != null).length;
+      },
+      mood() {
+        if (this.sleeping) return 'Sleepy';
+        if (this.hunger > 72) return 'Hungry';
+        if (this.affection > 82) return 'Love';
+        if (this.affection > 55) return 'Happy';
+        return 'Normal';
+      }
+    };
+    const VoiceState = { status: 'Mic : off' };
+
+    // ============================================================
+    //  XR HUD  (DOM overlay가 안 보이는 Quest용 3D UI)
+    //  카메라 기준 가장자리 배치: 정보는 보이되 슬라임/손 상호작용 영역은 비운다.
+    // ============================================================
+    const XRHUD = (() => {
+      const camPos = new THREE.Vector3(), camQuat = new THREE.Quaternion(), world = new THREE.Vector3();
+      const nodes = [];
+      const bar = (n, full, empty) => full.repeat(n) + empty.repeat(5 - n);
+      let toastUntil = 0, subtitleUntil = 0;
+
+      function roundRect(ctx, x, y, w, h, r) {
+        ctx.beginPath();
+        ctx.moveTo(x + r, y); ctx.lineTo(x + w - r, y); ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+        ctx.lineTo(x + w, y + h - r); ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+        ctx.lineTo(x + r, y + h); ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+        ctx.lineTo(x, y + r); ctx.quadraticCurveTo(x, y, x + r, y); ctx.closePath();
+      }
+      function fillPanel(ctx, w, h, bg = 'rgba(13,11,20,.68)', stroke = 'rgba(180,165,255,.35)') {
+        ctx.clearRect(0, 0, w, h);
+        roundRect(ctx, 10, 10, w - 20, h - 20, 24);
+        ctx.fillStyle = bg; ctx.fill();
+        ctx.strokeStyle = stroke; ctx.lineWidth = 2; ctx.stroke();
+      }
+      function makeNode(width, height, canvasW, canvasH, offset) {
+        const canvas = document.createElement('canvas'); canvas.width = canvasW; canvas.height = canvasH;
+        const ctx = canvas.getContext('2d');
+        const texture = new THREE.CanvasTexture(canvas);
+        texture.minFilter = THREE.LinearFilter; texture.magFilter = THREE.LinearFilter;
+        const material = new THREE.MeshBasicMaterial({ map: texture, transparent: true, depthTest: false, depthWrite: false });
+        material.toneMapped = false;
+        const mesh = new THREE.Mesh(new THREE.PlaneGeometry(width, height), material);
+        mesh.renderOrder = 10000; mesh.visible = false;
+        scene.add(mesh);
+        const node = { mesh, canvas, ctx, texture, offset: new THREE.Vector3(offset[0], offset[1], offset[2]) };
+        nodes.push(node); return node;
+      }
+      const panel = makeNode(0.31, 0.155, 512, 256, [-0.285, 0.165, -0.74]);
+      const zap = makeNode(0.22, 0.07, 512, 160, [0.285, 0.17, -0.74]);
+      const toastNode = makeNode(0.42, 0.065, 768, 128, [0, 0.035, -0.78]);
+      const subtitleNode = makeNode(0.58, 0.082, 1024, 160, [0, -0.215, -0.82]);
+
+      function drawFit(ctx, text, x, y, maxWidth, size, color, align = 'center') {
+        let s = size;
+        ctx.textAlign = align; ctx.textBaseline = 'middle'; ctx.fillStyle = color;
+        do { ctx.font = `400 ${s}px "DejaVu Sans Mono", monospace`; if (ctx.measureText(text).width <= maxWidth) break; s -= 2; }
+        while (s > 18);
+        ctx.fillText(text, x, y);
+      }
+
+      function renderStatus() {
+        const ctx = panel.ctx, w = panel.canvas.width, h = panel.canvas.height;
+        fillPanel(ctx, w, h);
+        ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+        ctx.font = '400 31px "DejaVu Sans Mono", monospace'; ctx.fillStyle = '#ffffff';
+        ctx.fillText(State.memory.name ? State.memory.name.toUpperCase() : 'SLIMEI', 32, 48);
+        ctx.font = '400 29px "DejaVu Sans Mono", monospace'; ctx.fillStyle = '#ff7aa8';
+        ctx.fillText(bar(Math.round(State.affection / 20), '♥', '♡'), 32, 92);
+        ctx.fillStyle = '#ffcaa0'; ctx.fillText(bar(Math.round(State.hunger / 20), '■', '□'), 32, 132);
+        ctx.font = '400 22px "DejaVu Sans Mono", monospace'; ctx.fillStyle = '#e8e2ff';
+        ctx.fillText('Mood : ' + State.mood(), 32, 176);
+        ctx.fillStyle = '#9a90c0'; ctx.fillText('Learned : ' + State.learnedCount(), 32, 212);
+        ctx.font = '400 18px "DejaVu Sans Mono", monospace'; ctx.fillStyle = '#7de0a0';
+        ctx.fillText(VoiceState.status, 32, 236);
+        panel.texture.needsUpdate = true;
+      }
+      function latency(ms) {
+        const ctx = zap.ctx, w = zap.canvas.width, h = zap.canvas.height;
+        fillPanel(ctx, w, h, 'rgba(13,11,20,.62)', 'rgba(255,212,94,.42)');
+        drawFit(ctx, ms === '—' ? '⚡ —' : '⚡ ' + ms + 'ms', w / 2, 58, w - 42, 40, '#ffd45e');
+        drawFit(ctx, 'GEMMA · CEREBRAS', w / 2, 112, w - 54, 18, '#9a90c0');
+        zap.texture.needsUpdate = true;
+      }
+      function toast(msg) {
+        const ctx = toastNode.ctx, w = toastNode.canvas.width, h = toastNode.canvas.height;
+        fillPanel(ctx, w, h, 'rgba(125,224,160,.16)', 'rgba(125,224,160,.60)');
+        drawFit(ctx, msg, w / 2, h / 2, w - 52, 30, '#7de0a0');
+        toastNode.texture.needsUpdate = true;
+        toastUntil = performance.now() / 1000 + 2.2;
+      }
+      function subtitle(text) {
+        const ctx = subtitleNode.ctx, w = subtitleNode.canvas.width, h = subtitleNode.canvas.height;
+        fillPanel(ctx, w, h, 'rgba(13,11,20,.72)', 'rgba(180,165,255,.38)');
+        drawFit(ctx, '“' + text + '”', w / 2, h / 2, w - 64, 34, '#ffffff');
+        subtitleNode.texture.needsUpdate = true;
+        subtitleUntil = performance.now() / 1000 + 3.4;
+      }
+      function update() {
+        const now = performance.now() / 1000;
+        const visible = !!(arActive && renderer.xr.isPresenting);
+        panel.mesh.visible = zap.mesh.visible = visible;
+        toastNode.mesh.visible = visible && now < toastUntil;
+        subtitleNode.mesh.visible = visible && now < subtitleUntil;
+        if (!visible) return;
+        const xrCam = renderer.xr.getCamera ? renderer.xr.getCamera(camera) : camera;
+        xrCam.updateMatrixWorld?.();
+        xrCam.getWorldPosition(camPos); xrCam.getWorldQuaternion(camQuat);
+        for (const n of nodes) {
+          if (!n.mesh.visible) continue;
+          world.copy(n.offset).applyQuaternion(camQuat);
+          n.mesh.position.copy(camPos).add(world);
+          n.mesh.quaternion.copy(camQuat);
         }
       }
-      sourceIndex++;
+      latency('—'); renderStatus();
+      return { renderStatus, latency, toast, subtitle, update };
+    })();
+
+    // ============================================================
+    //  UI  (ASCII status / toast / subtitle / latency)
+    // ============================================================
+    const UI = (() => {
+      const $ = id => document.getElementById(id);
+      const bar = (n, full, empty) => full.repeat(n) + empty.repeat(5 - n);
+      function render() {
+        $('p-name').textContent = (State.memory.name ? State.memory.name.toUpperCase() : 'SLIMEI');
+        $('p-aff').textContent = bar(Math.round(State.affection / 20), '♥', '♡');
+        $('p-hun').textContent = bar(Math.round(State.hunger / 20), '■', '□');
+        $('p-mood').textContent = 'Mood : ' + State.mood();
+        $('p-learned').textContent = 'Learned : ' + State.learnedCount();
+        XRHUD.renderStatus();
+      }
+      let toastT;
+      function toast(msg) {
+        const t = $('toast'); t.textContent = msg; t.classList.add('show');
+        XRHUD.toast(msg);
+        clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('show'), 2200);
+      }
+      let subT;
+      function subtitle(text) {
+        const s = $('subtitle'); s.innerHTML = '“' + text + '”'; s.classList.add('show');
+        XRHUD.subtitle(text);
+        clearTimeout(subT); subT = setTimeout(() => s.classList.remove('show'), 3400);
+      }
+      function latency(ms) {
+        const z = $('zap'); z.innerHTML = '⚡ ' + ms + 'ms<small>GEMMA · CEREBRAS</small>';
+        XRHUD.latency(ms);
+        z.classList.add('pulse'); setTimeout(() => z.classList.remove('pulse'), 140);
+      }
+      return { render, toast, subtitle, latency };
+    })();
+    UI.render();
+
+    function setVoiceStatus(status) {
+      VoiceState.status = 'Mic : ' + status;
+      XRHUD.renderStatus();
     }
 
-    if(!sawHand){ petScore = Math.max(0, petScore-dt*2); return; }
-
-    if(petCandidate) petScore += dt;
-    else petScore = Math.max(0, petScore-dt*1.7);
-
-    if(petScore > 0.38 && time-lastPokeAt > 0.45) triggerPet(time);
-
-    if(nearestD < R*4.0 && time-lastNoticeAt > 0.35 && time-lastPokeAt > 0.75 && time-lastPetAt > 0.75){
-      Slime.lookAt(nearest);
-      lastNoticeAt = time;
+    // ============================================================
+    //  AI  (자연어 → intent)  : 서버 프록시(Gemma/Cerebras) + 로컬 폴백
+    // ============================================================
+    async function parseIntent(text, expected) {
+      const t0 = performance.now();
+      try {
+        const r = await fetch('/api/intent', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text, memory: State.memory })
+        });
+        if (!r.ok) throw new Error('bad status ' + r.status);
+        const data = await r.json();
+        data.latencyMs = data.latencyMs || Math.round(performance.now() - t0);
+        // 서버가 닿아도 idle/에러면(예: 키 미설정·모델 거부) authored 스크립트 intent를 우선 →
+        // 촬영 중 스크립트가 항상 의도대로 동작. (자유 음성은 expected가 없어 idle 그대로)
+        if (expected && (!data.intent || data.intent === 'idle' || data.error)) {
+          data.intent = expected; data.fallback = true;
+        }
+        if (!data.intent) throw new Error('no intent');
+        return data;
+      } catch (e) {
+        // 폴백: 데모가 절대 죽지 않게.
+        // 스크립트(authored)에서 expected가 오면 그걸 권위로 삼아 결정론적으로 동작.
+        const local = localIntent(text);
+        const intent = expected || local.intent;
+        const name = local.name || extractName(text);
+        return { intent, name, food: local.food, fallback: true, latencyMs: Math.round(performance.now() - t0) };
+      }
     }
-  }
-
-  return {update, reset};
-})();
-
-// ============================================================
-//  DEMO SCRIPT  (촬영 안전판: 트리거→자막→진짜 LLM 호출)
-//  tamagochi.md / demo.md 60초 플로우 그대로
-// ============================================================
-const SCRIPT = [
-  { line:"I'll call you Bean",       expect:'setName' },
-  { line:'This is your food spot',   expect:'setFoodLocation' },
-  { line:'Bean, you look hungry',    expect:'feed' },
-  { line:'Good job, Bean!',          expect:'praise' },
-  { line:'Come here, Bean',          expect:'come' },
-];
-let scriptStep = 0;
-function nextScript(){
-  if(!State.spawned) return;
-  if(scriptStep >= SCRIPT.length){ Slime.happy(); UI.toast('demo complete ♥'); return; }
-  const s = SCRIPT[scriptStep++];
-  say(s.line, s.expect);
-}
-
-// ============================================================
-//  VOICE  (항상 듣기 — 탭 없이 자연어 명령이 자연스럽게 따라옴)
-//  1순위: 브라우저 Web Speech API. 2순위: MediaRecorder → /api/voice(Cloudflare Whisper).
-//  Gemma/Cerebras는 STT가 만든 텍스트를 intent로 이해하는 역할만 맡긴다.
-// ============================================================
-let recog=null, recogWant=false, recogLive=false;
-(()=>{ const SR = window.SpeechRecognition||window.webkitSpeechRecognition; if(!SR) return;
-  recog = new SR(); recog.lang='en-US';
-  recog.continuous=true; recog.interimResults=true; recog.maxAlternatives=1;
-  recog.onstart  = ()=>{ recogLive=true; micUI(true); setVoiceStatus('web listening'); };
-  recog.onresult = e=>{
-    for(let i=e.resultIndex;i<e.results.length;i++){
-      const r=e.results[i];
-      if(r.isFinal){ const t=(r[0].transcript||'').trim(); if(t.length>1){ setVoiceStatus('heard'); say(t); } }
+    function extractName(t) {
+      const s = t || '';
+      const en = s.match(/(?:call\s+you|name\s+is|named)\s+([A-Za-z]{1,12})/i);
+      if (en) return en[1];
+      const ko = s.match(/([가-힣A-Za-z]{1,6}?)(?:이라고|라고|이야|야)/);
+      return (ko && ko[1]) || 'Bean';
     }
-  };
-  recog.onerror = ev=>{
-    if(ev.error==='not-allowed'){ recogWant=false; micUI(false); setVoiceStatus('blocked'); UI.toast('Microphone permission needed'); return; }
-    if(ev.error==='service-not-allowed'||ev.error==='network'||ev.error==='language-not-supported'){
-      recogWant=false; try{recog.stop();}catch(e){}
-      setVoiceStatus('cloud fallback');
+    function localIntent(t) {
+      const s = (t || '').toLowerCase();
+      // 이름은 "명명 맥락"이 있을 때만 (이름/불러/이라고/call you) — 본문에 박힌 이름 오인 방지
+      if (/이름|불러|이라고|라고\s*부|name|call\s*you/.test(s)) return { intent: 'setName', name: extractName(t) };
+      if (/밥자리|먹이자리|여기가|food\s*spot|here.*food|here.*eat/.test(s)) return { intent: 'setFoodLocation' };
+      if (/배고|먹|밥|hungry|eat|feed|food/.test(s)) return { intent: 'feed' };
+      if (/잘했|착하|최고|good|nice|great|예쁘|기특/.test(s)) return { intent: 'praise' };
+      if (/자자|잘자|sleep|코자|졸/.test(s)) return { intent: 'sleep' };
+      if (/이리|이리와|가까이|come|here\b/.test(s)) return { intent: 'come' };
+      if (/쓰다듬|예뻐|pet|쓰담/.test(s)) return { intent: 'pet' };
+      return { intent: 'idle' };
+    }
+
+    // ============================================================
+    //  DISPATCH  intent → 슬라임 행동 + 스탯
+    // ============================================================
+    function worldNearCamera() {
+      // 카메라 전방 바닥점 (come here용) — 슬라임 표면 평면 위로
+      const dir = new THREE.Vector3(); camera.getWorldPosition(dir);
+      const p = new THREE.Vector3(); camera.getWorldDirection(p);
+      const target = dir.clone().add(p.multiplyScalar(0.35));
+      target.y = Slime.group.position.y;
+      return target;
+    }
+    function dispatch(parsed) {
+      const it = parsed.intent;
+      if (State.sleeping && it !== 'idle') { State.sleeping = false; Slime.wake(); }
+      switch (it) {
+        case 'setName': {
+          State.memory.name = (parsed.name || 'Bean').replace(/[\.\,!\?]/g, '');
+          Slime.setFace('happy'); Slime.bounce(0.07); SFX.pop();
+          UI.toast('Learned: name ▸ ' + State.memory.name);
+          State.affection = Math.min(100, State.affection + 4);
+          setTimeout(() => Slime.setFace('normal'), 1200); break;
+        }
+        case 'setFood': {
+          State.memory.favoriteFood = parsed.food || 'pudding';
+          Slime.setFace('excited'); Slime.bounce(0.05);
+          UI.toast('Learned: favoriteFood ✓'); break;
+        }
+        case 'setFoodLocation': {
+          State.memory.foodLocation = lastHitPoint
+            ? lastHitPoint.clone() : Slime.group.position.clone().add(new THREE.Vector3(0.26, 0, 0));
+          Slime.lookAt(State.memory.foodLocation);
+          UI.toast('Learned: foodLocation ✓'); SFX.pop();
+          setTimeout(() => Slime.setFace('normal'), 1400); break;
+        }
+        case 'feed': {
+          const dest = State.memory.foodLocation;
+          if (dest) {
+            Slime.hopTo(dest, 'confused', () => {
+              Slime.eat();
+              State.hunger = Math.max(0, State.hunger - 42); State.affection = Math.min(100, State.affection + 5);
+              UI.render();
+            });
+          } else { Slime.eat(); State.hunger = Math.max(0, State.hunger - 42); State.affection = Math.min(100, State.affection + 5); }
+          break;
+        }
+        case 'praise': {
+          Slime.happy(); State.affection = Math.min(100, State.affection + 5); SFX.happy(); break;
+        }
+        case 'sleep': {
+          State.sleeping = true; Slime.sleep(); break;
+        }
+        case 'come': {
+          Slime.hopTo(worldNearCamera(), 'love', () => {
+            Slime.setFace('love'); SFX.love();
+            Slime.bounce(0.04); State.affection = Math.min(100, State.affection + 3); UI.render();
+            setTimeout(() => Slime.setFace('normal'), 1600);
+          });
+          break;
+        }
+        case 'pet': {
+          Slime.setFace('love'); Slime.bounce(0.03); SFX.love();
+          State.affection = Math.min(100, State.affection + 3);
+          setTimeout(() => Slime.setFace('normal'), 1200); break;
+        }
+        default: Slime.bounce(0.03);
+      }
+      // 무드 색 살짝 반영 (배고프면 채도↓, 사랑 가득이면 분홍기)
+      const c = PURPLE.clone();
+      if (State.hunger > 72) c.lerp(new THREE.Color('#9c9ab0'), 0.4);
+      if (State.affection > 82) c.lerp(new THREE.Color('#f7a6d6'), 0.35);
+      Slime.tint(c);
+      UI.render();
+    }
+
+    // 자연어 한 줄을 처리하는 단일 진입점 (음성/스크립트/버튼 공통)
+    async function say(text, expected) {
+      UI.subtitle(text);
+      const parsed = await parseIntent(text, expected);
+      UI.latency(parsed.latencyMs || 120);
+      dispatch(parsed);
+    }
+
+    // ============================================================
+    //  HAND TRACKING  (Quest 3 WebXR hand joints → poke / pet)
+    // ============================================================
+    const HandInteraction = (() => {
+      const JOINTS = [
+        'wrist',
+        'thumb-tip',
+        'index-finger-tip',
+        'middle-finger-tip',
+        'ring-finger-tip',
+        'pinky-finger-tip'
+      ];
+      const TOUCH_JOINTS = new Set(JOINTS.slice(1));
+      const prev = new Map();
+      const center = new THREE.Vector3();
+      const top = new THREE.Vector3();
+      const p = new THREE.Vector3();
+      const nearest = new THREE.Vector3();
+      let lastFrameTime = 0;
+      let lastNoticeAt = -10;
+      let lastPokeAt = -10;
+      let lastPetAt = -10;
+      let petScore = 0;
+
+      function reset() {
+        prev.clear(); lastFrameTime = 0; lastNoticeAt = -10; lastPokeAt = -10; lastPetAt = -10; petScore = 0;
+      }
+
+      function triggerPoke(time) {
+        if (time - lastPokeAt < 0.75) return;
+        lastPokeAt = time; petScore = 0;
+        Slime.boing();
+        UI.toast('Boing!');
+      }
+
+      function triggerPet(time) {
+        if (time - lastPetAt < 1.5) return;
+        lastPetAt = time; petScore = 0;
+        Slime.setFace('happy'); Slime.bounce(0.025); SFX.love();
+        State.affection = Math.min(100, State.affection + 3);
+        UI.render();
+        UI.toast('Petting ^ ^');
+        setTimeout(() => Slime.setFace('normal'), 1300);
+      }
+
+      function jointPose(frame, hand, name) {
+        const space = hand.get?.(name);
+        if (!space || !localSpace || !frame.getJointPose) return null;
+        try { return frame.getJointPose(space, localSpace); } catch (e) { return null; }
+      }
+
+      function update(frame, time) {
+        if (!frame || !State.spawned || !localSpace) return;
+        const session = renderer.xr.getSession?.() || frame.session;
+        if (!session?.inputSources) return;
+
+        const dt = Math.max(0.001, Math.min(0.08, lastFrameTime ? time - lastFrameTime : 0.016));
+        lastFrameTime = time;
+        Slime.mesh.getWorldPosition(center);
+        top.copy(center); top.y += R * 0.72;
+
+        let nearestD = Infinity;
+        let sawHand = false;
+        let petCandidate = false;
+
+        let sourceIndex = 0;
+        for (const input of session.inputSources) {
+          const hand = input.hand;
+          if (!hand) { sourceIndex++; continue; }
+          sawHand = true;
+          const prefix = (input.handedness || 'hand') + ':' + sourceIndex + ':';
+
+          for (const name of JOINTS) {
+            const pose = jointPose(frame, hand, name);
+            if (!pose) continue;
+            const jp = pose.transform.position;
+            p.set(jp.x, jp.y, jp.z);
+
+            const key = prefix + name;
+            let old = prev.get(key);
+            let speed = 0;
+            if (old) { speed = p.distanceTo(old) / dt; old.copy(p); }
+            else { old = p.clone(); prev.set(key, old); }
+
+            const d = p.distanceTo(center);
+            if (d < nearestD) { nearestD = d; nearest.copy(p); }
+
+            if (TOUCH_JOINTS.has(name) && d < R * 1.2 && speed > 0.22) {
+              triggerPoke(time);
+              continue;
+            }
+
+            const overTop = p.y > center.y + R * 0.22 && p.y < center.y + R * 1.65;
+            const closeToHead = p.distanceTo(top) < R * 1.75;
+            if ((TOUCH_JOINTS.has(name) || name === 'wrist') && overTop && closeToHead && speed < 0.55) {
+              petCandidate = true;
+            }
+          }
+          sourceIndex++;
+        }
+
+        if (!sawHand) { petScore = Math.max(0, petScore - dt * 2); return; }
+
+        if (petCandidate) petScore += dt;
+        else petScore = Math.max(0, petScore - dt * 1.7);
+
+        if (petScore > 0.38 && time - lastPokeAt > 0.45) triggerPet(time);
+
+        if (nearestD < R * 4.0 && time - lastNoticeAt > 0.35 && time - lastPokeAt > 0.75 && time - lastPetAt > 0.75) {
+          Slime.lookAt(nearest);
+          lastNoticeAt = time;
+        }
+      }
+
+      return { update, reset };
+    })();
+
+    // ============================================================
+    //  DEMO SCRIPT  (촬영 안전판: 트리거→자막→진짜 LLM 호출)
+    //  tamagochi.md / demo.md 60초 플로우 그대로
+    // ============================================================
+    const SCRIPT = [
+      { line: "I'll call you Bean", expect: 'setName' },
+      { line: 'This is your food spot', expect: 'setFoodLocation' },
+      { line: 'Bean, you look hungry', expect: 'feed' },
+      { line: 'Good job, Bean!', expect: 'praise' },
+      { line: 'Come here, Bean', expect: 'come' },
+    ];
+    let scriptStep = 0;
+    function nextScript() {
+      if (!State.spawned) return;
+      if (scriptStep >= SCRIPT.length) { Slime.happy(); UI.toast('demo complete ♥'); return; }
+      const s = SCRIPT[scriptStep++];
+      say(s.line, s.expect);
+    }
+
+    // ============================================================
+    //  VOICE  (항상 듣기 — 탭 없이 자연어 명령이 자연스럽게 따라옴)
+    //  1순위: 브라우저 Web Speech API. 2순위: MediaRecorder → /api/voice(Cloudflare Whisper).
+    //  Gemma/Cerebras는 STT가 만든 텍스트를 intent로 이해하는 역할만 맡긴다.
+    // ============================================================
+    let recog = null, recogWant = false, recogLive = false;
+    (() => {
+      const SR = window.SpeechRecognition || window.webkitSpeechRecognition; if (!SR) return;
+      recog = new SR(); recog.lang = 'en-US';
+      recog.continuous = true; recog.interimResults = true; recog.maxAlternatives = 1;
+      recog.onstart = () => { recogLive = true; micUI(true); setVoiceStatus('web listening'); };
+      recog.onresult = e => {
+        for (let i = e.resultIndex; i < e.results.length; i++) {
+          const r = e.results[i];
+          if (r.isFinal) { const t = (r[0].transcript || '').trim(); if (t.length > 1) { setVoiceStatus('heard'); say(t); } }
+        }
+      };
+      recog.onerror = ev => {
+        if (ev.error === 'not-allowed') { recogWant = false; micUI(false); setVoiceStatus('blocked'); UI.toast('Microphone permission needed'); return; }
+        if (ev.error === 'service-not-allowed' || ev.error === 'network' || ev.error === 'language-not-supported') {
+          recogWant = false; try { recog.stop(); } catch (e) { }
+          setVoiceStatus('cloud fallback');
+          startCloudListening();
+        }
+      };
+      recog.onend = () => {
+        recogLive = false; micUI(false); if (!cloudWant) setVoiceStatus(recogWant ? 'web restarting' : 'off');
+        if (recogWant) setTimeout(() => { try { recog.start(); } catch (e) { } }, 250);
+      }; // 자동 재시작 = 항상 듣기
+    })();
+    async function primeMic() { try { const s = await navigator.mediaDevices.getUserMedia({ audio: true }); s.getTracks().forEach(t => t.stop()); return true; } catch (e) { return false; } }
+    function preferCloudVoice() { return arActive || /OculusBrowser|Quest|Meta Quest/i.test(navigator.userAgent || ''); }
+    function startListening() {
+      if (preferCloudVoice()) { startCloudListening(); return; }
+      if (recog) { recogWant = true; try { recog.start(); } catch (e) { } return; }
       startCloudListening();
     }
-  };
-  recog.onend = ()=>{ recogLive=false; micUI(false); if(!cloudWant) setVoiceStatus(recogWant?'web restarting':'off');
-    if(recogWant) setTimeout(()=>{ try{recog.start();}catch(e){} }, 250); }; // 자동 재시작 = 항상 듣기
-})();
-async function primeMic(){ try{ const s=await navigator.mediaDevices.getUserMedia({audio:true}); s.getTracks().forEach(t=>t.stop()); return true; }catch(e){ return false; } }
-function preferCloudVoice(){ return arActive || /OculusBrowser|Quest|Meta Quest/i.test(navigator.userAgent||''); }
-function startListening(){
-  if(preferCloudVoice()){ startCloudListening(); return; }
-  if(recog){ recogWant=true; try{ recog.start(); }catch(e){} return; }
-  startCloudListening();
-}
-function stopListening(){
-  recogWant=false; try{ recog.stop(); }catch(e){}
-  stopCloudListening();
-  setVoiceStatus('off');
-}
-function toggleListening(){ (recogWant||cloudWant) ? stopListening() : startListening(); }
-function micUI(on){ const b=document.getElementById('mic'); if(b) b.textContent = on?'🎙 Listening…':'🎤 Speak'; }
+    function stopListening() {
+      recogWant = false; try { recog.stop(); } catch (e) { }
+      stopCloudListening();
+      setVoiceStatus('off');
+    }
+    function toggleListening() { (recogWant || cloudWant) ? stopListening() : startListening(); }
+    function micUI(on) { const b = document.getElementById('mic'); if (b) b.textContent = on ? '🎙 Listening…' : '🎤 Speak'; }
 
-const CLOUD_CHUNK_MS = 2600;
-let cloudWant=false, cloudLive=false, cloudStream=null, cloudRecorder=null, cloudBusy=false;
-let cloudErrorShown=false, lastVoiceText='', lastVoiceAt=0;
+    const CLOUD_CHUNK_MS = 2600;
+    let cloudWant = false, cloudLive = false, cloudStream = null, cloudRecorder = null, cloudBusy = false;
+    let cloudErrorShown = false, lastVoiceText = '', lastVoiceAt = 0;
 
-function bestAudioMime(){
-  if(!window.MediaRecorder) return '';
-  const types = ['audio/webm;codecs=opus','audio/webm','audio/mp4','audio/ogg;codecs=opus'];
-  return types.find(t=>MediaRecorder.isTypeSupported(t)) || '';
-}
+    function bestAudioMime() {
+      if (!window.MediaRecorder) return '';
+      const types = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus'];
+      return types.find(t => MediaRecorder.isTypeSupported(t)) || '';
+    }
 
-async function startCloudListening(){
-  if(!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder){
-    setVoiceStatus('unsupported');
-    UI.toast('Voice input unsupported — use trigger/Space'); return;
-  }
-  if(cloudLive) return;
-  cloudWant=true; cloudErrorShown=false;
-  setVoiceStatus('permission...');
-  try{
-    cloudStream = await navigator.mediaDevices.getUserMedia({
-      audio:{ echoCancellation:true, noiseSuppression:true, autoGainControl:true }
+    async function startCloudListening() {
+      if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+        setVoiceStatus('unsupported');
+        UI.toast('Voice input unsupported — use trigger/Space'); return;
+      }
+      if (cloudLive) return;
+      cloudWant = true; cloudErrorShown = false;
+      setVoiceStatus('permission...');
+      try {
+        cloudStream = await navigator.mediaDevices.getUserMedia({
+          audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+        });
+        cloudLive = true; micUI(true); setVoiceStatus('cloud listening'); UI.toast('Listening...');
+        recordCloudChunk();
+      } catch (e) {
+        cloudWant = false; cloudLive = false; micUI(false); setVoiceStatus('blocked'); UI.toast('Microphone permission needed');
+      }
+    }
+
+    function stopCloudListening() {
+      cloudWant = false; cloudLive = false; micUI(false);
+      try { if (cloudRecorder && cloudRecorder.state === 'recording') cloudRecorder.stop(); } catch (e) { }
+      if (cloudStream) { cloudStream.getTracks().forEach(t => t.stop()); cloudStream = null; }
+    }
+
+    function recordCloudChunk() {
+      if (!cloudWant || !cloudStream) return;
+      const chunks = [], mime = bestAudioMime();
+      try {
+        cloudRecorder = new MediaRecorder(cloudStream, mime ? { mimeType: mime } : undefined);
+      } catch (e) { setVoiceStatus('record error'); stopCloudListening(); UI.toast('Recording failed — use trigger/Space'); return; }
+      cloudRecorder.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
+      cloudRecorder.onstop = () => {
+        const blob = new Blob(chunks, { type: cloudRecorder?.mimeType || mime || 'audio/webm' });
+        cloudRecorder = null;
+        if (blob.size > 900) transcribeCloud(blob);
+        else if (cloudWant) setVoiceStatus('cloud listening');
+        if (cloudWant) setTimeout(recordCloudChunk, 80);
+      };
+      cloudRecorder.onerror = () => { setVoiceStatus('record error'); if (!cloudErrorShown) { cloudErrorShown = true; UI.toast('Recording error — use trigger/Space'); } };
+      cloudRecorder.start();
+      setVoiceStatus('recording');
+      setTimeout(() => { try { if (cloudRecorder?.state === 'recording') cloudRecorder.stop(); } catch (e) { } }, CLOUD_CHUNK_MS);
+    }
+
+    // 페이지 로드 시 브라우저 메모리(localStorage)에 저장된 클라우드플레어 키가 없다면 안전하게 물어봅니다.
+    // 이렇게 하면 코드에 토큰을 하드코딩하지 않고도 단일 HTML을 안전하게 공유할 수 있습니다.
+    let CF_ACCOUNT_ID = localStorage.getItem('cf_account_id') || '';
+    let CF_API_TOKEN = localStorage.getItem('cf_api_token') || '';
+
+    if (!CF_ACCOUNT_ID || !CF_API_TOKEN) {
+      // 사용 편의를 위해 처음 1회만 물어봅니다.
+      CF_ACCOUNT_ID = prompt("Cloudflare ACCOUNT ID를 입력해주세요:") || '';
+      CF_API_TOKEN = prompt("Cloudflare API 토큰(Token)을 입력해주세요:") || '';
+      if (CF_ACCOUNT_ID && CF_API_TOKEN) {
+        localStorage.setItem('cf_account_id', CF_ACCOUNT_ID);
+        localStorage.setItem('cf_api_token', CF_API_TOKEN);
+      }
+    }
+
+    async function transcribeCloud(blob) {
+      if (cloudBusy) return;
+      if (!CF_ACCOUNT_ID || !CF_API_TOKEN) {
+        setVoiceStatus('Key missing');
+        UI.toast('Cloudflare ID와 토큰이 필요합니다. 새로고침 후 입력해주세요.');
+        return;
+      }
+
+      cloudBusy = true;
+      setVoiceStatus('transcribing');
+      try {
+        // 1. 가짜 주소 '/api/voice' 대신 진짜 클라우드플레어 Whisper 엔드포인트 주소로 변경합니다.
+        const URL = `https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/ai/run/@cf/openai/whisper`;
+
+        // 2. 클라우드플레어 전송 스펙에 맞춰 blob 데이터를 바이너리 버퍼로 풀어줍니다.
+        const audioBuffer = await blob.arrayBuffer();
+
+        const r = await fetch(URL, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${CF_API_TOKEN}`, // 인증 토큰 주입
+            'Content-Type': 'application/octet-stream' // 바이너리 전송 명시
+          },
+          body: audioBuffer
+        });
+
+        if (!r.ok) throw new Error('voice status ' + r.status);
+        const data = await r.json();
+
+        // 3. 클라우드플레어 응답 구조인 data.result.text에 맞춰 에러 처리를 우회합니다.
+        if (!data.success) throw new Error(data.errors?.[0]?.message || 'CF API Error');
+
+        const text = (data.result?.text || '').trim();
+        const now = performance.now();
+        if (text.length > 1 && !(text === lastVoiceText && now - lastVoiceAt < 4500)) {
+          setVoiceStatus('heard');
+          lastVoiceText = text; lastVoiceAt = now; say(text);
+        } else if (cloudWant) setVoiceStatus('cloud listening');
+      } catch (e) {
+        setVoiceStatus('STT error');
+        if (!cloudErrorShown) { cloudErrorShown = true; UI.toast('STT error: ' + String(e.message || e).slice(0, 34)); }
+      } finally { cloudBusy = false; }
+    }
+
+    // ============================================================
+    //  SPAWN / PLACEMENT
+    // ============================================================
+    let lastHitPoint = null;        // 최근 hit-test 지점 (foodLocation 캡처용)
+    function spawnAt(pos) {
+      Slime.group.position.copy(pos);
+      Slime.group.visible = true;
+      Slime.setFace('normal');
+      State.spawned = true;
+      SFX.spawn(); Slime.bounce(0.05);
+      document.getElementById('dock').classList.remove('hide');
+      reticle.visible = false;           // 책상 잡았으니 레티클 제거
+      State.deskY = pos.y;               // 책상 높이 기록 (XR UI 기준)
+      UI.toast('Slimei is here ♡');
+      startListening();                  // 스폰 즉시 '항상 듣기' 시작 (탭 없이 자연어)
+    }
+
+    // ============================================================
+    //  AR SESSION  (immersive-ar + hit-test)
+    // ============================================================
+    let hitTestSource = null, localSpace = null, arActive = false;
+    async function enterAR() {
+      const session = await navigator.xr.requestSession('immersive-ar', {
+        requiredFeatures: ['hit-test'],
+        optionalFeatures: ['local-floor', 'dom-overlay', 'hand-tracking'],
+        domOverlay: { root: document.getElementById('ui') }
+      });
+      arActive = true;
+      document.body.classList.add('xr-active');
+      document.getElementById('splash').classList.add('hide');
+      await renderer.xr.setSession(session);
+      localSpace = await session.requestReferenceSpace('local');
+      const viewer = await session.requestReferenceSpace('viewer');
+      hitTestSource = await session.requestHitTestSource({ space: viewer });
+
+      session.addEventListener('select', () => {
+        if (!State.spawned) { if (reticle.visible) { const p = new THREE.Vector3().setFromMatrixPosition(reticle.matrix); spawnAt(p); } }
+        else { nextScript(); }            // 스폰 후 트리거 = 다음 대사
+      });
+      session.addEventListener('end', () => {
+        arActive = false; hitTestSource = null; HandInteraction.reset();
+        document.body.classList.remove('xr-active');
+        document.getElementById('splash').classList.remove('hide');
+      });
+    }
+
+    // ============================================================
+    //  DESKTOP FALLBACK  (y=0 즉시 스폰 + 마우스 회전)
+    // ============================================================
+    function startDesktop() {
+      document.getElementById('splash').classList.add('hide');
+      scene.background = new THREE.Color('#161226');   // 가짜 패스스루(어두운 책상)
+      const grid = new THREE.GridHelper(2, 20, 0x2a2440, 0x201b34);
+      grid.position.y = 0; scene.add(grid);
+      spawnAt(new THREE.Vector3(0, 0, 0));
+      // 데모용 기본 밥자리 (오른쪽 책상)
+      State.memory.foodLocation = new THREE.Vector3(0.26, 0, 0.02);
+      // 마우스 오빗 (가벼운 수동 구현)
+      let drag = false, px = 0, py = 0, az = 0.0, el = 0.32, rad = 0.7;
+      const place = () => { camera.position.set(Math.sin(az) * Math.cos(el) * rad, Math.sin(el) * rad + 0.05, Math.cos(az) * Math.cos(el) * rad); camera.lookAt(0, R, 0); };
+      place();
+      addEventListener('mousedown', e => { drag = true; px = e.clientX; py = e.clientY; });
+      addEventListener('mouseup', () => drag = false);
+      addEventListener('mousemove', e => { if (!drag) return; az -= (e.clientX - px) * 0.006; el = Math.max(0.05, Math.min(1.2, el + (e.clientY - py) * 0.005)); px = e.clientX; py = e.clientY; place(); });
+      addEventListener('wheel', e => { rad = Math.max(0.3, Math.min(1.6, rad + e.deltaY * 0.0008)); place(); }, { passive: true });
+    }
+
+    // 키보드 (데스크톱 테스트/촬영 편의)
+    addEventListener('keydown', e => {
+      if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); nextScript(); }
+      if (e.key === 'v') toggleListening();
+      const map = { '1': 'setName', '2': 'setFoodLocation', '3': 'feed', '4': 'praise', '5': 'come', '0': 'sleep' };
+      if (map[e.key]) say(SCRIPT.find(s => s.expect === map[e.key])?.line || map[e.key], map[e.key]);
     });
-    cloudLive=true; micUI(true); setVoiceStatus('cloud listening'); UI.toast('Listening...');
-    recordCloudChunk();
-  }catch(e){
-    cloudWant=false; cloudLive=false; micUI(false); setVoiceStatus('blocked'); UI.toast('Microphone permission needed');
-  }
-}
 
-function stopCloudListening(){
-  cloudWant=false; cloudLive=false; micUI(false);
-  try{ if(cloudRecorder && cloudRecorder.state==='recording') cloudRecorder.stop(); }catch(e){}
-  if(cloudStream){ cloudStream.getTracks().forEach(t=>t.stop()); cloudStream=null; }
-}
+    // ============================================================
+    //  BOOT  (XR 지원 감지 → 버튼/폴백)
+    // ============================================================
+    (async () => {
+      const enter = document.getElementById('enter'), status = document.getElementById('status'), hint = document.getElementById('hint');
+      // ?preview = 데스크톱 미리보기 즉시 시작 (촬영 리허설/디버그)
+      if (/[?&]preview/.test(location.search)) { startDesktop(); }
+      let arSupported = false;
+      try { arSupported = navigator.xr && await navigator.xr.isSessionSupported('immersive-ar'); } catch (e) { }
+      if (arSupported) {
+        enter.textContent = 'ENTER AR  ▸  Wake Slimei';
+        hint.textContent = 'Enter AR → place Slimei on your desk → poke/pet with your hand → trigger for next line';
+        status.textContent = 'Quest 3 passthrough ready';
+        enter.onclick = () => { primeMic(); enterAR().catch(err => { status.textContent = 'AR failed: ' + err.message; }); };  // same tap gesture for mic permission + XR session
+      } else {
+        enter.textContent = 'Start desktop preview';
+        hint.textContent = 'Space=next line · 1-5=jump to beat · 0=sleep · v=voice · drag=orbit';
+        status.textContent = 'immersive-ar unavailable — desktop fallback';
+        enter.onclick = () => { primeMic(); startDesktop(); };
+      }
+      // 버튼 와이어링
+      document.getElementById('next').onclick = nextScript;
+      document.getElementById('mic').onclick = toggleListening;
+      document.getElementById('reset').onclick = () => location.reload();
+    })();
 
-function recordCloudChunk(){
-  if(!cloudWant || !cloudStream) return;
-  const chunks=[], mime=bestAudioMime();
-  try{
-    cloudRecorder = new MediaRecorder(cloudStream, mime?{mimeType:mime}:undefined);
-  }catch(e){ setVoiceStatus('record error'); stopCloudListening(); UI.toast('Recording failed — use trigger/Space'); return; }
-  cloudRecorder.ondataavailable = e=>{ if(e.data && e.data.size) chunks.push(e.data); };
-  cloudRecorder.onstop = ()=>{
-    const blob = new Blob(chunks, {type:cloudRecorder?.mimeType || mime || 'audio/webm'});
-    cloudRecorder=null;
-    if(blob.size>900) transcribeCloud(blob);
-    else if(cloudWant) setVoiceStatus('cloud listening');
-    if(cloudWant) setTimeout(recordCloudChunk, 80);
-  };
-  cloudRecorder.onerror = ()=>{ setVoiceStatus('record error'); if(!cloudErrorShown){ cloudErrorShown=true; UI.toast('Recording error — use trigger/Space'); } };
-  cloudRecorder.start();
-  setVoiceStatus('recording');
-  setTimeout(()=>{ try{ if(cloudRecorder?.state==='recording') cloudRecorder.stop(); }catch(e){} }, CLOUD_CHUNK_MS);
-}
-
-async function transcribeCloud(blob){
-  if(cloudBusy) return;
-  cloudBusy=true;
-  setVoiceStatus('transcribing');
-  try{
-    const r = await fetch('/api/voice', {
-      method:'POST',
-      headers:{'Content-Type': blob.type || 'application/octet-stream'},
-      body: blob
+    // ============================================================
+    //  RENDER LOOP
+    // ============================================================
+    const clock = new THREE.Clock();
+    renderer.setAnimationLoop((t, frame) => {
+      const time = clock.getElapsedTime();
+      // hit-test (AR)
+      if (frame && hitTestSource && localSpace) {
+        const hits = frame.getHitTestResults(hitTestSource);
+        if (hits.length) {
+          const pose = hits[0].getPose(localSpace);
+          reticle.visible = !State.spawned;          // 스폰 전에만 표시, 책상 잡으면 사라짐
+          reticle.matrix.fromArray(pose.transform.matrix);
+          lastHitPoint = new THREE.Vector3().setFromMatrixPosition(reticle.matrix);
+        } else { reticle.visible = false; }
+      }
+      HandInteraction.update(frame, time);
+      Slime.update(time);
+      XRHUD.update();
+      renderer.render(scene, camera);
     });
-    if(!r.ok) throw new Error('voice status '+r.status);
-    const data = await r.json();
-    if(data.error) throw new Error(data.error);
-    const text = (data.text||'').trim();
-    const now = performance.now();
-    if(text.length>1 && !(text===lastVoiceText && now-lastVoiceAt<4500)){
-      setVoiceStatus('heard');
-      lastVoiceText=text; lastVoiceAt=now; say(text);
-    }else if(cloudWant) setVoiceStatus('cloud listening');
-  }catch(e){
-    setVoiceStatus('STT error');
-    if(!cloudErrorShown){ cloudErrorShown=true; UI.toast('STT error: '+String(e.message||e).slice(0,34)); }
-  }finally{ cloudBusy=false; }
-}
 
-// ============================================================
-//  SPAWN / PLACEMENT
-// ============================================================
-let lastHitPoint = null;        // 최근 hit-test 지점 (foodLocation 캡처용)
-function spawnAt(pos){
-  Slime.group.position.copy(pos);
-  Slime.group.visible = true;
-  Slime.setFace('normal');
-  State.spawned = true;
-  SFX.spawn(); Slime.bounce(0.05);
-  document.getElementById('dock').classList.remove('hide');
-  reticle.visible = false;           // 책상 잡았으니 레티클 제거
-  State.deskY = pos.y;               // 책상 높이 기록 (XR UI 기준)
-  UI.toast('Slimei is here ♡');
-  startListening();                  // 스폰 즉시 '항상 듣기' 시작 (탭 없이 자연어)
-}
-
-// ============================================================
-//  AR SESSION  (immersive-ar + hit-test)
-// ============================================================
-let hitTestSource=null, localSpace=null, arActive=false;
-async function enterAR(){
-  const session = await navigator.xr.requestSession('immersive-ar', {
-    requiredFeatures:['hit-test'],
-    optionalFeatures:['local-floor','dom-overlay','hand-tracking'],
-    domOverlay:{ root: document.getElementById('ui') }
-  });
-  arActive = true;
-  document.body.classList.add('xr-active');
-  document.getElementById('splash').classList.add('hide');
-  await renderer.xr.setSession(session);
-  localSpace = await session.requestReferenceSpace('local');
-  const viewer = await session.requestReferenceSpace('viewer');
-  hitTestSource = await session.requestHitTestSource({ space: viewer });
-
-  session.addEventListener('select', ()=>{
-    if(!State.spawned){ if(reticle.visible){ const p=new THREE.Vector3().setFromMatrixPosition(reticle.matrix); spawnAt(p); } }
-    else { nextScript(); }            // 스폰 후 트리거 = 다음 대사
-  });
-  session.addEventListener('end', ()=>{ arActive=false; hitTestSource=null; HandInteraction.reset();
-    document.body.classList.remove('xr-active');
-    document.getElementById('splash').classList.remove('hide'); });
-}
-
-// ============================================================
-//  DESKTOP FALLBACK  (y=0 즉시 스폰 + 마우스 회전)
-// ============================================================
-function startDesktop(){
-  document.getElementById('splash').classList.add('hide');
-  scene.background = new THREE.Color('#161226');   // 가짜 패스스루(어두운 책상)
-  const grid = new THREE.GridHelper(2, 20, 0x2a2440, 0x201b34);
-  grid.position.y = 0; scene.add(grid);
-  spawnAt(new THREE.Vector3(0,0,0));
-  // 데모용 기본 밥자리 (오른쪽 책상)
-  State.memory.foodLocation = new THREE.Vector3(0.26,0,0.02);
-  // 마우스 오빗 (가벼운 수동 구현)
-  let drag=false, px=0, py=0, az=0.0, el=0.32, rad=0.7;
-  const place=()=>{ camera.position.set(Math.sin(az)*Math.cos(el)*rad, Math.sin(el)*rad+0.05, Math.cos(az)*Math.cos(el)*rad); camera.lookAt(0,R,0); };
-  place();
-  addEventListener('mousedown',e=>{drag=true;px=e.clientX;py=e.clientY;});
-  addEventListener('mouseup',()=>drag=false);
-  addEventListener('mousemove',e=>{ if(!drag)return; az-=(e.clientX-px)*0.006; el=Math.max(0.05,Math.min(1.2,el+(e.clientY-py)*0.005)); px=e.clientX;py=e.clientY; place(); });
-  addEventListener('wheel',e=>{ rad=Math.max(0.3,Math.min(1.6,rad+e.deltaY*0.0008)); place(); },{passive:true});
-}
-
-// 키보드 (데스크톱 테스트/촬영 편의)
-addEventListener('keydown', e=>{
-  if(e.key===' '||e.key==='Enter'){ e.preventDefault(); nextScript(); }
-  if(e.key==='v') toggleListening();
-  const map={'1':'setName','2':'setFoodLocation','3':'feed','4':'praise','5':'come','0':'sleep'};
-  if(map[e.key]) say(SCRIPT.find(s=>s.expect===map[e.key])?.line||map[e.key], map[e.key]);
-});
-
-// ============================================================
-//  BOOT  (XR 지원 감지 → 버튼/폴백)
-// ============================================================
-(async()=>{
-  const enter=document.getElementById('enter'), status=document.getElementById('status'), hint=document.getElementById('hint');
-  // ?preview = 데스크톱 미리보기 즉시 시작 (촬영 리허설/디버그)
-  if(/[?&]preview/.test(location.search)){ startDesktop(); }
-  let arSupported=false;
-  try{ arSupported = navigator.xr && await navigator.xr.isSessionSupported('immersive-ar'); }catch(e){}
-  if(arSupported){
-    enter.textContent='ENTER AR  ▸  Wake Slimei';
-    hint.textContent='Enter AR → place Slimei on your desk → poke/pet with your hand → trigger for next line';
-    status.textContent='Quest 3 passthrough ready';
-    enter.onclick=()=>{ primeMic(); enterAR().catch(err=>{status.textContent='AR failed: '+err.message;}); };  // same tap gesture for mic permission + XR session
-  }else{
-    enter.textContent='Start desktop preview';
-    hint.textContent='Space=next line · 1-5=jump to beat · 0=sleep · v=voice · drag=orbit';
-    status.textContent='immersive-ar unavailable — desktop fallback';
-    enter.onclick=()=>{ primeMic(); startDesktop(); };
-  }
-  // 버튼 와이어링
-  document.getElementById('next').onclick=nextScript;
-  document.getElementById('mic').onclick=toggleListening;
-  document.getElementById('reset').onclick=()=>location.reload();
-})();
-
-// ============================================================
-//  RENDER LOOP
-// ============================================================
-const clock = new THREE.Clock();
-renderer.setAnimationLoop((t, frame)=>{
-  const time = clock.getElapsedTime();
-  // hit-test (AR)
-  if(frame && hitTestSource && localSpace){
-    const hits = frame.getHitTestResults(hitTestSource);
-    if(hits.length){
-      const pose = hits[0].getPose(localSpace);
-      reticle.visible = !State.spawned;          // 스폰 전에만 표시, 책상 잡으면 사라짐
-      reticle.matrix.fromArray(pose.transform.matrix);
-      lastHitPoint = new THREE.Vector3().setFromMatrixPosition(reticle.matrix);
-    } else { reticle.visible=false; }
-  }
-  HandInteraction.update(frame, time);
-  Slime.update(time);
-  XRHUD.update();
-  renderer.render(scene, camera);
-});
-
-addEventListener('resize', ()=>{ camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth,innerHeight); });
-</script>
+    addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
+  </script>
 </body>
+
 </html>
