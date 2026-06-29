@@ -368,6 +368,7 @@ const State = {
     return 'Normal';
   }
 };
+const VoiceState = { status:'Mic : off' };
 
 // ============================================================
 //  XR HUD  (DOM overlay가 안 보이는 Quest용 3D UI)
@@ -430,6 +431,8 @@ const XRHUD = (()=>{
     ctx.font='400 22px "DejaVu Sans Mono", monospace'; ctx.fillStyle='#e8e2ff';
     ctx.fillText('Mood : '+State.mood(), 32, 176);
     ctx.fillStyle='#9a90c0'; ctx.fillText('Learned : '+State.learnedCount(), 32, 212);
+    ctx.font='400 18px "DejaVu Sans Mono", monospace'; ctx.fillStyle='#7de0a0';
+    ctx.fillText(VoiceState.status, 32, 236);
     panel.texture.needsUpdate=true;
   }
   function latency(ms){
@@ -502,6 +505,11 @@ const UI = (()=>{
   return {render, toast, subtitle, latency};
 })();
 UI.render();
+
+function setVoiceStatus(status){
+  VoiceState.status = 'Mic : ' + status;
+  XRHUD.renderStatus();
+}
 
 // ============================================================
 //  AI  (자연어 → intent)  : 서버 프록시(Gemma/Cerebras) + 로컬 폴백
@@ -769,31 +777,35 @@ let recog=null, recogWant=false, recogLive=false;
 (()=>{ const SR = window.SpeechRecognition||window.webkitSpeechRecognition; if(!SR) return;
   recog = new SR(); recog.lang='ko-KR';
   recog.continuous=true; recog.interimResults=true; recog.maxAlternatives=1;
-  recog.onstart  = ()=>{ recogLive=true;  micUI(true); };
+  recog.onstart  = ()=>{ recogLive=true; micUI(true); setVoiceStatus('web listening'); };
   recog.onresult = e=>{
     for(let i=e.resultIndex;i<e.results.length;i++){
       const r=e.results[i];
-      if(r.isFinal){ const t=(r[0].transcript||'').trim(); if(t.length>1) say(t); }
+      if(r.isFinal){ const t=(r[0].transcript||'').trim(); if(t.length>1){ setVoiceStatus('heard'); say(t); } }
     }
   };
   recog.onerror = ev=>{
-    if(ev.error==='not-allowed'){ recogWant=false; micUI(false); UI.toast('마이크 권한이 필요해요'); return; }
+    if(ev.error==='not-allowed'){ recogWant=false; micUI(false); setVoiceStatus('blocked'); UI.toast('마이크 권한이 필요해요'); return; }
     if(ev.error==='service-not-allowed'||ev.error==='network'||ev.error==='language-not-supported'){
       recogWant=false; try{recog.stop();}catch(e){}
+      setVoiceStatus('cloud fallback');
       startCloudListening();
     }
   };
-  recog.onend = ()=>{ recogLive=false; micUI(false);
+  recog.onend = ()=>{ recogLive=false; micUI(false); if(!cloudWant) setVoiceStatus(recogWant?'web restarting':'off');
     if(recogWant) setTimeout(()=>{ try{recog.start();}catch(e){} }, 250); }; // 자동 재시작 = 항상 듣기
 })();
 async function primeMic(){ try{ const s=await navigator.mediaDevices.getUserMedia({audio:true}); s.getTracks().forEach(t=>t.stop()); return true; }catch(e){ return false; } }
+function preferCloudVoice(){ return arActive || /OculusBrowser|Quest|Meta Quest/i.test(navigator.userAgent||''); }
 function startListening(){
+  if(preferCloudVoice()){ startCloudListening(); return; }
   if(recog){ recogWant=true; try{ recog.start(); }catch(e){} return; }
   startCloudListening();
 }
 function stopListening(){
   recogWant=false; try{ recog.stop(); }catch(e){}
   stopCloudListening();
+  setVoiceStatus('off');
 }
 function toggleListening(){ (recogWant||cloudWant) ? stopListening() : startListening(); }
 function micUI(on){ const b=document.getElementById('mic'); if(b) b.textContent = on?'🎙 듣는 중…':'🎤 말하기'; }
@@ -810,17 +822,20 @@ function bestAudioMime(){
 
 async function startCloudListening(){
   if(!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder){
+    setVoiceStatus('unsupported');
     UI.toast('이 브라우저는 음성인식 미지원 — 버튼/Space 사용'); return;
   }
   if(cloudLive) return;
   cloudWant=true; cloudErrorShown=false;
+  setVoiceStatus('permission...');
   try{
     cloudStream = await navigator.mediaDevices.getUserMedia({
       audio:{ echoCancellation:true, noiseSuppression:true, autoGainControl:true }
     });
-    cloudLive=true; micUI(true); recordCloudChunk();
+    cloudLive=true; micUI(true); setVoiceStatus('cloud listening'); UI.toast('마이크 듣는 중');
+    recordCloudChunk();
   }catch(e){
-    cloudWant=false; cloudLive=false; micUI(false); UI.toast('마이크 권한이 필요해요');
+    cloudWant=false; cloudLive=false; micUI(false); setVoiceStatus('blocked'); UI.toast('마이크 권한이 필요해요');
   }
 }
 
@@ -835,22 +850,25 @@ function recordCloudChunk(){
   const chunks=[], mime=bestAudioMime();
   try{
     cloudRecorder = new MediaRecorder(cloudStream, mime?{mimeType:mime}:undefined);
-  }catch(e){ stopCloudListening(); UI.toast('녹음 시작 실패 — 버튼/Space 사용'); return; }
+  }catch(e){ setVoiceStatus('record error'); stopCloudListening(); UI.toast('녹음 시작 실패 — 버튼/Space 사용'); return; }
   cloudRecorder.ondataavailable = e=>{ if(e.data && e.data.size) chunks.push(e.data); };
   cloudRecorder.onstop = ()=>{
     const blob = new Blob(chunks, {type:cloudRecorder?.mimeType || mime || 'audio/webm'});
     cloudRecorder=null;
     if(blob.size>900) transcribeCloud(blob);
+    else if(cloudWant) setVoiceStatus('cloud listening');
     if(cloudWant) setTimeout(recordCloudChunk, 80);
   };
-  cloudRecorder.onerror = ()=>{ if(!cloudErrorShown){ cloudErrorShown=true; UI.toast('음성 녹음 오류 — 버튼/Space 사용'); } };
+  cloudRecorder.onerror = ()=>{ setVoiceStatus('record error'); if(!cloudErrorShown){ cloudErrorShown=true; UI.toast('음성 녹음 오류 — 버튼/Space 사용'); } };
   cloudRecorder.start();
+  setVoiceStatus('recording');
   setTimeout(()=>{ try{ if(cloudRecorder?.state==='recording') cloudRecorder.stop(); }catch(e){} }, CLOUD_CHUNK_MS);
 }
 
 async function transcribeCloud(blob){
   if(cloudBusy) return;
   cloudBusy=true;
+  setVoiceStatus('transcribing');
   try{
     const r = await fetch('/api/voice', {
       method:'POST',
@@ -859,13 +877,16 @@ async function transcribeCloud(blob){
     });
     if(!r.ok) throw new Error('voice status '+r.status);
     const data = await r.json();
+    if(data.error) throw new Error(data.error);
     const text = (data.text||'').trim();
     const now = performance.now();
     if(text.length>1 && !(text===lastVoiceText && now-lastVoiceAt<4500)){
+      setVoiceStatus('heard');
       lastVoiceText=text; lastVoiceAt=now; say(text);
-    }
+    }else if(cloudWant) setVoiceStatus('cloud listening');
   }catch(e){
-    if(!cloudErrorShown){ cloudErrorShown=true; UI.toast('클라우드 음성인식 실패 — 버튼/Space 사용'); }
+    setVoiceStatus('STT error');
+    if(!cloudErrorShown){ cloudErrorShown=true; UI.toast('STT 실패: '+String(e.message||e).slice(0,34)); }
   }finally{ cloudBusy=false; }
 }
 
