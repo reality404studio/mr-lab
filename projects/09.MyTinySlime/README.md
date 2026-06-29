@@ -8,6 +8,7 @@
 ```
 index.html              # 앱 전체 (Three.js CDN, 셰이더, 애니메이션, UI, 음성/스크립트)
 functions/api/intent.js # Cloudflare Pages Function — 자연어→intent 프록시(키는 서버에만)
+functions/api/voice.js  # Cloudflare Pages Function — 브라우저 오디오→텍스트(STT) 폴백
 ```
 
 ---
@@ -43,6 +44,17 @@ python3 -m http.server 8099
 | `GEMMA_API_KEY` | ✅ | — | 발급받은 키. **콘솔 UI에서만 입력**(코드/CLI에 넣지 말 것) |
 | `GEMMA_API_URL` |    | `https://api.cerebras.ai/v1/chat/completions` | OpenAI 호환 chat/completions 엔드포인트 |
 | `GEMMA_MODEL`   |    | `gemma-4-31b` | Cerebras 발급 모델 (필요시 변경) |
+| `STT_MODEL`     |    | `@cf/openai/whisper` | Workers AI STT 모델 |
+
+### Cloudflare 바인딩
+
+Quest/immersive 모드에서 브라우저 Web Speech API가 막히면 `/api/voice`가 Workers AI Whisper로 음성을 텍스트화한 뒤, 기존 `/api/intent`의 Gemma/Cerebras 이해 파이프라인으로 넘긴다.
+
+Pages > Settings > Functions > Workers AI bindings:
+
+| 변수명 | 서비스 |
+|------|------|
+| `AI` | Workers AI |
 
 > ⚠️ 키는 절대 `index.html`이나 git에 넣지 않는다. 서버 함수가 환경변수로만 읽는다.
 > 세션 중 키를 파일에 적었다면 노출 가능성이 있으니 **사용 후 키 회전**을 권장.
