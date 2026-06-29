@@ -246,23 +246,21 @@ const Slime = (()=>{
     normal:'o o', happy:'^ ^', excited:'* *', sleepy:'- -',
     confused:'@ @', love:'♥ ♥', eat:'> <', dead:'x x'
   };
-  function drawFace(eyes, mouth){
+  function drawFace(eyes){
     const c=document.createElement('canvas'); c.width=c.height=256;
     const x=c.getContext('2d'); x.clearRect(0,0,256,256);
-    x.fillStyle='#3a2f63'; x.font='bold 104px monospace';
+    x.fillStyle='#3a2f63'; x.font='bold 112px monospace';   // 눈만 — 입 없음
     x.textAlign='center'; x.textBaseline='middle';
-    x.fillText(eyes, 128, 116);
-    if(mouth){ x.font='bold 56px monospace'; x.fillText(mouth,128,182); }
+    x.fillText(eyes, 128, 132);
     const t=new THREE.CanvasTexture(c); t.needsUpdate=true; return t;
   }
-  const faceMat = new THREE.SpriteMaterial({map:drawFace(faces.normal,'‿'), transparent:true, depthTest:false, depthWrite:false});
+  const faceMat = new THREE.SpriteMaterial({map:drawFace(faces.normal), transparent:true, depthTest:false, depthWrite:false});
   const faceSpr = new THREE.Sprite(faceMat);
   faceSpr.scale.set(R*1.7, R*1.7, 1); faceSpr.position.y = R; group.add(faceSpr);
 
-  const mouths = {normal:'‿', happy:'‿', excited:'o', love:'♥', confused:'', sleepy:'', eat:'O', dead:''};
   function setFace(name){
     const e = faces[name]||faces.normal;
-    faceMat.map.dispose(); faceMat.map = drawFace(e, mouths[name]); faceMat.needsUpdate=true;
+    faceMat.map.dispose(); faceMat.map = drawFace(e); faceMat.needsUpdate=true;
   }
 
   // --- animation: 누적식 action 큐 (절차적 squash&stretch) ---
@@ -346,7 +344,7 @@ reticle.matrixAutoUpdate = false; reticle.visible = false; scene.add(reticle);
 //  STATE  (memory + stats)
 // ============================================================
 const State = {
-  spawned:false, sleeping:false,
+  spawned:false, sleeping:false, deskY:0,
   memory:{ name:null, favoriteFood:null, foodLocation:null, homeLocation:null },
   affection:35, hunger:62,
   learnedCount(){ return ['name','favoriteFood','foodLocation','homeLocation']
@@ -526,15 +524,30 @@ function nextScript(){
 }
 
 // ============================================================
-//  WEB SPEECH STT  (보너스 — 있으면 진짜 음성으로)
+//  VOICE  (항상 듣기 — 탭 없이 자연어 명령이 자연스럽게 따라옴)
+//  Quest: getUserMedia(마이크)는 작동 확인됨(MIRROR). STT는 기기 테스트 필요,
+//  안 되면 startListening()을 getUserMedia→클라우드 STT로 교체하면 됨.
 // ============================================================
-let recog=null;
+let recog=null, recogWant=false, recogLive=false;
 (()=>{ const SR = window.SpeechRecognition||window.webkitSpeechRecognition; if(!SR) return;
-  recog = new SR(); recog.lang='ko-KR'; recog.interimResults=false; recog.maxAlternatives=1;
-  recog.onresult = e=>{ const t=e.results[0][0].transcript; say(t); };
-  recog.onerror = ()=>{}; })();
-function listen(){ if(!recog){ UI.toast('voice unsupported — 버튼 사용'); return; }
-  try{ recog.start(); UI.toast('listening…'); }catch(e){} }
+  recog = new SR(); recog.lang='ko-KR';
+  recog.continuous=true; recog.interimResults=true; recog.maxAlternatives=1;
+  recog.onstart  = ()=>{ recogLive=true;  micUI(true); };
+  recog.onresult = e=>{
+    for(let i=e.resultIndex;i<e.results.length;i++){
+      const r=e.results[i];
+      if(r.isFinal){ const t=(r[0].transcript||'').trim(); if(t.length>1) say(t); }
+    }
+  };
+  recog.onerror = ev=>{ if(ev.error==='not-allowed'||ev.error==='service-not-allowed'){ recogWant=false; micUI(false); UI.toast('마이크 권한이 필요해요'); } };
+  recog.onend = ()=>{ recogLive=false; micUI(false);
+    if(recogWant) setTimeout(()=>{ try{recog.start();}catch(e){} }, 250); }; // 자동 재시작 = 항상 듣기
+})();
+async function primeMic(){ try{ const s=await navigator.mediaDevices.getUserMedia({audio:true}); s.getTracks().forEach(t=>t.stop()); return true; }catch(e){ return false; } }
+function startListening(){ if(!recog){ UI.toast('이 브라우저는 음성인식 미지원 — 버튼/Space 사용'); return; } recogWant=true; try{ recog.start(); }catch(e){} }
+function stopListening(){ recogWant=false; try{ recog.stop(); }catch(e){} }
+function toggleListening(){ recogWant ? stopListening() : startListening(); }
+function micUI(on){ const b=document.getElementById('mic'); if(b) b.textContent = on?'🎙 듣는 중…':'🎤 말하기'; }
 
 // ============================================================
 //  SPAWN / PLACEMENT
@@ -547,8 +560,10 @@ function spawnAt(pos){
   State.spawned = true;
   SFX.spawn(); Slime.bounce(0.05);
   document.getElementById('dock').classList.remove('hide');
-  reticle.material.opacity = 0.28;   // 스폰 후엔 흐리게 유지(밥자리 조준용)
+  reticle.visible = false;           // 책상 잡았으니 레티클 제거
+  State.deskY = pos.y;               // 책상 높이 기록 (XR UI 기준)
   UI.toast('Slimei is here ♡');
+  startListening();                  // 스폰 즉시 '항상 듣기' 시작 (탭 없이 자연어)
 }
 
 // ============================================================
@@ -600,7 +615,7 @@ function startDesktop(){
 // 키보드 (데스크톱 테스트/촬영 편의)
 addEventListener('keydown', e=>{
   if(e.key===' '||e.key==='Enter'){ e.preventDefault(); nextScript(); }
-  if(e.key==='v') listen();
+  if(e.key==='v') toggleListening();
   const map={'1':'setName','2':'setFoodLocation','3':'feed','4':'praise','5':'come','0':'sleep'};
   if(map[e.key]) say(SCRIPT.find(s=>s.expect===map[e.key])?.line||map[e.key], map[e.key]);
 });
@@ -618,16 +633,16 @@ addEventListener('keydown', e=>{
     enter.textContent='ENTER AR  ▸  슬라임 깨우기';
     hint.textContent='AR 진입 → 책상을 보면 레티클 표시 → 트리거로 스폰 → 트리거로 다음 대사';
     status.textContent='Quest 3 passthrough ready';
-    enter.onclick=()=>enterAR().catch(err=>{status.textContent='AR 실패: '+err.message;});
+    enter.onclick=()=>{ primeMic(); enterAR().catch(err=>{status.textContent='AR 실패: '+err.message;}); };  // 같은 탭 제스처로 마이크 권한+세션
   }else{
     enter.textContent='데스크톱으로 시작 (미리보기)';
     hint.textContent='Space=다음 대사 · 1~5=비트 점프 · 0=잠 · v=음성 · 드래그=회전';
     status.textContent='immersive-ar 미지원 — 데스크톱 폴백';
-    enter.onclick=startDesktop;
+    enter.onclick=()=>{ primeMic(); startDesktop(); };
   }
   // 버튼 와이어링
   document.getElementById('next').onclick=nextScript;
-  document.getElementById('mic').onclick=listen;
+  document.getElementById('mic').onclick=toggleListening;
   document.getElementById('reset').onclick=()=>location.reload();
 })();
 
@@ -642,10 +657,10 @@ renderer.setAnimationLoop((t, frame)=>{
     const hits = frame.getHitTestResults(hitTestSource);
     if(hits.length){
       const pose = hits[0].getPose(localSpace);
-      reticle.visible = true;
+      reticle.visible = !State.spawned;          // 스폰 전에만 표시, 책상 잡으면 사라짐
       reticle.matrix.fromArray(pose.transform.matrix);
       lastHitPoint = new THREE.Vector3().setFromMatrixPosition(reticle.matrix);
-    } else if(!State.spawned){ reticle.visible=false; }
+    } else { reticle.visible=false; }
   }
   Slime.update(time);
   renderer.render(scene, camera);
