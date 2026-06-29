@@ -125,6 +125,7 @@
 /* ============================================================
    Slimei — XR Tamagotchi (single-file hackathon build)
    - Quest 3 WebXR passthrough (immersive-ar) + hit-test 스폰
+   - Quest 3 WebXR hand-tracking: poke / pet reactions
    - Desktop fallback: y=0 즉시 스폰
    - 슬라임: 두께기반 blob 셰이더 (계란후라이 회피)
    - 자연어 → intent: Gemma 4 / Cerebras (서버 프록시) + 로컬 폴백
@@ -160,6 +161,7 @@ const SFX = (()=>{ let ac;
     nom:()=>{beep(300,.09,'triangle',.06);setTimeout(()=>beep(360,.09,'triangle',.06),100);},
     happy:()=>{[660,830,990].forEach((f,i)=>setTimeout(()=>beep(f,.12,'sine',.05),i*90));},
     love:()=>{beep(700,.18,'sine',.05,1.4);setTimeout(()=>beep(1040,.2,'sine',.05),120);},
+    boing:()=>{beep(280,.08,'sine',.07,1.9);setTimeout(()=>beep(760,.16,'triangle',.05,1.25),70);},
     spawn:()=>beep(420,.22,'sine',.06,1.8),
   };
 })();
@@ -244,7 +246,7 @@ const Slime = (()=>{
   // --- face: ASCII 텍스트 스프라이트 (always billboard) ---
   const faces = {
     normal:'o o', happy:'^ ^', excited:'* *', sleepy:'- -',
-    confused:'@ @', love:'♥ ♥', eat:'> <', dead:'x x'
+    confused:'@ @', surprised:'O O', love:'♥ ♥', eat:'> <', dead:'x x'
   };
   function drawFace(eyes){
     const c=document.createElement('canvas'); c.width=c.height=256;
@@ -279,6 +281,9 @@ const Slime = (()=>{
 
   // public-ish animation API
   function bounce(h=0.06){ SFX.pop(); add(0.5, p=>jump(p,h)); }
+  function boing(){ SFX.boing(); setFace('surprised'); mat.uniforms.uGlow.value=.7;
+    add(0.58, p=>{ const j=jump(p,0.095); const wob=Math.sin(p*Math.PI*4); return {dy:j.dy, sy:j.sy+0.16*wob, sxz:1-0.10*wob}; });
+    setTimeout(()=>{mat.uniforms.uGlow.value=0; setFace('normal');},900); }
   function happy(){ SFX.happy(); setFace('happy'); mat.uniforms.uGlow.value=1;
     [0,0.18,0.36].forEach(d=>setTimeout(()=>add(0.42,p=>jump(p,0.05)), d*1000));
     setTimeout(()=>{mat.uniforms.uGlow.value=0; setFace('normal');},1600); }
@@ -329,7 +334,7 @@ const Slime = (()=>{
 
   function tint(c){ mat.uniforms.uColor.value.copy(c); }
 
-  return {group, mesh, setFace, bounce, happy, eat, sleep, wake, lookAt, hopTo, update, tint, faces};
+  return {group, mesh, setFace, bounce, boing, happy, eat, sleep, wake, lookAt, hopTo, update, tint, faces};
 })();
 scene.add(Slime.group);
 
@@ -505,6 +510,123 @@ async function say(text, expected){
 }
 
 // ============================================================
+//  HAND TRACKING  (Quest 3 WebXR hand joints → poke / pet)
+// ============================================================
+const HandInteraction = (()=>{
+  const JOINTS = [
+    'wrist',
+    'thumb-tip',
+    'index-finger-tip',
+    'middle-finger-tip',
+    'ring-finger-tip',
+    'pinky-finger-tip'
+  ];
+  const TOUCH_JOINTS = new Set(JOINTS.slice(1));
+  const prev = new Map();
+  const center = new THREE.Vector3();
+  const top = new THREE.Vector3();
+  const p = new THREE.Vector3();
+  const nearest = new THREE.Vector3();
+  let lastFrameTime = 0;
+  let lastNoticeAt = -10;
+  let lastPokeAt = -10;
+  let lastPetAt = -10;
+  let petScore = 0;
+
+  function reset(){
+    prev.clear(); lastFrameTime=0; lastNoticeAt=-10; lastPokeAt=-10; lastPetAt=-10; petScore=0;
+  }
+
+  function triggerPoke(time){
+    if(time-lastPokeAt<0.75) return;
+    lastPokeAt = time; petScore = 0;
+    Slime.boing();
+    UI.toast('뚀잉!');
+  }
+
+  function triggerPet(time){
+    if(time-lastPetAt<1.5) return;
+    lastPetAt = time; petScore = 0;
+    Slime.setFace('happy'); Slime.bounce(0.025); SFX.love();
+    State.affection = Math.min(100, State.affection + 3);
+    UI.render();
+    UI.toast('쓰담쓰담 ^ ^');
+    setTimeout(()=>Slime.setFace('normal'),1300);
+  }
+
+  function jointPose(frame, hand, name){
+    const space = hand.get?.(name);
+    if(!space || !localSpace || !frame.getJointPose) return null;
+    try{ return frame.getJointPose(space, localSpace); }catch(e){ return null; }
+  }
+
+  function update(frame, time){
+    if(!frame || !State.spawned || !localSpace) return;
+    const session = renderer.xr.getSession?.() || frame.session;
+    if(!session?.inputSources) return;
+
+    const dt = Math.max(0.001, Math.min(0.08, lastFrameTime ? time-lastFrameTime : 0.016));
+    lastFrameTime = time;
+    Slime.mesh.getWorldPosition(center);
+    top.copy(center); top.y += R*0.72;
+
+    let nearestD = Infinity;
+    let sawHand = false;
+    let petCandidate = false;
+
+    let sourceIndex = 0;
+    for(const input of session.inputSources){
+      const hand = input.hand;
+      if(!hand) { sourceIndex++; continue; }
+      sawHand = true;
+      const prefix = (input.handedness || 'hand') + ':' + sourceIndex + ':';
+
+      for(const name of JOINTS){
+        const pose = jointPose(frame, hand, name);
+        if(!pose) continue;
+        const jp = pose.transform.position;
+        p.set(jp.x, jp.y, jp.z);
+
+        const key = prefix + name;
+        let old = prev.get(key);
+        let speed = 0;
+        if(old){ speed = p.distanceTo(old) / dt; old.copy(p); }
+        else { old = p.clone(); prev.set(key, old); }
+
+        const d = p.distanceTo(center);
+        if(d < nearestD){ nearestD = d; nearest.copy(p); }
+
+        if(TOUCH_JOINTS.has(name) && d < R*1.2 && speed > 0.22){
+          triggerPoke(time);
+          continue;
+        }
+
+        const overTop = p.y > center.y + R*0.22 && p.y < center.y + R*1.65;
+        const closeToHead = p.distanceTo(top) < R*1.75;
+        if((TOUCH_JOINTS.has(name) || name==='wrist') && overTop && closeToHead && speed < 0.55){
+          petCandidate = true;
+        }
+      }
+      sourceIndex++;
+    }
+
+    if(!sawHand){ petScore = Math.max(0, petScore-dt*2); return; }
+
+    if(petCandidate) petScore += dt;
+    else petScore = Math.max(0, petScore-dt*1.7);
+
+    if(petScore > 0.38 && time-lastPokeAt > 0.45) triggerPet(time);
+
+    if(nearestD < R*4.0 && time-lastNoticeAt > 0.35 && time-lastPokeAt > 0.75 && time-lastPetAt > 0.75){
+      Slime.lookAt(nearest);
+      lastNoticeAt = time;
+    }
+  }
+
+  return {update, reset};
+})();
+
+// ============================================================
 //  DEMO SCRIPT  (촬영 안전판: 트리거→자막→진짜 LLM 호출)
 //  tamagochi.md / demo.md 60초 플로우 그대로
 // ============================================================
@@ -656,7 +778,7 @@ let hitTestSource=null, localSpace=null, arActive=false;
 async function enterAR(){
   const session = await navigator.xr.requestSession('immersive-ar', {
     requiredFeatures:['hit-test'],
-    optionalFeatures:['local-floor','dom-overlay'],
+    optionalFeatures:['local-floor','dom-overlay','hand-tracking'],
     domOverlay:{ root: document.getElementById('ui') }
   });
   arActive = true;
@@ -670,7 +792,7 @@ async function enterAR(){
     if(!State.spawned){ if(reticle.visible){ const p=new THREE.Vector3().setFromMatrixPosition(reticle.matrix); spawnAt(p); } }
     else { nextScript(); }            // 스폰 후 트리거 = 다음 대사
   });
-  session.addEventListener('end', ()=>{ arActive=false; hitTestSource=null;
+  session.addEventListener('end', ()=>{ arActive=false; hitTestSource=null; HandInteraction.reset();
     document.getElementById('splash').classList.remove('hide'); });
 }
 
@@ -714,7 +836,7 @@ addEventListener('keydown', e=>{
   try{ arSupported = navigator.xr && await navigator.xr.isSessionSupported('immersive-ar'); }catch(e){}
   if(arSupported){
     enter.textContent='ENTER AR  ▸  슬라임 깨우기';
-    hint.textContent='AR 진입 → 책상을 보면 레티클 표시 → 트리거로 스폰 → 트리거로 다음 대사';
+    hint.textContent='AR 진입 → 책상에 스폰 → 손가락으로 찌르기/쓰다듬기 → 트리거로 다음 대사';
     status.textContent='Quest 3 passthrough ready';
     enter.onclick=()=>{ primeMic(); enterAR().catch(err=>{status.textContent='AR 실패: '+err.message;}); };  // 같은 탭 제스처로 마이크 권한+세션
   }else{
@@ -745,6 +867,7 @@ renderer.setAnimationLoop((t, frame)=>{
       lastHitPoint = new THREE.Vector3().setFromMatrixPosition(reticle.matrix);
     } else { reticle.visible=false; }
   }
+  HandInteraction.update(frame, time);
   Slime.update(time);
   renderer.render(scene, camera);
 });
