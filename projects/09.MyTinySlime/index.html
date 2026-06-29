@@ -379,6 +379,11 @@ async function parseIntent(text, expected){
     if(!r.ok) throw new Error('bad status '+r.status);
     const data = await r.json();
     data.latencyMs = data.latencyMs || Math.round(performance.now()-t0);
+    // 서버가 닿아도 idle/에러면(예: 키 미설정·모델 거부) authored 스크립트 intent를 우선 →
+    // 촬영 중 스크립트가 항상 의도대로 동작. (자유 음성은 expected가 없어 idle 그대로)
+    if(expected && (!data.intent || data.intent==='idle' || data.error)){
+      data.intent = expected; data.fallback = true;
+    }
     if(!data.intent) throw new Error('no intent');
     return data;
   }catch(e){
