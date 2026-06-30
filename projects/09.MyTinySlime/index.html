@@ -379,8 +379,8 @@
         const belly = smooth(0.08, 0.40, y01) * (1 - smooth(0.72, 1.0, y01));
         const crown = smooth(0.58, 1.0, y01);
 
-        y = mix(-0.50, y * 0.68 - 0.04, base);
-        const girth = 0.98 + 0.08 * belly - 0.06 * crown;
+        y = mix(-0.55, y * 0.86 - 0.02, base);
+        const girth = 0.96 + 0.07 * belly - 0.04 * crown;
         pos.setXYZ(i, x * girth, y, z * girth);
       }
       pos.needsUpdate = true;
@@ -399,7 +399,7 @@
       });
       mat.toneMapped = false;
       const mesh = new THREE.Mesh(bodyGeo, mat);
-      mesh.scale.setScalar(R); mesh.position.y = R * 0.50;
+      mesh.scale.setScalar(R); mesh.position.y = R * 0.56;
       group.add(mesh);
       let glow = 0, breath = 1;
       function applyBodyLight() {
@@ -436,7 +436,7 @@
       }
       const faceMat = new THREE.SpriteMaterial({ map: drawFace(faces.normal), transparent: true, depthTest: false, depthWrite: false });
       const faceSpr = new THREE.Sprite(faceMat);
-      const faceOffsetY = R * 0.30;
+      const faceOffsetY = R * 0.40;
       faceSpr.scale.set(R * 1.72, R * 1.72, 1); faceSpr.position.y = mesh.position.y + faceOffsetY; group.add(faceSpr);
 
       function setFace(name) {
@@ -463,7 +463,7 @@
       function bounce(h = 0.06) { SFX.pop(); add(0.5, p => jump(p, h)); }
       function boing() {
         SFX.boing(); setFace('surprised'); setGlow(.7);
-        add(0.58, p => { const j = jump(p, 0.095); const wob = Math.sin(p * Math.PI * 4); return { dy: j.dy, sy: j.sy + 0.16 * wob, sxz: 1 - 0.10 * wob }; });
+        add(0.58, p => { const j = jump(p, 0.18); const wob = Math.sin(p * Math.PI * 4); return { dy: j.dy, sy: j.sy + 0.16 * wob, sxz: 1 - 0.10 * wob }; });
         setTimeout(() => { setGlow(0); setFace('normal'); }, 900);
       }
       function happy() {
@@ -511,7 +511,7 @@
           if (p >= 1 && a.dur < 999) { actions.splice(i, 1); continue; }
           const r = a.fn(Math.min(p, 1)) || {}; dy += r.dy || 0; sy *= (r.sy != null ? r.sy : 1); sxz *= (r.sxz != null ? r.sxz : 1);
         }
-        mesh.position.y = R * 0.50 + dy;
+        mesh.position.y = R * 0.56 + dy;
         mesh.scale.set(R * sxz * (1 - b * 0.45), R * sy * (1 + b), R * sxz * (1 - b * 0.45));
         look += (lookTarget - look) * 0.15; if (Math.abs(lookTarget) < 0.01) lookTarget *= 0;
         mesh.rotation.z = -look * 0.5;
@@ -650,7 +650,7 @@
         if (toward.lengthSq() < 0.0001) toward.set(0, 0, 1);
         toward.normalize();
         right.crossVectors(toward.clone().negate(), up).normalize();
-        anchor.copy(pos).addScaledVector(right, 0.18).addScaledVector(up, 0.12).addScaledVector(toward, 0.035);
+        anchor.copy(pos).addScaledVector(right, 0.22).addScaledVector(up, 0.16).addScaledVector(toward, -0.24);
         anchored = true;
       }
       function clearAnchor() {
