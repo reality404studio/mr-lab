@@ -465,6 +465,8 @@
       const motionScale = R / 0.08;
       const timers = [];
       let look = 0, lookTarget = 0;     // 좌우 기울임(호기심/추적)
+      let lean = 0, leanTarget = 0, faceDrift = 0, faceDriftTarget = 0;
+      let interestUntil = 0;
       let nextBlinkAt = performance.now() / 1000 + 2.4;
 
       function add(dur, fn) { actions.push({ t0: performance.now() / 1000, dur, fn }); }
@@ -503,6 +505,15 @@
       }
       function wake() { breath = 1; actions.length = 0; setFace('normal'); }
       function lookAt(worldPos) { const dx = worldPos.x - group.position.x; lookTarget = Math.max(-0.5, Math.min(0.5, dx * 4)); setFace('confused'); }
+      function trackHand(worldPos, distance) {
+        const dx = worldPos.x - group.position.x;
+        const dz = worldPos.z - group.position.z;
+        lookTarget = Math.max(-0.42, Math.min(0.42, dx * 5));
+        leanTarget = Math.max(-0.22, Math.min(0.22, dz * 4));
+        faceDriftTarget = Math.max(-1, Math.min(1, dx / (R * 3.0)));
+        interestUntil = performance.now() / 1000 + 0.65;
+        if (distance < R * 3.2 && currentFace === 'normal') setFace('happy');
+      }
 
       function rememberName(name) {
         SFX.learnFx(); setGlow(.8); setFace('surprised');
@@ -601,9 +612,12 @@
         mesh.position.y = R * 0.56 + dy;
         mesh.scale.set(R * sxz * (1 - b * 0.45), R * sy * (1 + b), R * sxz * (1 - b * 0.45));
         look += (lookTarget - look) * 0.15; if (Math.abs(lookTarget) < 0.01) lookTarget *= 0;
+        lean += (leanTarget - lean) * 0.12;
+        faceDrift += (faceDriftTarget - faceDrift) * 0.16;
+        if (time > interestUntil) { leanTarget *= 0.88; faceDriftTarget *= 0.85; }
         mesh.rotation.z = -look * 0.5;
-        mesh.rotation.x = Math.sin(time * 0.9) * 0.025 * breath;
-        faceSpr.position.set(mesh.position.x, mesh.position.y + faceOffsetY, mesh.position.z);
+        mesh.rotation.x = Math.sin(time * 0.9) * 0.025 * breath + lean;
+        faceSpr.position.set(mesh.position.x + faceDrift * R * 0.12, mesh.position.y + faceOffsetY, mesh.position.z + Math.abs(faceDrift) * R * 0.03);
         shadow.scale.setScalar(1 + (1 - sy) * 0.6);          // 눌릴수록 그림자 확장
         const m = shadow.material; m.opacity = 0.9 * Math.max(0, 1 - dy * 6);
         if (actions.length === 0 && currentFace === 'normal' && time > nextBlinkAt) {
@@ -615,7 +629,7 @@
 
       function tint(c) { mat.color.copy(c); applyBodyLight(); }
 
-      return { group, mesh, setFace, bounce, boing, happy, eat, sleep, wake, lookAt, hopTo, update, tint, faces, rememberName, praise, cuddle, pokeFrom, feedFrom };
+      return { group, mesh, setFace, bounce, boing, happy, eat, sleep, wake, lookAt, trackHand, hopTo, update, tint, faces, rememberName, praise, cuddle, pokeFrom, feedFrom };
     })();
     scene.add(Slime.group);
 
@@ -1082,8 +1096,8 @@
 
         if (petScore > 0.38 && time - lastPokeAt > 0.45) triggerPet(time);
 
-        if (nearestD < R * 5.8 && time - lastNoticeAt > 0.35 && time - lastPokeAt > 0.75 && time - lastPetAt > 0.75) {
-          Slime.lookAt(nearest);
+        if (nearestD < R * 5.8 && time - lastNoticeAt > 0.10 && time - lastPokeAt > 0.75 && time - lastPetAt > 0.75) {
+          Slime.trackHand(nearest, nearestD);
           lastNoticeAt = time;
         }
       }
