@@ -292,7 +292,6 @@
     <div id="subtitle"></div>
 
     <div id="dock" class="hide">
-      <button class="btn primary" id="next">▶ Next line</button>
       <button class="btn" id="mic">🎤 Speak</button>
       <button class="btn ghost" id="reset">↺</button>
     </div>
@@ -726,7 +725,7 @@
     // ============================================================
     //  AI  (자연어 → intent)  : 서버 프록시(Gemma/Cerebras) + 로컬 폴백
     // ============================================================
-    async function parseIntent(text, expected) {
+    async function parseIntent(text) {
       const t0 = performance.now();
       try {
         const r = await fetch('/api/intent', {
@@ -736,20 +735,12 @@
         if (!r.ok) throw new Error('bad status ' + r.status);
         const data = await r.json();
         data.latencyMs = data.latencyMs || Math.round(performance.now() - t0);
-        // 서버가 닿아도 idle/에러면(예: 키 미설정·모델 거부) authored 스크립트 intent를 우선 →
-        // 촬영 중 스크립트가 항상 의도대로 동작. (자유 음성은 expected가 없어 idle 그대로)
-        if (expected && (!data.intent || data.intent === 'idle' || data.error)) {
-          data.intent = expected; data.fallback = true;
-        }
         if (!data.intent) throw new Error('no intent');
         return data;
       } catch (e) {
-        // 폴백: 데모가 절대 죽지 않게.
-        // 스크립트(authored)에서 expected가 오면 그걸 권위로 삼아 결정론적으로 동작.
         const local = localIntent(text);
-        const intent = expected || local.intent;
         const name = local.name || extractName(text);
-        return { intent, name, food: local.food, fallback: true, latencyMs: Math.round(performance.now() - t0) };
+        return { intent: local.intent, name, food: local.food, fallback: true, latencyMs: Math.round(performance.now() - t0) };
       }
     }
     function extractName(t) {
@@ -757,7 +748,7 @@
       const en = s.match(/(?:call\s+you|name\s+is|named)\s+([A-Za-z]{1,12})/i);
       if (en) return en[1];
       const ko = s.match(/([가-힣A-Za-z]{1,6}?)(?:이라고|라고|이야|야)/);
-      return (ko && ko[1]) || 'Bean';
+      return (ko && ko[1]) || '';
     }
     function localIntent(t) {
       const s = (t || '').toLowerCase();
@@ -788,7 +779,9 @@
       if (State.sleeping && it !== 'idle') { State.sleeping = false; Slime.wake(); }
       switch (it) {
         case 'setName': {
-          State.memory.name = (parsed.name || 'Bean').replace(/[\.\,!\?]/g, '');
+          const name = (parsed.name || '').replace(/[\.\,!\?]/g, '');
+          if (!name) { UI.toast('Name not heard'); break; }
+          State.memory.name = name;
           Slime.setFace('happy'); Slime.bounce(0.07); SFX.pop();
           UI.toast('Learned: name ▸ ' + State.memory.name);
           State.affection = Math.min(100, State.affection + 4);
@@ -846,10 +839,10 @@
       UI.render();
     }
 
-    // 자연어 한 줄을 처리하는 단일 진입점 (음성/스크립트/버튼 공통)
-    async function say(text, expected) {
+    // 자연어 한 줄을 처리하는 단일 진입점
+    async function say(text) {
       UI.subtitle(text);
-      const parsed = await parseIntent(text, expected);
+      const parsed = await parseIntent(text);
       UI.latency(parsed.latencyMs || 120);
       dispatch(parsed);
     }
@@ -972,25 +965,6 @@
     })();
 
     // ============================================================
-    //  DEMO SCRIPT  (촬영 안전판: 트리거→자막→진짜 LLM 호출)
-    //  tamagochi.md / demo.md 60초 플로우 그대로
-    // ============================================================
-    const SCRIPT = [
-      { line: "I'll call you Bean", expect: 'setName' },
-      { line: 'This is your food spot', expect: 'setFoodLocation' },
-      { line: 'Bean, you look hungry', expect: 'feed' },
-      { line: 'Good job, Bean!', expect: 'praise' },
-      { line: 'Come here, Bean', expect: 'come' },
-    ];
-    let scriptStep = 0;
-    function nextScript() {
-      if (!State.spawned) return;
-      if (scriptStep >= SCRIPT.length) { Slime.happy(); UI.toast('demo complete ♥'); return; }
-      const s = SCRIPT[scriptStep++];
-      say(s.line, s.expect);
-    }
-
-    // ============================================================
     //  VOICE  (항상 듣기 — 탭 없이 자연어 명령이 자연스럽게 따라옴)
     //  1순위: 브라우저 Web Speech API. 2순위: MediaRecorder → /api/voice(Cloudflare Whisper).
     //  Gemma/Cerebras는 STT가 만든 텍스트를 intent로 이해하는 역할만 맡긴다.
@@ -1048,7 +1022,7 @@
     async function startCloudListening() {
       if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
         setVoiceStatus('unsupported');
-        UI.toast('Voice input unsupported — use trigger/Space'); return;
+        UI.toast('Voice input unsupported'); return;
       }
       if (cloudLive) return;
       cloudWant = true; cloudErrorShown = false;
@@ -1075,7 +1049,7 @@
       const chunks = [], mime = bestAudioMime();
       try {
         cloudRecorder = new MediaRecorder(cloudStream, mime ? { mimeType: mime } : undefined);
-      } catch (e) { setVoiceStatus('record error'); stopCloudListening(); UI.toast('Recording failed — use trigger/Space'); return; }
+      } catch (e) { setVoiceStatus('record error'); stopCloudListening(); UI.toast('Recording failed'); return; }
       cloudRecorder.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
       cloudRecorder.onstop = () => {
         const blob = new Blob(chunks, { type: cloudRecorder?.mimeType || mime || 'audio/webm' });
@@ -1084,7 +1058,7 @@
         else if (cloudWant) setVoiceStatus('cloud listening');
         if (cloudWant) setTimeout(recordCloudChunk, 80);
       };
-      cloudRecorder.onerror = () => { setVoiceStatus('record error'); if (!cloudErrorShown) { cloudErrorShown = true; UI.toast('Recording error — use trigger/Space'); } };
+      cloudRecorder.onerror = () => { setVoiceStatus('record error'); if (!cloudErrorShown) { cloudErrorShown = true; UI.toast('Recording error'); } };
       cloudRecorder.start();
       setVoiceStatus('recording');
       setTimeout(() => { try { if (cloudRecorder?.state === 'recording') cloudRecorder.stop(); } catch (e) { } }, CLOUD_CHUNK_MS);
@@ -1163,7 +1137,6 @@
 
       session.addEventListener('select', () => {
         if (!State.spawned) { if (reticle.visible) { const p = new THREE.Vector3().setFromMatrixPosition(reticle.matrix); spawnAt(p); } }
-        else { nextScript(); }            // 스폰 후 트리거 = 다음 대사
       });
       session.addEventListener('end', () => {
         arActive = false; hitTestSource = null; HandInteraction.reset();
@@ -1195,10 +1168,7 @@
 
     // 키보드 (데스크톱 테스트/촬영 편의)
     addEventListener('keydown', e => {
-      if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); nextScript(); }
       if (e.key === 'v') toggleListening();
-      const map = { '1': 'setName', '2': 'setFoodLocation', '3': 'feed', '4': 'praise', '5': 'come', '0': 'sleep' };
-      if (map[e.key]) say(SCRIPT.find(s => s.expect === map[e.key])?.line || map[e.key], map[e.key]);
     });
 
     // ============================================================
@@ -1212,17 +1182,16 @@
       try { arSupported = navigator.xr && await navigator.xr.isSessionSupported('immersive-ar'); } catch (e) { }
       if (arSupported) {
         enter.textContent = 'ENTER AR  ▸  Wake Slimei';
-        hint.textContent = 'Enter AR → place Slimei on your desk → poke/pet with your hand → trigger for next line';
+        hint.textContent = 'Enter AR → place Slimei on your desk → speak, poke, or pet with your hand';
         status.textContent = 'Quest 3 passthrough ready';
         enter.onclick = () => { primeMic(); enterAR().catch(err => { status.textContent = 'AR failed: ' + err.message; }); };  // same tap gesture for mic permission + XR session
       } else {
         enter.textContent = 'Start desktop preview';
-        hint.textContent = 'Space=next line · 1-5=jump to beat · 0=sleep · v=voice · drag=orbit';
+        hint.textContent = 'v=voice · drag=orbit';
         status.textContent = 'immersive-ar unavailable — desktop fallback';
         enter.onclick = () => { primeMic(); startDesktop(); };
       }
       // 버튼 와이어링
-      document.getElementById('next').onclick = nextScript;
       document.getElementById('mic').onclick = toggleListening;
       document.getElementById('reset').onclick = () => location.reload();
     })();
