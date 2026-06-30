@@ -312,11 +312,11 @@
        - Quest 3 WebXR passthrough (immersive-ar) + hit-test 스폰
        - Quest 3 WebXR hand-tracking: poke / pet reactions
        - Desktop fallback: y=0 즉시 스폰
-       - 슬라임: 두께기반 blob 셰이더 (계란후라이 회피)
+       - 슬라임: 작은 모찌형 3D 생물체 + ASCII 눈
        - 자연어 → intent: Gemma 4 / Cerebras (서버 프록시) + 로컬 폴백
        ============================================================ */
-    const R = 0.08;                 // 슬라임 반지름 (책상용 8cm)
-    const PURPLE = new THREE.Color('#c4b6ff');   // 밝은 캔디 라벤더 (탱글 젤리)
+    const R = 0.045;                // 슬라임 기준 반지름: 지름 약 9cm
+    const PURPLE = new THREE.Color('#c4b6ff');   // 밝은 캔디 라벤더 (말캉한 모찌톤)
 
     // ---------- renderer / scene (passthrough = 투명 배경) ----------
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
@@ -363,7 +363,7 @@
       const group = new THREE.Group();
       group.visible = false;
 
-      // --- opaque jelly body: built-in material avoids Quest XR shader/alpha issues ---
+      // --- opaque mochi body: low, soft, and rounded for a small digital creature ---
       const bodyGeo = new THREE.SphereGeometry(1, 64, 48);
       const pos = bodyGeo.attributes.position;
       const smooth = (a, b, x) => {
@@ -374,11 +374,12 @@
       for (let i = 0; i < pos.count; i++) {
         let x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
         const y01 = Math.max(0, Math.min(1, (y + 1) * 0.5));
-        const flat = smooth(0.0, 0.18, y01);
-        const crown = smooth(0.55, 1.0, y01);
-        const tip = smooth(0.78, 1.0, y01);
-        y = mix(-0.72, y, flat) + Math.pow(crown, 1.65) * 0.22;
-        const girth = 1.28 - 0.18 * crown - 0.22 * tip;
+        const base = smooth(0.0, 0.24, y01);
+        const belly = smooth(0.08, 0.40, y01) * (1 - smooth(0.72, 1.0, y01));
+        const crown = smooth(0.58, 1.0, y01);
+
+        y = mix(-0.50, y * 0.68 - 0.04, base);
+        const girth = 0.98 + 0.08 * belly - 0.06 * crown;
         pos.setXYZ(i, x * girth, y, z * girth);
       }
       pos.needsUpdate = true;
@@ -397,7 +398,7 @@
       });
       mat.toneMapped = false;
       const mesh = new THREE.Mesh(bodyGeo, mat);
-      mesh.scale.setScalar(R); mesh.position.y = R;
+      mesh.scale.setScalar(R); mesh.position.y = R * 0.50;
       group.add(mesh);
       let glow = 0, breath = 1;
       function applyBodyLight() {
@@ -413,7 +414,7 @@
         rad.addColorStop(0, 'rgba(20,10,40,.55)'); rad.addColorStop(1, 'rgba(20,10,40,0)');
         g.fillStyle = rad; g.fillRect(0, 0, 128, 128); return new THREE.CanvasTexture(c);
       })();
-      const shadow = new THREE.Mesh(new THREE.PlaneGeometry(R * 3.55, R * 3.25),
+      const shadow = new THREE.Mesh(new THREE.PlaneGeometry(R * 2.65, R * 2.25),
         new THREE.MeshBasicMaterial({ map: shTex, transparent: true, depthWrite: false }));
       shadow.rotation.x = -Math.PI / 2; shadow.position.y = 0.001; group.add(shadow);
 
@@ -434,7 +435,8 @@
       }
       const faceMat = new THREE.SpriteMaterial({ map: drawFace(faces.normal), transparent: true, depthTest: false, depthWrite: false });
       const faceSpr = new THREE.Sprite(faceMat);
-      faceSpr.scale.set(R * 1.62, R * 1.62, 1); faceSpr.position.y = R * 1.08; group.add(faceSpr);
+      const faceOffsetY = R * 0.30;
+      faceSpr.scale.set(R * 1.72, R * 1.72, 1); faceSpr.position.y = mesh.position.y + faceOffsetY; group.add(faceSpr);
 
       function setFace(name) {
         const e = faces[name] || faces.normal;
@@ -444,12 +446,13 @@
       // --- animation: 누적식 action 큐 (절차적 squash&stretch) ---
       const actions = [];
       const ease = p => p < .5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2;
+      const motionScale = R / 0.08;
       let look = 0, lookTarget = 0;     // 좌우 기울임(호기심/추적)
 
       function add(dur, fn) { actions.push({ t0: performance.now() / 1000, dur, fn }); }
 
       function jump(p, h = 0.05) {
-        const up = Math.sin(Math.PI * p) * h;
+        const up = Math.sin(Math.PI * p) * h * motionScale;
         const land = Math.exp(-Math.pow((p) / 0.12, 2)) + Math.exp(-Math.pow((p - 1) / 0.12, 2));
         const sy = 1 + 0.22 * Math.sin(Math.PI * p) - 0.18 * land;
         return { dy: up, sy };
@@ -490,7 +493,7 @@
           group.position.x = start.x + (target.x - start.x) * e;
           group.position.z = start.z + (target.z - start.z) * e;
           lookTarget = Math.max(-0.4, Math.min(0.4, (target.x - group.position.x) * 6));
-          const hop = Math.abs(Math.sin(p * Math.PI * 2)) * 0.05;
+          const hop = Math.abs(Math.sin(p * Math.PI * 2)) * 0.05 * motionScale;
           const land = Math.exp(-Math.pow((p - .5) / 0.08, 2)) + Math.exp(-Math.pow((p - 1) / 0.08, 2));
           return { dy: hop, sy: 1 - 0.16 * land + 0.1 * Math.sin(p * Math.PI * 2) };
         });
@@ -500,18 +503,18 @@
 
       function update(time) {
         let dy = 0, sy = 1, sxz = 1;
-        dy += Math.sin(time * 1.6) * 0.004;                 // idle bob
+        dy += Math.sin(time * 1.6) * 0.004 * motionScale;   // idle bob
         const b = Math.sin(time * 1.6) * 0.055 * breath;
         for (let i = actions.length - 1; i >= 0; i--) {
           const a = actions[i]; const p = (time - a.t0) / a.dur;
           if (p >= 1 && a.dur < 999) { actions.splice(i, 1); continue; }
           const r = a.fn(Math.min(p, 1)) || {}; dy += r.dy || 0; sy *= (r.sy != null ? r.sy : 1); sxz *= (r.sxz != null ? r.sxz : 1);
         }
-        mesh.position.y = R + dy;
+        mesh.position.y = R * 0.50 + dy;
         mesh.scale.set(R * sxz * (1 - b * 0.45), R * sy * (1 + b), R * sxz * (1 - b * 0.45));
         look += (lookTarget - look) * 0.15; if (Math.abs(lookTarget) < 0.01) lookTarget *= 0;
         mesh.rotation.z = -look * 0.5;
-        faceSpr.position.set(mesh.position.x, mesh.position.y, mesh.position.z);
+        faceSpr.position.set(mesh.position.x, mesh.position.y + faceOffsetY, mesh.position.z);
         shadow.scale.setScalar(1 + (1 - sy) * 0.6);          // 눌릴수록 그림자 확장
         const m = shadow.material; m.opacity = 0.9 * Math.max(0, 1 - dy * 6);
       }
