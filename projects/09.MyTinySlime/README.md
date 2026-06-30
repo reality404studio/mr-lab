@@ -1,7 +1,7 @@
 # Slimei — XR Tamagotchi
 
 A tiny slime that lives on your desk. Teach it with natural language, and it remembers and reacts.
-**Gemma 4 + Cerebras** instant NLU · Quest 3 WebXR passthrough/hand tracking/3D HUD · Three.js.
+**Gemini** instant NLU · Quest 3 WebXR passthrough/hand tracking/3D HUD · Three.js.
 
 Single-file hackathon demo build. No build step required: deploy this folder directly to Cloudflare Pages.
 
@@ -28,7 +28,7 @@ Desktop controls:
 - **Drag**: orbit camera · **wheel**: zoom
 
 Local preview does not include `/api/intent`, so the app uses local keyword fallback to keep the demo alive.
-Deploy to Cloudflare to see real Gemma/Cerebras latency.
+Deploy to Cloudflare to see real Gemini latency.
 
 ---
 
@@ -43,9 +43,9 @@ Set these in Pages > Settings > Environment variables. Store API keys as secrets
 
 | Variable | Required | Default | Description |
 |---|:---:|---|---|
-| `GEMMA_API_KEY` | yes | - | Cerebras/Gemma API key. Never put this in client code. |
-| `GEMMA_API_URL` | no | `https://api.cerebras.ai/v1/chat/completions` | OpenAI-compatible chat completions endpoint |
-| `GEMMA_MODEL` | no | `gemma-4-31b` | Hackathon Gemma model id |
+| `GEMINI_API_KEY` | yes | - | Gemini API key. Never put this in client code. |
+| `GEMINI_MODEL` | no | `gemini-2.5-flash` | Gemini model used for intent parsing |
+| `GEMINI_API_BASE` | no | `https://generativelanguage.googleapis.com/v1beta` | Gemini REST API base URL |
 | `STT_MODEL` | no | `@cf/openai/whisper` | Workers AI speech-to-text model |
 
 ### Cloudflare Binding
@@ -91,6 +91,6 @@ The key shot is step 3: Slimei moves to a remembered location without pointing, 
 
 - **Solid slime shader**: one mesh with thickness-style alpha; no heavy transmission or GLTF.
 - **XR UI**: CanvasTexture-based 3D HUD, not dependent on DOM overlay.
-- **Voice pipeline**: browser or Cloud STT -> text -> Gemma/Cerebras intent parser -> animation.
+- **Voice pipeline**: browser or Cloud STT -> text -> Gemini intent parser -> animation.
 - **Hand tracking**: WebXR hand joints detect poke and pet gestures.
 - **Key security**: no keys in `index.html`; server functions read secrets from Cloudflare only.
