@@ -468,10 +468,40 @@
       let lean = 0, leanTarget = 0, faceDrift = 0, faceDriftTarget = 0;
       let interestUntil = 0;
       let nextBlinkAt = performance.now() / 1000 + 2.4;
+      let nextIdleAt = performance.now() / 1000 + 4.0;
 
       function add(dur, fn) { actions.push({ t0: performance.now() / 1000, dur, fn }); }
       function later(ms, fn) { const id = setTimeout(fn, ms); timers.push(id); return id; }
       function saySlime(text) { try { UI.toast(text); } catch (e) { } }
+      function glyphTexture(symbol, color) {
+        const c = document.createElement('canvas'); c.width = c.height = 128;
+        const x = c.getContext('2d'); x.clearRect(0, 0, 128, 128);
+        x.font = 'bold 72px monospace'; x.textAlign = 'center'; x.textBaseline = 'middle';
+        x.fillStyle = color; x.fillText(symbol, 64, 62);
+        const t = new THREE.CanvasTexture(c); t.needsUpdate = true; return t;
+      }
+      function popEmotes(symbols, color = '#ffd45e') {
+        symbols.forEach((symbol, i) => {
+          const tex = glyphTexture(symbol, color);
+          const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false, depthWrite: false });
+          const spr = new THREE.Sprite(mat);
+          spr.renderOrder = 9001;
+          const spread = (i - (symbols.length - 1) / 2) * R * 0.62;
+          const base = new THREE.Vector3(spread, R * 1.25, R * 0.08);
+          spr.position.copy(base); spr.scale.set(R * 0.48, R * 0.48, 1);
+          group.add(spr);
+          const t0 = performance.now(), dur = 820 + i * 80;
+          const tick = () => {
+            const p = Math.min(1, (performance.now() - t0) / dur);
+            spr.position.set(base.x + Math.sin(p * Math.PI * 2 + i) * R * 0.16, base.y + p * R * 1.25, base.z);
+            spr.scale.setScalar(R * (0.46 + p * 0.16));
+            mat.opacity = 1 - p;
+            if (p < 1) requestAnimationFrame(tick);
+            else { group.remove(spr); tex.dispose(); mat.dispose(); }
+          };
+          tick();
+        });
+      }
 
       function jump(p, h = 0.05) {
         const up = Math.sin(Math.PI * p) * h * motionScale;
@@ -517,6 +547,7 @@
 
       function rememberName(name) {
         SFX.learnFx(); setGlow(.8); setFace('surprised');
+        popEmotes(['*', '+'], '#ffd45e');
         add(0.24, p => ({ sy: 1 + Math.sin(Math.PI * p) * 0.18, sxz: 1 - Math.sin(Math.PI * p) * 0.08 }));
         later(260, () => { setFace('happy'); saySlime('I remember!'); bounce(0.055); });
         later(1150, () => { setGlow(0); setFace('normal'); });
@@ -524,12 +555,14 @@
 
       function praise() {
         SFX.happyFx(); setGlow(1); setFace('happy'); saySlime('Ehehe!');
+        popEmotes(['+', '*', '+'], '#ff7aa8');
         [0, 180, 360].forEach(d => later(d, () => add(0.34, p => jump(p, 0.045))));
         later(1450, () => { setGlow(0); setFace('normal'); });
       }
 
       function cuddle() {
         SFX.love(); setFace('happy'); saySlime('^ ^');
+        popEmotes(['+', '+'], '#ff7aa8');
         add(0.95, p => {
           const m = Math.sin(Math.PI * p);
           return { sy: 1 - 0.24 * m, sxz: 1 + 0.18 * m };
@@ -566,6 +599,7 @@
       function pokeFrom(worldPos) {
         if (worldPos) lookAt(worldPos);
         SFX.surprisedFx();
+        popEmotes(['!'], '#ffd45e');
         boing();
         saySlime('Boing!');
       }
@@ -602,6 +636,7 @@
         if (origin) lookAt(origin);
         setFace('excited'); setGlow(.7); saySlime('Snack?');
         spawnFood(origin, () => {
+          popEmotes(['*'], '#ffd45e');
           SFX.eatFx(); eat(); saySlime('Yum!');
           if (onDone) onDone();
         });
@@ -650,6 +685,17 @@
           setFace('sleepy');
           later(130, () => { if (currentFace === 'sleepy' && !State.sleeping) setFace('normal'); });
           nextBlinkAt = time + 2.8 + Math.random() * 3.5;
+        }
+        if (!State.sleeping && actions.length === 0 && currentFace === 'normal' && time > nextIdleAt) {
+          const dir = Math.random() > 0.5 ? 1 : -1;
+          lookTarget = 0.18 * dir;
+          setFace(Math.random() > 0.45 ? 'happy' : 'normal');
+          add(0.7, p => {
+            const m = Math.sin(Math.PI * p);
+            return { dy: R * 0.10 * m, sy: 1 + 0.04 * m, sxz: 1 - 0.02 * m };
+          });
+          later(760, () => { if (!State.sleeping) setFace('normal'); });
+          nextIdleAt = time + 5.0 + Math.random() * 5.5;
         }
       }
 
