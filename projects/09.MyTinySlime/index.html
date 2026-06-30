@@ -419,7 +419,10 @@
       const group = new THREE.Group();
       group.visible = false;
 
-      // --- opaque mochi body: low, soft, and rounded for a small digital creature ---
+      // --- chubby dome slime: 넓은 평바닥 + 아래가 무거운 통통 몸 + 둥근 봉우리 ---
+      //  계란을 깨는 핵심 = 상하 비대칭. 바닥이 가장 넓고 위로 갈수록 둥글게 수렴.
+      //  튜닝 손잡이 둘: WIDTH(통통함, 클수록 빵빵)  /  HEIGHT(키, 작을수록 납작).
+      const WIDTH = 0.22, HEIGHT = 0.86;
       const bodyGeo = new THREE.SphereGeometry(1, 64, 48);
       const pos = bodyGeo.attributes.position;
       const smooth = (a, b, x) => {
@@ -429,13 +432,16 @@
       const mix = (a, b, t) => a * (1 - t) + b * t;
       for (let i = 0; i < pos.count; i++) {
         let x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
-        const y01 = Math.max(0, Math.min(1, (y + 1) * 0.5));
-        const base = smooth(0.0, 0.24, y01);
-        const belly = smooth(0.08, 0.40, y01) * (1 - smooth(0.72, 1.0, y01));
-        const crown = smooth(0.58, 1.0, y01);
+        const y01 = Math.max(0, Math.min(1, (y + 1) * 0.5));   // 0 바닥 → 1 위
 
-        y = mix(-0.55, y * 0.86 - 0.02, base);
-        const girth = 0.96 + 0.07 * belly - 0.04 * crown;
+        // 세로: 바닥을 평평하게 눌러앉히고(책상 접지) 키를 낮춰 통통하게
+        const baseFlat = smooth(0.0, 0.20, y01);
+        y = mix(-0.56, y * HEIGHT - 0.03, baseFlat);
+
+        // 가로: 아래로 갈수록 두꺼운 단조 프로파일 + 꼭대기만 둥글게 수렴
+        const lower = 1 - smooth(0.0, 0.85, y01);   // 1(바닥) → 0(위)
+        const taperTop = smooth(0.80, 1.0, y01);    // 맨 위만 살짝 좁힘(둥근 돔)
+        const girth = 0.95 + WIDTH * lower - 0.06 * taperTop;
         pos.setXYZ(i, x * girth, y, z * girth);
       }
       pos.needsUpdate = true;
@@ -496,7 +502,7 @@
         rad.addColorStop(0, 'rgba(20,10,40,.55)'); rad.addColorStop(1, 'rgba(20,10,40,0)');
         g.fillStyle = rad; g.fillRect(0, 0, 128, 128); return new THREE.CanvasTexture(c);
       })();
-      const shadow = new THREE.Mesh(new THREE.PlaneGeometry(R * 2.65, R * 2.25),
+      const shadow = new THREE.Mesh(new THREE.PlaneGeometry(R * 3.05, R * 2.7),
         new THREE.MeshBasicMaterial({ map: shTex, transparent: true, depthWrite: false }));
       shadow.rotation.x = -Math.PI / 2; shadow.position.y = 0.001; group.add(shadow);
 
@@ -524,7 +530,7 @@
       const faceMat = new THREE.SpriteMaterial({ map: drawFace(faces.normal), transparent: true, depthTest: false, depthWrite: false });
       const faceSpr = new THREE.Sprite(faceMat);
       faceSpr.renderOrder = 9000;   // 림광/스킨 위로 눈이 항상 또렷하게
-      const faceOffsetY = R * 0.34;
+      const faceOffsetY = R * 0.28;   // 통통 돔 — 눈을 약간 낮춰 몸 중상단에 안착
       faceSpr.scale.set(R * 1.6, R * 1.2, 1); faceSpr.position.y = bodyPivot.position.y + faceOffsetY; group.add(faceSpr);
       let currentFace = 'normal';
 
