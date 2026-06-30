@@ -377,14 +377,14 @@
       void main(){
         vec3 p = position;
         float y01 = clamp((p.y + 1.0) * 0.5, 0.0, 1.0);
-        float bottom = smoothstep(0.0, 0.28, y01);
-        float crown = smoothstep(0.58, 1.0, y01);
-        float tip = smoothstep(0.80, 1.0, y01);
+        float flat = smoothstep(0.0, 0.18, y01);
+        float crown = smoothstep(0.55, 1.0, y01);
+        float tip = smoothstep(0.78, 1.0, y01);
 
-        // Soft teardrop silhouette: broad flat base, chubby body, blunt lifted top.
-        p.y = mix(-0.78, p.y, bottom);
-        p.y += pow(crown, 1.7) * 0.26;
-        float girth = 1.20 - 0.30 * crown - 0.18 * tip + 0.06 * (1.0 - bottom);
+        // Poring-like silhouette: flat wide base, round body, blunt teardrop crown.
+        p.y = mix(-0.72, p.y, flat);
+        p.y += pow(crown, 1.65) * 0.22;
+        float girth = 1.28 - 0.18 * crown - 0.22 * tip;
         p.xz *= girth;
 
         float b = sin(uTime*1.6)*0.06*uBreath;   // 숨쉬기 (procedural, no rig)
@@ -1115,8 +1115,18 @@
           lastVoiceText = text; lastVoiceAt = now; say(text);
         } else if (cloudWant) setVoiceStatus('cloud listening');
       } catch (e) {
+        const msg = String(e.message || e);
         setVoiceStatus('STT error');
-        if (!cloudErrorShown) { cloudErrorShown = true; UI.toast('STT error: ' + String(e.message || e).slice(0, 34)); }
+        if (/Workers AI binding|missing Workers AI|AI binding/i.test(msg)) {
+          setVoiceStatus('worker binding missing');
+          UI.toast('Workers AI binding missing');
+          if (recog && !recogWant) {
+            cloudWant = false;
+            try { recogWant = true; recog.start(); } catch (_) {}
+          }
+        } else if (!cloudErrorShown) {
+          cloudErrorShown = true; UI.toast('STT error: ' + msg.slice(0, 34));
+        }
       } finally { cloudBusy = false; }
     }
 
