@@ -366,7 +366,7 @@
 
       // --- jelly 셰이더: 솔리드 바디 + 젖은 광택 + 프레넬 림 (먼지구름 X) ---
       const mat = new THREE.ShaderMaterial({
-        transparent: true, depthWrite: true, side: THREE.FrontSide, blending: THREE.NormalBlending,
+        transparent: false, depthWrite: true, side: THREE.FrontSide,
         uniforms: {
           uTime: { value: 0 }, uBreath: { value: 1 },
           uColor: { value: PURPLE.clone() }, uRim: { value: new THREE.Color('#ffffff') }, uGlow: { value: 0 },
@@ -395,7 +395,7 @@
         p.x *= 1.0 + j; p.z *= 1.0 - j;
         vec4 wp = modelMatrix * vec4(p,1.0);
         vWPos = wp.xyz;
-        vN = normalize(mat3(modelMatrix) * normal);
+        vN = normalize(mat3(modelMatrix) * normalize(p));
         gl_Position = projectionMatrix * viewMatrix * wp;
       }`,
         fragmentShader: `
@@ -405,10 +405,6 @@
         vec3 N = normalize(vN);
         vec3 V = normalize(cameraPosition - vWPos);   // three가 XR에서도 채워줌
         float facing = abs(dot(N,V));
-
-        // 솔리드 바디: 중앙은 거의 불투명, 실루엣 가장자리만 살짝 투명 → '먼지'가 아니라 '물체'
-        float edge  = pow(1.0 - facing, 3.0);
-        float alpha = mix(0.985, 0.66, edge);
 
         // 내부 그라데이션(부피감 유지) — 밝게
         float thick = pow(facing, 0.7);
@@ -429,7 +425,7 @@
         float fres = pow(1.0 - facing, 4.0);
         col += fres * uRim * (0.35 + uGlow*0.45);
 
-        gl_FragColor = vec4(col, alpha);
+        gl_FragColor = vec4(col, 1.0);
       }`,
       });
       const mesh = new THREE.Mesh(new THREE.SphereGeometry(1, 64, 48), mat);
