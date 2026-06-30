@@ -271,7 +271,8 @@
     body.xr-active #panel,
     body.xr-active #zap,
     body.xr-active #toast,
-    body.xr-active #subtitle {
+    body.xr-active #subtitle,
+    body.xr-active #dock {
       display: none
     }
   </style>
@@ -559,9 +560,11 @@
     // ============================================================
     const XRHUD = (() => {
       const camPos = new THREE.Vector3(), camQuat = new THREE.Quaternion(), world = new THREE.Vector3();
+      const anchor = new THREE.Vector3(), right = new THREE.Vector3(1, 0, 0), up = new THREE.Vector3(0, 1, 0), toward = new THREE.Vector3(0, 0, 1);
       const nodes = [];
       const bar = (n, full, empty) => full.repeat(n) + empty.repeat(5 - n);
       let toastUntil = 0, subtitleUntil = 0;
+      let anchored = false;
 
       function roundRect(ctx, x, y, w, h, r) {
         ctx.beginPath();
@@ -589,10 +592,10 @@
         const node = { mesh, canvas, ctx, texture, offset: new THREE.Vector3(offset[0], offset[1], offset[2]) };
         nodes.push(node); return node;
       }
-      const panel = makeNode(0.31, 0.155, 512, 256, [-0.285, 0.165, -0.74]);
-      const zap = makeNode(0.22, 0.07, 512, 160, [0.285, 0.17, -0.74]);
-      const toastNode = makeNode(0.42, 0.065, 768, 128, [0, 0.035, -0.78]);
-      const subtitleNode = makeNode(0.58, 0.082, 1024, 160, [0, -0.215, -0.82]);
+      const panel = makeNode(0.20, 0.102, 512, 256, [0, 0, 0]);
+      const zap = makeNode(0.142, 0.046, 512, 160, [0, -0.078, 0.006]);
+      const toastNode = makeNode(0.30, 0.047, 768, 128, [0, 0.082, 0.006]);
+      const subtitleNode = makeNode(0.37, 0.054, 1024, 160, [0, -0.145, 0.01]);
 
       function drawFit(ctx, text, x, y, maxWidth, size, color, align = 'center') {
         let s = size;
@@ -639,9 +642,24 @@
         subtitleNode.texture.needsUpdate = true;
         subtitleUntil = performance.now() / 1000 + 3.4;
       }
+      function anchorTo(pos) {
+        const xrCam = renderer.xr.getCamera ? renderer.xr.getCamera(camera) : camera;
+        xrCam.updateMatrixWorld?.();
+        xrCam.getWorldPosition(camPos);
+        toward.copy(camPos).sub(pos); toward.y = 0;
+        if (toward.lengthSq() < 0.0001) toward.set(0, 0, 1);
+        toward.normalize();
+        right.crossVectors(toward.clone().negate(), up).normalize();
+        anchor.copy(pos).addScaledVector(right, 0.18).addScaledVector(up, 0.12).addScaledVector(toward, 0.035);
+        anchored = true;
+      }
+      function clearAnchor() {
+        anchored = false;
+        for (const n of nodes) n.mesh.visible = false;
+      }
       function update() {
         const now = performance.now() / 1000;
-        const visible = !!(arActive && renderer.xr.isPresenting);
+        const visible = !!(arActive && renderer.xr.isPresenting && anchored);
         panel.mesh.visible = zap.mesh.visible = visible;
         toastNode.mesh.visible = visible && now < toastUntil;
         subtitleNode.mesh.visible = visible && now < subtitleUntil;
@@ -651,13 +669,16 @@
         xrCam.getWorldPosition(camPos); xrCam.getWorldQuaternion(camQuat);
         for (const n of nodes) {
           if (!n.mesh.visible) continue;
-          world.copy(n.offset).applyQuaternion(camQuat);
-          n.mesh.position.copy(camPos).add(world);
+          world.copy(anchor)
+            .addScaledVector(right, n.offset.x)
+            .addScaledVector(up, n.offset.y)
+            .addScaledVector(toward, n.offset.z);
+          n.mesh.position.copy(world);
           n.mesh.quaternion.copy(camQuat);
         }
       }
       latency('—'); renderStatus();
-      return { renderStatus, latency, toast, subtitle, update };
+      return { renderStatus, latency, toast, subtitle, anchorTo, clearAnchor, update };
     })();
 
     // ============================================================
@@ -1091,6 +1112,7 @@
       document.getElementById('dock').classList.remove('hide');
       reticle.visible = false;           // 책상 잡았으니 레티클 제거
       State.deskY = pos.y;               // 책상 높이 기록 (XR UI 기준)
+      XRHUD.anchorTo(pos);
       UI.toast('Slimei is here ♡');
       startListening();                  // 스폰 즉시 '항상 듣기' 시작 (탭 없이 자연어)
     }
@@ -1118,6 +1140,7 @@
       });
       session.addEventListener('end', () => {
         arActive = false; hitTestSource = null; HandInteraction.reset();
+        XRHUD.clearAnchor();
         document.body.classList.remove('xr-active');
         document.getElementById('splash').classList.remove('hide');
       });
