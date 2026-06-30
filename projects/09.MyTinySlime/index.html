@@ -332,8 +332,8 @@
     camera.position.set(0, 0.26, 0.64);
     camera.lookAt(0, R, 0);
 
-    scene.add(new THREE.AmbientLight(0xffffff, .55));
-    const key = new THREE.DirectionalLight(0xffffff, .8); key.position.set(1, 3, 2); scene.add(key);
+    scene.add(new THREE.AmbientLight(0xffffff, .78));
+    const key = new THREE.DirectionalLight(0xffffff, .42); key.position.set(1, 3, 2); scene.add(key);
 
     // ---------- tiny WebAudio SFX (cute blips, no assets) ----------
     const SFX = (() => {
@@ -370,8 +370,50 @@
       };
     })();
 
+    // ---------- live mic amplitude (실시간 음량 → 슬라임 즉각 반응) ----------
+    //  의미 해석(STT→LLM)과 완전히 분리. 소리만 나면 매 프레임 몸이 반응한다.
+    //  ※ threshold(FLOOR/RANGE)는 기기 캘리브레이션 대상 — Quest 실기기에서 한 번 확인 권장.
+    const MicLevel = (() => {
+      const FLOOR = 0.014;   // 이 RMS 아래는 무음 취급 (속삭임도 살짝 잡히게 낮게)
+      const RANGE = 0.12;    // FLOOR~FLOOR+RANGE 를 0~1 로 매핑
+      let ac, analyser, data, stream, level = 0, running = false;
+      async function start() {
+        if (running) return;
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            audio: { echoCancellation: true, noiseSuppression: false, autoGainControl: false }
+          });
+          ac = new (window.AudioContext || window.webkitAudioContext)();
+          if (ac.state === 'suspended') { try { await ac.resume(); } catch (e) { } }
+          const src = ac.createMediaStreamSource(stream);
+          analyser = ac.createAnalyser();
+          analyser.fftSize = 256; analyser.smoothingTimeConstant = 0.6;
+          data = new Uint8Array(analyser.fftSize);
+          src.connect(analyser);
+          running = true;
+        } catch (e) { running = false; }
+      }
+      function sample() {
+        if (!running || !analyser) { level += (0 - level) * 0.2; return level; }
+        analyser.getByteTimeDomainData(data);
+        let sum = 0;
+        for (let i = 0; i < data.length; i++) { const v = (data[i] - 128) / 128; sum += v * v; }
+        const rms = Math.sqrt(sum / data.length);
+        const norm = Math.max(0, Math.min(1, (rms - FLOOR) / RANGE));
+        level += (norm - level) * 0.35;        // 부드럽게 따라가되 즉각성 유지
+        return level;
+      }
+      function stop() {
+        running = false;
+        try { stream && stream.getTracks().forEach(t => t.stop()); } catch (e) { }
+        try { ac && ac.close(); } catch (e) { }
+        analyser = null; stream = null; level = 0;
+      }
+      return { start, sample, stop };
+    })();
+
     // ============================================================
-    //  SLIME  (geometry + opaque jelly body + face + shadow + animation)
+    //  SLIME  (translucent jelly body + ASCII eyes + shadow + animation)
     // ============================================================
     const Slime = (() => {
       const group = new THREE.Group();
@@ -399,27 +441,53 @@
       pos.needsUpdate = true;
       bodyGeo.computeVertexNormals();
 
+      // pivot 하나가 위치/스쿼시를 들고, 코어·스킨·림 3겹이 함께 출렁인다
+      const bodyPivot = new THREE.Group();
+      bodyPivot.position.y = R * 0.56;
+      group.add(bodyPivot);
+
+      // (1) 코어 — 스킨 너머로 비치는 안쪽 발광 덩어리 (속이 비침)
+      const coreMat = new THREE.MeshStandardMaterial({
+        color: PURPLE.clone().lerp(new THREE.Color('#ffffff'), 0.10),
+        emissive: new THREE.Color('#7a63d8'), emissiveIntensity: 0.55,
+        roughness: 0.5, metalness: 0, transparent: true, opacity: 0.92, depthWrite: true,
+      });
+      coreMat.toneMapped = false;
+      const core = new THREE.Mesh(bodyGeo, coreMat);
+      core.scale.setScalar(0.80); core.renderOrder = 1;
+      bodyPivot.add(core);
+
+      // (2) 스킨 — 반투명 젤리 표면, 속이 비치게 낮은 불투명도
       const mat = new THREE.MeshStandardMaterial({
         color: PURPLE.clone(),
-        emissive: new THREE.Color('#4b3b86'),
-        emissiveIntensity: 0.14,
-        roughness: 0.32,
-        metalness: 0,
-        transparent: false,
-        opacity: 1,
-        depthWrite: true,
-        side: THREE.DoubleSide,
+        emissive: new THREE.Color('#5a47a8'), emissiveIntensity: 0.20,
+        roughness: 0.12, metalness: 0,
+        transparent: true, opacity: 0.46, depthWrite: false, side: THREE.FrontSide,
       });
       mat.toneMapped = false;
       const mesh = new THREE.Mesh(bodyGeo, mat);
-      mesh.scale.setScalar(R); mesh.position.y = R * 0.56;
-      group.add(mesh);
-      let glow = 0, breath = 1;
+      mesh.renderOrder = 2;
+      bodyPivot.add(mesh);
+
+      // (3) 프레넬 림광 — 반전 헐(BackSide) 가산합성, 실루엣에 빛이 몰린다
+      const rimMat = new THREE.MeshBasicMaterial({
+        color: new THREE.Color('#cdbcff'),
+        transparent: true, opacity: 0.5, side: THREE.BackSide,
+        blending: THREE.AdditiveBlending, depthWrite: false,
+      });
+      rimMat.toneMapped = false;
+      const rim = new THREE.Mesh(bodyGeo, rimMat);
+      rim.scale.setScalar(1.07); rim.renderOrder = 3;
+      bodyPivot.add(rim);
+
+      let glow = 0, breath = 1, voiceLevel = 0, voiceTarget = 0, voiceFace = false;
       function applyBodyLight() {
-        mat.emissive.copy(mat.color).lerp(new THREE.Color('#ffffff'), 0.18);
-        mat.emissiveIntensity = 0.14 + glow * 0.28;
+        coreMat.emissiveIntensity = 0.45 + glow * 0.50 + voiceLevel * 0.80;  // 목소리 = 안쪽이 환해짐
+        rimMat.opacity = 0.42 + glow * 0.35 + voiceLevel * 0.40;
+        mat.emissiveIntensity = 0.18 + glow * 0.22;
       }
       function setGlow(v) { glow = v; applyBodyLight(); }
+      function setVoiceLevel(v) { voiceTarget = Math.max(0, Math.min(1, v || 0)); }
 
       // --- contact shadow (책상에 붙어있다는 접지감) ---
       const shTex = (() => {
@@ -441,16 +509,23 @@
         const c = document.createElement('canvas'); c.width = c.height = 256;
         const x = c.getContext('2d'); x.clearRect(0, 0, 256, 256);
         const pair = (eyes || 'o  o').match(/\S+/g) || ['o', 'o'];
-        x.fillStyle = '#342a5d'; x.font = 'bold 70px monospace';
+        // 정적 볼터치 — 감정이 아니라 순수 데코(항상 동일). 빼고 싶으면 이 두 줄 삭제.
+        x.fillStyle = 'rgba(255,150,182,0.30)';
+        x.beginPath(); x.ellipse(70, 160, 18, 12, 0, 0, Math.PI * 2); x.fill();
+        x.beginPath(); x.ellipse(186, 160, 18, 12, 0, 0, Math.PI * 2); x.fill();
+        // 눈 — 크고 진하게. 모든 감정을 눈으로만 표현(입 없음).
+        x.fillStyle = '#241a47';
+        x.font = '900 108px "DejaVu Sans Mono", monospace';
         x.textAlign = 'center'; x.textBaseline = 'middle';
-        x.fillText(pair[0] || 'o', 106, 122);
-        x.fillText(pair[1] || pair[0] || 'o', 150, 122);
+        x.fillText(pair[0] || 'o', 88, 118);
+        x.fillText(pair[1] || pair[0] || 'o', 168, 118);
         const t = new THREE.CanvasTexture(c); t.needsUpdate = true; return t;
       }
       const faceMat = new THREE.SpriteMaterial({ map: drawFace(faces.normal), transparent: true, depthTest: false, depthWrite: false });
       const faceSpr = new THREE.Sprite(faceMat);
+      faceSpr.renderOrder = 9000;   // 림광/스킨 위로 눈이 항상 또렷하게
       const faceOffsetY = R * 0.34;
-      faceSpr.scale.set(R * 1.34, R * 1.00, 1); faceSpr.position.y = mesh.position.y + faceOffsetY; group.add(faceSpr);
+      faceSpr.scale.set(R * 1.6, R * 1.2, 1); faceSpr.position.y = bodyPivot.position.y + faceOffsetY; group.add(faceSpr);
       let currentFace = 'normal';
 
       function setFace(name) {
@@ -670,17 +745,27 @@
           if (p >= 1 && a.dur < 999) { actions.splice(i, 1); continue; }
           const r = a.fn(Math.min(p, 1)) || {}; dy += r.dy || 0; sy *= (r.sy != null ? r.sy : 1); sxz *= (r.sxz != null ? r.sxz : 1);
         }
-        mesh.position.y = R * 0.56 + dy;
-        mesh.scale.set(R * sxz * (1 - b * 0.45), R * sy * (1 + b), R * sxz * (1 - b * 0.45));
+        voiceLevel += (voiceTarget - voiceLevel) * 0.22;   // 실시간 음량 추종
+        dy += voiceLevel * R * 0.16;                        // 소리 나면 살짝 솟구침
+        sy *= 1 + voiceLevel * 0.12;                        // 위로 늘어남(귀 쫑긋)
+        sxz *= 1 - voiceLevel * 0.05;
+        bodyPivot.position.y = R * 0.56 + dy;
+        bodyPivot.scale.set(R * sxz * (1 - b * 0.45), R * sy * (1 + b), R * sxz * (1 - b * 0.45));
         look += (lookTarget - look) * 0.15; if (Math.abs(lookTarget) < 0.01) lookTarget *= 0;
         lean += (leanTarget - lean) * 0.12;
         faceDrift += (faceDriftTarget - faceDrift) * 0.16;
         if (time > interestUntil) { leanTarget *= 0.88; faceDriftTarget *= 0.85; }
-        mesh.rotation.z = -look * 0.5;
-        mesh.rotation.x = Math.sin(time * 0.9) * 0.025 * breath + lean;
-        faceSpr.position.set(mesh.position.x + faceDrift * R * 0.12, mesh.position.y + faceOffsetY, mesh.position.z + Math.abs(faceDrift) * R * 0.03);
+        bodyPivot.rotation.z = -look * 0.5;
+        bodyPivot.rotation.x = Math.sin(time * 0.9) * 0.025 * breath + lean - voiceLevel * 0.10;  // 목소리 쪽으로 기웃
+        faceSpr.position.set(bodyPivot.position.x + faceDrift * R * 0.12, bodyPivot.position.y + faceOffsetY, bodyPivot.position.z + Math.abs(faceDrift) * R * 0.03);
+        applyBodyLight();
         shadow.scale.setScalar(1 + (1 - sy) * 0.6);          // 눌릴수록 그림자 확장
         const m = shadow.material; m.opacity = 0.9 * Math.max(0, 1 - dy * 6);
+        // 목소리 들리면 눈 동그래짐(주목). hysteresis로 경계 떨림 방지.
+        if (!State.sleeping) {
+          if (!voiceFace && voiceLevel > 0.22 && currentFace === 'normal') { voiceFace = true; setFace('surprised'); }
+          else if (voiceFace && voiceLevel < 0.09) { voiceFace = false; if (currentFace === 'surprised') setFace('normal'); }
+        }
         if (actions.length === 0 && currentFace === 'normal' && time > nextBlinkAt) {
           setFace('sleepy');
           later(130, () => { if (currentFace === 'sleepy' && !State.sleeping) setFace('normal'); });
@@ -699,9 +784,14 @@
         }
       }
 
-      function tint(c) { mat.color.copy(c); applyBodyLight(); }
+      function tint(c) {
+        mat.color.copy(c);
+        coreMat.color.copy(c).lerp(new THREE.Color('#ffffff'), 0.10);
+        rimMat.color.copy(c).lerp(new THREE.Color('#ffffff'), 0.25);
+        applyBodyLight();
+      }
 
-      return { group, mesh, setFace, bounce, boing, happy, eat, sleep, wake, lookAt, trackHand, hopTo, update, tint, faces, rememberName, praise, cuddle, listen, think, heard, pokeFrom, feedFrom };
+      return { group, mesh, setFace, bounce, boing, happy, eat, sleep, wake, lookAt, trackHand, hopTo, update, tint, faces, rememberName, praise, cuddle, listen, think, heard, pokeFrom, feedFrom, setVoiceLevel };
     })();
     scene.add(Slime.group);
 
@@ -1212,6 +1302,7 @@
     async function primeMic() { try { const s = await navigator.mediaDevices.getUserMedia({ audio: true }); s.getTracks().forEach(t => t.stop()); return true; } catch (e) { return false; } }
     function preferCloudVoice() { return arActive || /OculusBrowser|Quest|Meta Quest/i.test(navigator.userAgent || ''); }
     function startListening() {
+      MicLevel.start();   // STT 경로와 무관하게 실시간 음량 반응 시작
       if (preferCloudVoice()) { startCloudListening(); return; }
       if (recog) { recogWant = true; try { recog.start(); } catch (e) { } return; }
       startCloudListening();
@@ -1219,6 +1310,7 @@
     function stopListening() {
       recogWant = false; try { recog.stop(); } catch (e) { }
       stopCloudListening();
+      MicLevel.stop();
       setVoiceStatus('off');
     }
     function toggleListening() { (recogWant || cloudWant) ? stopListening() : startListening(); }
@@ -1430,6 +1522,7 @@
         } else { reticle.visible = false; }
       }
       HandInteraction.update(frame, time);
+      Slime.setVoiceLevel(MicLevel.sample());   // 매 프레임 마이크 음량 → 즉각 반응
       Slime.update(time);
       XRHUD.update();
       renderer.render(scene, camera);
