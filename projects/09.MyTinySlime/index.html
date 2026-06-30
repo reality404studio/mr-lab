@@ -428,27 +428,16 @@
         const c = document.createElement('canvas'); c.width = c.height = 256;
         const x = c.getContext('2d'); x.clearRect(0, 0, 256, 256);
         const pair = (eyes || 'o  o').match(/\S+/g) || ['o', 'o'];
-        x.beginPath();
-        x.ellipse(128, 132, 88, 58, 0, 0, Math.PI * 2);
-        x.fillStyle = 'rgba(246,238,255,.68)';
-        x.fill();
-        x.lineWidth = 3;
-        x.strokeStyle = 'rgba(255,255,255,.52)';
-        x.stroke();
-        x.beginPath();
-        x.ellipse(98, 108, 24, 10, -0.25, 0, Math.PI * 2);
-        x.fillStyle = 'rgba(255,255,255,.28)';
-        x.fill();
-        x.fillStyle = '#342a5d'; x.font = 'bold 64px monospace';
+        x.fillStyle = '#342a5d'; x.font = 'bold 70px monospace';
         x.textAlign = 'center'; x.textBaseline = 'middle';
-        x.fillText(pair[0] || 'o', 106, 130);
-        x.fillText(pair[1] || pair[0] || 'o', 150, 130);
+        x.fillText(pair[0] || 'o', 106, 122);
+        x.fillText(pair[1] || pair[0] || 'o', 150, 122);
         const t = new THREE.CanvasTexture(c); t.needsUpdate = true; return t;
       }
       const faceMat = new THREE.SpriteMaterial({ map: drawFace(faces.normal), transparent: true, depthTest: false, depthWrite: false });
       const faceSpr = new THREE.Sprite(faceMat);
       const faceOffsetY = R * 0.34;
-      faceSpr.scale.set(R * 1.56, R * 1.12, 1); faceSpr.position.y = mesh.position.y + faceOffsetY; group.add(faceSpr);
+      faceSpr.scale.set(R * 1.34, R * 1.00, 1); faceSpr.position.y = mesh.position.y + faceOffsetY; group.add(faceSpr);
 
       function setFace(name) {
         const e = faces[name] || faces.normal;
@@ -590,6 +579,18 @@
         ctx.fillStyle = bg; ctx.fill();
         ctx.strokeStyle = stroke; ctx.lineWidth = 2; ctx.stroke();
       }
+      function fillBubble(ctx, w, h) {
+        ctx.clearRect(0, 0, w, h);
+        roundRect(ctx, 22, 14, w - 44, h - 34, 26);
+        ctx.fillStyle = 'rgba(255,250,255,.88)';
+        ctx.fill();
+        ctx.beginPath();
+        ctx.moveTo(w * 0.47, h - 22);
+        ctx.lineTo(w * 0.53, h - 22);
+        ctx.lineTo(w * 0.50, h - 7);
+        ctx.closePath();
+        ctx.fill();
+      }
       function makeNode(width, height, canvasW, canvasH, offset) {
         const canvas = document.createElement('canvas'); canvas.width = canvasW; canvas.height = canvasH;
         const ctx = canvas.getContext('2d');
@@ -603,10 +604,10 @@
         const node = { mesh, canvas, ctx, texture, offset: new THREE.Vector3(offset[0], offset[1], offset[2]) };
         nodes.push(node); return node;
       }
-      const panel = makeNode(0.17, 0.087, 512, 256, [0, 0, 0]);
-      const zap = makeNode(0.12, 0.039, 512, 160, [0, -0.067, 0.006]);
-      const toastNode = makeNode(0.25, 0.040, 768, 128, [0, 0.071, 0.006]);
-      const subtitleNode = makeNode(0.31, 0.046, 1024, 160, [0, -0.125, 0.01]);
+      const panel = makeNode(0.17, 0.087, 512, 256, [0.22, 0.02, -0.14]);
+      const zap = makeNode(0.12, 0.039, 512, 160, [0.22, -0.047, -0.14]);
+      const toastNode = makeNode(0.18, 0.043, 768, 128, [0, 0.105, 0.01]);
+      const subtitleNode = makeNode(0.26, 0.052, 1024, 160, [0, 0.155, 0.012]);
 
       function drawFit(ctx, text, x, y, maxWidth, size, color, align = 'center') {
         let s = size;
@@ -641,15 +642,15 @@
       }
       function toast(msg) {
         const ctx = toastNode.ctx, w = toastNode.canvas.width, h = toastNode.canvas.height;
-        fillPanel(ctx, w, h, 'rgba(125,224,160,.16)', 'rgba(125,224,160,.60)');
-        drawFit(ctx, msg, w / 2, h / 2, w - 52, 30, '#7de0a0');
+        fillBubble(ctx, w, h);
+        drawFit(ctx, msg, w / 2, h / 2 - 2, w - 92, 28, '#3a2f63');
         toastNode.texture.needsUpdate = true;
         toastUntil = performance.now() / 1000 + 2.2;
       }
       function subtitle(text) {
         const ctx = subtitleNode.ctx, w = subtitleNode.canvas.width, h = subtitleNode.canvas.height;
-        fillPanel(ctx, w, h, 'rgba(13,11,20,.72)', 'rgba(180,165,255,.38)');
-        drawFit(ctx, '“' + text + '”', w / 2, h / 2, w - 64, 34, '#ffffff');
+        fillBubble(ctx, w, h);
+        drawFit(ctx, text, w / 2, h / 2 - 2, w - 96, 31, '#3a2f63');
         subtitleNode.texture.needsUpdate = true;
         subtitleUntil = performance.now() / 1000 + 3.4;
       }
@@ -661,7 +662,7 @@
         if (toward.lengthSq() < 0.0001) toward.set(0, 0, 1);
         toward.normalize();
         right.crossVectors(toward.clone().negate(), up).normalize();
-        anchor.copy(pos).addScaledVector(right, 0.34).addScaledVector(up, 0.13).addScaledVector(toward, -0.38);
+        anchor.copy(pos).addScaledVector(up, 0.02).addScaledVector(toward, 0.018);
         anchored = true;
       }
       function clearAnchor() {
@@ -671,7 +672,7 @@
       function update() {
         const now = performance.now() / 1000;
         const visible = !!(arActive && renderer.xr.isPresenting && anchored);
-        panel.mesh.visible = zap.mesh.visible = visible;
+        panel.mesh.visible = zap.mesh.visible = false;
         toastNode.mesh.visible = visible && now < toastUntil;
         subtitleNode.mesh.visible = visible && now < subtitleUntil;
         if (!visible) return;
