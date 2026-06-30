@@ -537,6 +537,32 @@
         later(1200, () => setFace('normal'));
       }
 
+      function listen() {
+        if (State.sleeping) return;
+        setFace('confused'); setGlow(.35);
+        add(0.42, p => {
+          const m = Math.sin(Math.PI * p);
+          return { sy: 1 + 0.06 * m, sxz: 1 - 0.03 * m };
+        });
+        later(700, () => { if (currentFace === 'confused') setFace('normal'); setGlow(0); });
+      }
+
+      function think() {
+        if (State.sleeping) return;
+        setFace('confused'); setGlow(.45); saySlime('...');
+        add(0.75, p => {
+          const m = Math.sin(Math.PI * p * 2);
+          return { sy: 1 + 0.035 * m, sxz: 1 - 0.018 * m };
+        });
+        later(900, () => setGlow(0));
+      }
+
+      function heard() {
+        if (State.sleeping) return;
+        setFace('surprised'); SFX.pop();
+        add(0.22, p => ({ sy: 1 + Math.sin(Math.PI * p) * 0.10, sxz: 1 - Math.sin(Math.PI * p) * 0.05 }));
+      }
+
       function pokeFrom(worldPos) {
         if (worldPos) lookAt(worldPos);
         SFX.surprisedFx();
@@ -629,7 +655,7 @@
 
       function tint(c) { mat.color.copy(c); applyBodyLight(); }
 
-      return { group, mesh, setFace, bounce, boing, happy, eat, sleep, wake, lookAt, trackHand, hopTo, update, tint, faces, rememberName, praise, cuddle, pokeFrom, feedFrom };
+      return { group, mesh, setFace, bounce, boing, happy, eat, sleep, wake, lookAt, trackHand, hopTo, update, tint, faces, rememberName, praise, cuddle, listen, think, heard, pokeFrom, feedFrom };
     })();
     scene.add(Slime.group);
 
@@ -979,6 +1005,8 @@
     // 자연어 한 줄을 처리하는 단일 진입점
     async function say(text) {
       UI.subtitle(text);
+      Slime.heard();
+      setTimeout(() => Slime.think(), 160);
       const parsed = await parseIntent(text);
       UI.latency(parsed.latencyMs || 120);
       dispatch(parsed);
@@ -1115,7 +1143,7 @@
       const SR = window.SpeechRecognition || window.webkitSpeechRecognition; if (!SR) return;
       recog = new SR(); recog.lang = 'en-US';
       recog.continuous = true; recog.interimResults = true; recog.maxAlternatives = 1;
-      recog.onstart = () => { recogLive = true; micUI(true); setVoiceStatus('web listening'); };
+      recog.onstart = () => { recogLive = true; micUI(true); setVoiceStatus('web listening'); if (State.spawned) Slime.listen(); };
       recog.onresult = e => {
         for (let i = e.resultIndex; i < e.results.length; i++) {
           const r = e.results[i];
@@ -1172,7 +1200,7 @@
         cloudStream = await navigator.mediaDevices.getUserMedia({
           audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
         });
-        cloudLive = true; micUI(true); setVoiceStatus('cloud listening'); UI.toast('Listening...');
+        cloudLive = true; micUI(true); setVoiceStatus('cloud listening'); UI.toast('Listening...'); if (State.spawned) Slime.listen();
         recordCloudChunk();
       } catch (e) {
         cloudWant = false; cloudLive = false; micUI(false); setVoiceStatus('blocked'); UI.toast('Microphone permission needed');
