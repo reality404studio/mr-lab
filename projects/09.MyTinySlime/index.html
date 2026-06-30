@@ -91,7 +91,7 @@
       color: var(--ink)
     }
 
-    /* latency badge — the Gemini latency */
+    /* latency badge — the Cerebras "speed made visible" */
     #zap {
       position: absolute;
       top: 14px;
@@ -287,7 +287,7 @@
       <div class="row" id="p-learned">Learned : 0</div>
     </div>
 
-    <div id="zap">⚡ —<small>GEMINI</small></div>
+    <div id="zap">⚡ —<small>GEMMA · CEREBRAS</small></div>
     <div id="toast"></div>
     <div id="subtitle"></div>
 
@@ -314,7 +314,7 @@
        - Quest 3 WebXR hand-tracking: poke / pet reactions
        - Desktop fallback: y=0 즉시 스폰
        - 슬라임: 두께기반 blob 셰이더 (계란후라이 회피)
-       - 자연어 → intent: Gemini (서버 프록시) + 로컬 폴백
+       - 자연어 → intent: Gemma 4 / Cerebras (서버 프록시) + 로컬 폴백
        ============================================================ */
     const R = 0.08;                 // 슬라임 반지름 (책상용 8cm)
     const PURPLE = new THREE.Color('#c4b6ff');   // 밝은 캔디 라벤더 (탱글 젤리)
@@ -638,7 +638,7 @@
         const ctx = zap.ctx, w = zap.canvas.width, h = zap.canvas.height;
         fillPanel(ctx, w, h, 'rgba(13,11,20,.62)', 'rgba(255,212,94,.42)');
         drawFit(ctx, ms === '—' ? '⚡ —' : '⚡ ' + ms + 'ms', w / 2, 58, w - 42, 40, '#ffd45e');
-        drawFit(ctx, 'GEMINI', w / 2, 112, w - 54, 18, '#9a90c0');
+        drawFit(ctx, 'GEMMA · CEREBRAS', w / 2, 112, w - 54, 18, '#9a90c0');
         zap.texture.needsUpdate = true;
       }
       function toast(msg) {
@@ -703,7 +703,7 @@
         clearTimeout(subT); subT = setTimeout(() => s.classList.remove('show'), 3400);
       }
       function latency(ms) {
-        const z = $('zap'); z.innerHTML = '⚡ ' + ms + 'ms<small>GEMINI</small>';
+        const z = $('zap'); z.innerHTML = '⚡ ' + ms + 'ms<small>GEMMA · CEREBRAS</small>';
         XRHUD.latency(ms);
         z.classList.add('pulse'); setTimeout(() => z.classList.remove('pulse'), 140);
       }
@@ -717,7 +717,7 @@
     }
 
     // ============================================================
-    //  AI  (자연어 → intent)  : 서버 프록시(Gemini) + 로컬 폴백
+    //  AI  (자연어 → intent)  : 서버 프록시(Gemma/Cerebras) + 로컬 폴백
     // ============================================================
     async function parseIntent(text, expected) {
       const t0 = performance.now();
@@ -986,7 +986,7 @@
     // ============================================================
     //  VOICE  (항상 듣기 — 탭 없이 자연어 명령이 자연스럽게 따라옴)
     //  1순위: 브라우저 Web Speech API. 2순위: MediaRecorder → /api/voice(Cloudflare Whisper).
-    //  Gemini는 STT가 만든 텍스트를 intent로 이해하는 역할만 맡긴다.
+    //  Gemma/Cerebras는 STT가 만든 텍스트를 intent로 이해하는 역할만 맡긴다.
     // ============================================================
     let recog = null, recogWant = false, recogLive = false;
     (() => {
