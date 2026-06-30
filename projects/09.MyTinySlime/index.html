@@ -376,6 +376,17 @@
       uniform float uTime, uBreath;
       void main(){
         vec3 p = position;
+        float y01 = clamp((p.y + 1.0) * 0.5, 0.0, 1.0);
+        float bottom = smoothstep(0.0, 0.28, y01);
+        float crown = smoothstep(0.58, 1.0, y01);
+        float tip = smoothstep(0.80, 1.0, y01);
+
+        // Soft teardrop silhouette: broad flat base, chubby body, blunt lifted top.
+        p.y = mix(-0.78, p.y, bottom);
+        p.y += pow(crown, 1.7) * 0.26;
+        float girth = 1.20 - 0.30 * crown - 0.18 * tip + 0.06 * (1.0 - bottom);
+        p.xz *= girth;
+
         float b = sin(uTime*1.6)*0.06*uBreath;   // 숨쉬기 (procedural, no rig)
         p.y  *= 1.0 + b;
         p.xz *= 1.0 - b*0.5;
@@ -432,7 +443,7 @@
         rad.addColorStop(0, 'rgba(20,10,40,.55)'); rad.addColorStop(1, 'rgba(20,10,40,0)');
         g.fillStyle = rad; g.fillRect(0, 0, 128, 128); return new THREE.CanvasTexture(c);
       })();
-      const shadow = new THREE.Mesh(new THREE.PlaneGeometry(R * 3.2, R * 3.2),
+      const shadow = new THREE.Mesh(new THREE.PlaneGeometry(R * 3.55, R * 3.25),
         new THREE.MeshBasicMaterial({ map: shTex, transparent: true, depthWrite: false }));
       shadow.rotation.x = -Math.PI / 2; shadow.position.y = 0.001; group.add(shadow);
 
@@ -453,7 +464,7 @@
       }
       const faceMat = new THREE.SpriteMaterial({ map: drawFace(faces.normal), transparent: true, depthTest: false, depthWrite: false });
       const faceSpr = new THREE.Sprite(faceMat);
-      faceSpr.scale.set(R * 1.7, R * 1.7, 1); faceSpr.position.y = R; group.add(faceSpr);
+      faceSpr.scale.set(R * 1.62, R * 1.62, 1); faceSpr.position.y = R * 1.08; group.add(faceSpr);
 
       function setFace(name) {
         const e = faces[name] || faces.normal;
