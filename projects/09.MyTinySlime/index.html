@@ -347,6 +347,13 @@
           o.connect(v).connect(ac.destination); o.start(); o.stop(ac.currentTime + d);
         } catch (e) { }
       };
+      const asset = (file, fallback, vol = .55) => {
+        try {
+          const a = new Audio('SoundEffect/' + file);
+          a.volume = vol;
+          a.play().catch(() => fallback && fallback());
+        } catch (e) { if (fallback) fallback(); }
+      };
       return {
         pop: () => beep(520, .12, 'sine', .06, 1.7),
         nom: () => { beep(300, .09, 'triangle', .06); setTimeout(() => beep(360, .09, 'triangle', .06), 100); },
@@ -354,6 +361,12 @@
         love: () => { beep(700, .18, 'sine', .05, 1.4); setTimeout(() => beep(1040, .2, 'sine', .05), 120); },
         boing: () => { beep(280, .08, 'sine', .07, 1.9); setTimeout(() => beep(760, .16, 'triangle', .05, 1.25), 70); },
         spawn: () => beep(420, .22, 'sine', .06, 1.8),
+        eatFx: () => asset('eat.ogg', () => { beep(300, .09, 'triangle', .06); setTimeout(() => beep(360, .09, 'triangle', .06), 100); }),
+        happyFx: () => asset('happy.wav', () => { [660, 830, 990].forEach((f, i) => setTimeout(() => beep(f, .12, 'sine', .05), i * 90)); }, .45),
+        learnFx: () => asset('learn01.wav', () => beep(720, .14, 'sine', .05, 1.5), .5),
+        jumpFx: () => asset('slime_jump.mp3', () => beep(520, .12, 'sine', .06, 1.7), .45),
+        surprisedFx: () => asset('surprised.wav', () => beep(760, .16, 'triangle', .05, 1.25), .5),
+        sleepyFx: () => asset('sleepy.wav', () => beep(220, .24, 'sine', .04, .7), .45),
       };
     })();
 
@@ -438,9 +451,11 @@
       const faceSpr = new THREE.Sprite(faceMat);
       const faceOffsetY = R * 0.34;
       faceSpr.scale.set(R * 1.34, R * 1.00, 1); faceSpr.position.y = mesh.position.y + faceOffsetY; group.add(faceSpr);
+      let currentFace = 'normal';
 
       function setFace(name) {
-        const e = faces[name] || faces.normal;
+        currentFace = faces[name] ? name : 'normal';
+        const e = faces[currentFace] || faces.normal;
         faceMat.map.dispose(); faceMat.map = drawFace(e); faceMat.needsUpdate = true;
       }
 
@@ -448,9 +463,13 @@
       const actions = [];
       const ease = p => p < .5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2;
       const motionScale = R / 0.08;
+      const timers = [];
       let look = 0, lookTarget = 0;     // 좌우 기울임(호기심/추적)
+      let nextBlinkAt = performance.now() / 1000 + 2.4;
 
       function add(dur, fn) { actions.push({ t0: performance.now() / 1000, dur, fn }); }
+      function later(ms, fn) { const id = setTimeout(fn, ms); timers.push(id); return id; }
+      function saySlime(text) { try { UI.toast(text); } catch (e) { } }
 
       function jump(p, h = 0.05) {
         const up = Math.sin(Math.PI * p) * h * motionScale;
@@ -478,11 +497,79 @@
         setTimeout(() => { setFace('normal'); setGlow(0); }, 2000);
       }
       function sleep() {
+        SFX.sleepyFx(); saySlime('Sleepy...');
         setFace('sleepy'); breath = 0.4;
         add(9999, () => ({ sy: 0.55, sxz: 1.32 }));
       }
       function wake() { breath = 1; actions.length = 0; setFace('normal'); }
       function lookAt(worldPos) { const dx = worldPos.x - group.position.x; lookTarget = Math.max(-0.5, Math.min(0.5, dx * 4)); setFace('confused'); }
+
+      function rememberName(name) {
+        SFX.learnFx(); setGlow(.8); setFace('surprised');
+        add(0.24, p => ({ sy: 1 + Math.sin(Math.PI * p) * 0.18, sxz: 1 - Math.sin(Math.PI * p) * 0.08 }));
+        later(260, () => { setFace('happy'); saySlime('I remember!'); bounce(0.055); });
+        later(1150, () => { setGlow(0); setFace('normal'); });
+      }
+
+      function praise() {
+        SFX.happyFx(); setGlow(1); setFace('happy'); saySlime('Ehehe!');
+        [0, 180, 360].forEach(d => later(d, () => add(0.34, p => jump(p, 0.045))));
+        later(1450, () => { setGlow(0); setFace('normal'); });
+      }
+
+      function cuddle() {
+        SFX.love(); setFace('happy'); saySlime('^ ^');
+        add(0.95, p => {
+          const m = Math.sin(Math.PI * p);
+          return { sy: 1 - 0.24 * m, sxz: 1 + 0.18 * m };
+        });
+        later(1200, () => setFace('normal'));
+      }
+
+      function pokeFrom(worldPos) {
+        if (worldPos) lookAt(worldPos);
+        SFX.surprisedFx();
+        boing();
+        saySlime('Boing!');
+      }
+
+      function spawnFood(start, onDone) {
+        const origin = start ? start.clone() : (() => {
+          const p = new THREE.Vector3(), d = new THREE.Vector3();
+          camera.getWorldPosition(p); camera.getWorldDirection(d);
+          return p.add(d.multiplyScalar(0.22));
+        })();
+        const target = group.position.clone().add(new THREE.Vector3(0, R * 0.64, 0));
+        const food = new THREE.Mesh(
+          new THREE.IcosahedronGeometry(R * 0.18, 0),
+          new THREE.MeshStandardMaterial({ color: 0xffd45e, emissive: 0x8a5a10, emissiveIntensity: 0.35, roughness: 0.45 })
+        );
+        food.position.copy(origin); scene.add(food);
+        const t0 = performance.now(), dur = 880;
+        const tick = () => {
+          const p = Math.min(1, (performance.now() - t0) / dur);
+          const e = ease(p);
+          food.position.lerpVectors(origin, target, e);
+          food.position.y += Math.sin(Math.PI * p) * R * 1.35;
+          food.rotation.x += 0.22; food.rotation.y += 0.18;
+          if (p < 1) requestAnimationFrame(tick);
+          else {
+            scene.remove(food); food.geometry.dispose(); food.material.dispose();
+            if (onDone) onDone();
+          }
+        };
+        tick();
+      }
+
+      function feedFrom(origin, onDone) {
+        if (origin) lookAt(origin);
+        setFace('excited'); setGlow(.7); saySlime('Snack?');
+        spawnFood(origin, () => {
+          SFX.eatFx(); eat(); saySlime('Yum!');
+          if (onDone) onDone();
+        });
+        later(2100, () => setGlow(0));
+      }
 
       // hop 이동: group.position 을 직접 보간 + 통통
       function hopTo(target, faceDuring = 'confused', onDone) {
@@ -515,14 +602,20 @@
         mesh.scale.set(R * sxz * (1 - b * 0.45), R * sy * (1 + b), R * sxz * (1 - b * 0.45));
         look += (lookTarget - look) * 0.15; if (Math.abs(lookTarget) < 0.01) lookTarget *= 0;
         mesh.rotation.z = -look * 0.5;
+        mesh.rotation.x = Math.sin(time * 0.9) * 0.025 * breath;
         faceSpr.position.set(mesh.position.x, mesh.position.y + faceOffsetY, mesh.position.z);
         shadow.scale.setScalar(1 + (1 - sy) * 0.6);          // 눌릴수록 그림자 확장
         const m = shadow.material; m.opacity = 0.9 * Math.max(0, 1 - dy * 6);
+        if (actions.length === 0 && currentFace === 'normal' && time > nextBlinkAt) {
+          setFace('sleepy');
+          later(130, () => { if (currentFace === 'sleepy' && !State.sleeping) setFace('normal'); });
+          nextBlinkAt = time + 2.8 + Math.random() * 3.5;
+        }
       }
 
       function tint(c) { mat.color.copy(c); applyBodyLight(); }
 
-      return { group, mesh, setFace, bounce, boing, happy, eat, sleep, wake, lookAt, hopTo, update, tint, faces };
+      return { group, mesh, setFace, bounce, boing, happy, eat, sleep, wake, lookAt, hopTo, update, tint, faces, rememberName, praise, cuddle, pokeFrom, feedFrom };
     })();
     scene.add(Slime.group);
 
@@ -785,6 +878,15 @@
       target.y = Slime.group.position.y;
       return target;
     }
+    function feedSourcePoint() {
+      try {
+        const handPoint = HandInteraction.lastPoint();
+        if (handPoint) return handPoint;
+      } catch (e) { }
+      const p = new THREE.Vector3(), d = new THREE.Vector3();
+      camera.getWorldPosition(p); camera.getWorldDirection(d);
+      return p.add(d.multiplyScalar(0.22));
+    }
     function dispatch(parsed) {
       const it = parsed.intent;
       if (State.sleeping && it !== 'idle') { State.sleeping = false; Slime.wake(); }
@@ -793,14 +895,14 @@
           const name = (parsed.name || '').replace(/[\.\,!\?]/g, '');
           if (!name) { UI.toast('Name not heard'); break; }
           State.memory.name = name;
-          Slime.setFace('happy'); Slime.bounce(0.07); SFX.pop();
+          Slime.rememberName(name);
           UI.toast('Learned: name ▸ ' + State.memory.name);
           State.affection = Math.min(100, State.affection + 4);
-          setTimeout(() => Slime.setFace('normal'), 1200); break;
+          break;
         }
         case 'setFood': {
           State.memory.favoriteFood = parsed.food || 'pudding';
-          Slime.setFace('excited'); Slime.bounce(0.05);
+          Slime.praise();
           UI.toast('Learned: favoriteFood ✓'); break;
         }
         case 'setFoodLocation': {
@@ -814,20 +916,27 @@
           const dest = State.memory.foodLocation;
           if (dest) {
             Slime.hopTo(dest, 'confused', () => {
-              Slime.eat();
+              Slime.feedFrom(feedSourcePoint(), () => {
+                State.hunger = Math.max(0, State.hunger - 42); State.affection = Math.min(100, State.affection + 5);
+                UI.render();
+              });
+            });
+          } else {
+            Slime.feedFrom(feedSourcePoint(), () => {
               State.hunger = Math.max(0, State.hunger - 42); State.affection = Math.min(100, State.affection + 5);
               UI.render();
             });
-          } else { Slime.eat(); State.hunger = Math.max(0, State.hunger - 42); State.affection = Math.min(100, State.affection + 5); }
+          }
           break;
         }
         case 'praise': {
-          Slime.happy(); State.affection = Math.min(100, State.affection + 5); SFX.happy(); break;
+          Slime.praise(); State.affection = Math.min(100, State.affection + 5); break;
         }
         case 'sleep': {
           State.sleeping = true; Slime.sleep(); break;
         }
         case 'come': {
+          UI.toast('Coming!');
           Slime.hopTo(worldNearCamera(), 'love', () => {
             Slime.setFace('love'); SFX.love();
             Slime.bounce(0.04); State.affection = Math.min(100, State.affection + 3); UI.render();
@@ -836,11 +945,14 @@
           break;
         }
         case 'pet': {
-          Slime.setFace('love'); Slime.bounce(0.03); SFX.love();
+          Slime.cuddle();
           State.affection = Math.min(100, State.affection + 3);
-          setTimeout(() => Slime.setFace('normal'), 1200); break;
+          break;
         }
-        default: Slime.bounce(0.03);
+        default: {
+          Slime.setFace('confused'); UI.toast('?');
+          setTimeout(() => Slime.setFace('normal'), 900);
+        }
       }
       // 무드 색 살짝 반영 (배고프면 채도↓, 사랑 가득이면 분홍기)
       const c = PURPLE.clone();
@@ -881,26 +993,29 @@
       let lastPokeAt = -10;
       let lastPetAt = -10;
       let petScore = 0;
+      let lastHandAt = -10;
+      const lastHandPoint = new THREE.Vector3();
 
       function reset() {
-        prev.clear(); lastFrameTime = 0; lastNoticeAt = -10; lastPokeAt = -10; lastPetAt = -10; petScore = 0;
+        prev.clear(); lastFrameTime = 0; lastNoticeAt = -10; lastPokeAt = -10; lastPetAt = -10; lastHandAt = -10; petScore = 0;
       }
 
-      function triggerPoke(time) {
+      function lastPoint() {
+        return performance.now() / 1000 - lastHandAt < 1.5 ? lastHandPoint.clone() : null;
+      }
+
+      function triggerPoke(time, point) {
         if (time - lastPokeAt < 0.75) return;
         lastPokeAt = time; petScore = 0;
-        Slime.boing();
-        UI.toast('Boing!');
+        Slime.pokeFrom(point);
       }
 
       function triggerPet(time) {
         if (time - lastPetAt < 1.5) return;
         lastPetAt = time; petScore = 0;
-        Slime.setFace('happy'); Slime.bounce(0.025); SFX.love();
+        Slime.cuddle();
         State.affection = Math.min(100, State.affection + 3);
         UI.render();
-        UI.toast('Petting ^ ^');
-        setTimeout(() => Slime.setFace('normal'), 1300);
       }
 
       function jointPose(frame, hand, name) {
@@ -945,14 +1060,14 @@
             const d = p.distanceTo(center);
             if (d < nearestD) { nearestD = d; nearest.copy(p); }
 
-            if (TOUCH_JOINTS.has(name) && d < R * 1.2 && speed > 0.22) {
-              triggerPoke(time);
+            if (TOUCH_JOINTS.has(name) && d < R * 2.15 && speed > 0.16) {
+              triggerPoke(time, p);
               continue;
             }
 
-            const overTop = p.y > center.y + R * 0.22 && p.y < center.y + R * 1.65;
-            const closeToHead = p.distanceTo(top) < R * 1.75;
-            if ((TOUCH_JOINTS.has(name) || name === 'wrist') && overTop && closeToHead && speed < 0.55) {
+            const overTop = p.y > center.y - R * 0.08 && p.y < center.y + R * 2.25;
+            const closeToHead = p.distanceTo(top) < R * 2.65;
+            if ((TOUCH_JOINTS.has(name) || name === 'wrist') && overTop && closeToHead && speed < 0.72) {
               petCandidate = true;
             }
           }
@@ -960,19 +1075,20 @@
         }
 
         if (!sawHand) { petScore = Math.max(0, petScore - dt * 2); return; }
+        if (nearestD < Infinity) { lastHandPoint.copy(nearest); lastHandAt = time; }
 
         if (petCandidate) petScore += dt;
         else petScore = Math.max(0, petScore - dt * 1.7);
 
         if (petScore > 0.38 && time - lastPokeAt > 0.45) triggerPet(time);
 
-        if (nearestD < R * 4.0 && time - lastNoticeAt > 0.35 && time - lastPokeAt > 0.75 && time - lastPetAt > 0.75) {
+        if (nearestD < R * 5.8 && time - lastNoticeAt > 0.35 && time - lastPokeAt > 0.75 && time - lastPetAt > 0.75) {
           Slime.lookAt(nearest);
           lastNoticeAt = time;
         }
       }
 
-      return { update, reset };
+      return { update, reset, lastPoint };
     })();
 
     // ============================================================
