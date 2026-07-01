@@ -425,7 +425,7 @@
       // --- chubby dome slime: 넓은 평바닥 + 아래가 무거운 통통 몸 + 둥근 봉우리 ---
       //  계란을 깨는 핵심 = 상하 비대칭. 바닥이 가장 넓고 위로 갈수록 둥글게 수렴.
       //  튜닝 손잡이 둘: WIDTH(통통함, 클수록 빵빵)  /  HEIGHT(키, 작을수록 납작).
-      const WIDTH = 0.22, HEIGHT = 0.86;
+      const WIDTH = 0.34, HEIGHT = 0.74;
       const bodyGeo = new THREE.SphereGeometry(1, 64, 48);
       const pos = bodyGeo.attributes.position;
       const smooth = (a, b, x) => {
@@ -455,22 +455,34 @@
       bodyPivot.position.y = R * 0.56;
       group.add(bodyPivot);
 
+      const BASE_TOP = new THREE.Color('#a88cff');
+      const BASE_BOTTOM = new THREE.Color('#ff8ecf');
+      const BASE_RIM = new THREE.Color('#fff7ff');
       const bodyUniforms = {
-        uColor: { value: PURPLE.clone() },
-        uRim: { value: new THREE.Color('#fff8ff') },
+        uTopColor: { value: BASE_TOP.clone() },
+        uBottomColor: { value: BASE_BOTTOM.clone() },
+        uRimColor: { value: BASE_RIM.clone() },
         uGlow: { value: 0 },
-        uOpacity: { value: 0.70 },
+        uOpacity: { value: 0.92 },
+        uTime: { value: 0 },
       };
       const mat = new THREE.ShaderMaterial({
         uniforms: bodyUniforms,
         vertexShader: `
+          uniform float uTime;
           varying vec3 vViewPos;
           varying vec3 vViewNormal;
           varying float vBodyY;
           void main() {
             vBodyY = position.y;
+            float elasticMask = smoothstep(-0.46, 0.36, position.y);
+            float wobble =
+              sin(position.x * 5.2 + uTime * 1.35) * 0.50 +
+              sin(position.z * 4.7 - uTime * 1.10) * 0.35 +
+              sin((position.x + position.z) * 3.2 + uTime * 0.82) * 0.15;
+            vec3 displaced = position + normal * wobble * 0.0075 * elasticMask;
             vViewNormal = normalize(normalMatrix * normal);
-            vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+            vec4 mvPosition = modelViewMatrix * vec4(displaced, 1.0);
             vViewPos = mvPosition.xyz;
             gl_Position = projectionMatrix * mvPosition;
           }
@@ -479,33 +491,37 @@
           varying vec3 vViewPos;
           varying vec3 vViewNormal;
           varying float vBodyY;
-          uniform vec3 uColor;
-          uniform vec3 uRim;
+          uniform vec3 uTopColor;
+          uniform vec3 uBottomColor;
+          uniform vec3 uRimColor;
           uniform float uGlow;
           uniform float uOpacity;
           void main() {
             vec3 N = normalize(vViewNormal);
             vec3 V = normalize(-vViewPos);
             float facing = clamp(abs(dot(N, V)), 0.0, 1.0);
-            float thickness = smoothstep(0.02, 1.0, pow(facing, 0.85));
-            float edge = 1.0 - thickness;
             float height = smoothstep(-0.56, 0.78, vBodyY);
+            float thickness = smoothstep(0.02, 1.0, pow(facing, 0.72));
+            float fresnel = pow(1.0 - facing, 2.35);
 
-            vec3 base = uColor;
-            vec3 col = mix(base * 0.70, base * 1.04, thickness);
-            col = mix(col, uRim, height * 0.08);
+            vec3 gradient = mix(uBottomColor, uTopColor, height);
+            vec3 col = gradient * (0.82 + thickness * 0.34);
 
-            float rimSheen = pow(edge, 2.4);
-            col += uRim * rimSheen * (0.20 + uGlow * 0.16);
+            vec3 L = normalize(vec3(-0.44, 0.78, 0.46));
+            vec3 H = normalize(L + V);
+            float spec = pow(max(dot(N, H), 0.0), 78.0);
+            vec3 L2 = normalize(vec3(0.36, 0.42, 0.84));
+            vec3 H2 = normalize(L2 + V);
+            float clearcoat = pow(max(dot(N, H2), 0.0), 170.0);
+            float wrap = max(dot(N, L), 0.0);
 
-            vec3 L = normalize(vec3(0.35, 0.9, 0.3));
-            float wrap = dot(N, L) * 0.5 + 0.5;
-            col *= 0.78 + wrap * 0.34;
-            col += base * uGlow * 0.14;
+            col += uRimColor * (fresnel * 0.24 + spec * 0.92 + clearcoat * 0.72);
+            col += vec3(1.0, 0.62, 0.90) * wrap * 0.08;
+            col += gradient * uGlow * 0.12;
 
             float lowerDensity = 1.0 - smoothstep(0.05, 0.65, height);
-            float alpha = mix(0.18, 0.66, thickness) + lowerDensity * 0.07;
-            alpha = clamp(alpha * (uOpacity + uGlow * 0.10), 0.12, 0.78);
+            float alpha = mix(0.26, 0.58, thickness) + lowerDensity * 0.04 + fresnel * 0.05 + spec * 0.08;
+            alpha = clamp(alpha * (uOpacity + uGlow * 0.05), 0.20, 0.74);
 
             gl_FragColor = vec4(col, alpha);
           }
@@ -520,6 +536,40 @@
       mesh.renderOrder = 2;
       bodyPivot.add(mesh);
 
+      const interior = new THREE.Group();
+      bodyPivot.add(interior);
+      const bubbleGeo = new THREE.SphereGeometry(1, 8, 6);
+      const bubbleMat = new THREE.MeshBasicMaterial({
+        color: 0xffeffb, transparent: true, opacity: 0.16, depthWrite: false
+      });
+      bubbleMat.toneMapped = false;
+      [
+        [-0.32, -0.10, 0.20, 0.034], [0.25, 0.12, 0.16, 0.026],
+        [0.08, -0.28, 0.30, 0.022], [-0.08, 0.28, 0.10, 0.018],
+        [0.42, -0.16, -0.06, 0.020], [-0.44, 0.08, -0.08, 0.017],
+        [0.02, 0.02, 0.36, 0.014],
+      ].forEach(([x, y, z, s]) => {
+        const b = new THREE.Mesh(bubbleGeo, bubbleMat);
+        b.position.set(x, y, z); b.scale.setScalar(s); b.renderOrder = 1;
+        interior.add(b);
+      });
+      const sparkleGeo = new THREE.OctahedronGeometry(1, 0);
+      const sparkleMat = new THREE.MeshBasicMaterial({
+        color: 0xffd8ff, transparent: true, opacity: 0.34,
+        blending: THREE.AdditiveBlending, depthWrite: false
+      });
+      sparkleMat.toneMapped = false;
+      const sparkles = [];
+      [
+        [-0.20, 0.18, 0.34, 0.030, 0.0], [0.18, -0.02, 0.28, 0.024, 1.7],
+        [0.34, 0.20, 0.02, 0.020, 3.2], [-0.36, -0.18, 0.12, 0.018, 4.1],
+      ].forEach(([x, y, z, s, phase]) => {
+        const sp = new THREE.Mesh(sparkleGeo, sparkleMat);
+        sp.position.set(x, y, z); sp.scale.setScalar(s); sp.renderOrder = 1;
+        sp.userData.baseScale = s; sp.userData.phase = phase;
+        sparkles.push(sp); interior.add(sp);
+      });
+
       let glow = 0, breath = 1, voiceLevel = 0, voiceTarget = 0, voiceFace = false;
       // 젤리 출렁임 스프링(2차 모션/정착) — 이벤트 때 nudge로 튕기고 감쇠하며 멈춤
       let wob = 0, wobV = 0, lastUpdate = performance.now() / 1000;
@@ -528,7 +578,7 @@
       // 존재감: 평소엔 거의 자가발광 0(방 빛을 받게), 기쁜 순간에만 살짝. 목소리는 빛이 아니라 '움직임'으로 반응.
       function applyBodyLight() {
         bodyUniforms.uGlow.value = glow;
-        bodyUniforms.uOpacity.value = 0.70 + glow * 0.04;
+        bodyUniforms.uOpacity.value = 0.92 + glow * 0.03;
       }
       function setGlow(v) { glow = v; applyBodyLight(); }
       function setVoiceLevel(v) { voiceTarget = Math.max(0, Math.min(1, v || 0)); }
@@ -546,7 +596,7 @@
 
       // --- face: ASCII 텍스트 스프라이트 (always billboard) ---
       const faces = {
-        normal: 'o  o', happy: '^  ^', excited: '*  *', sleepy: '-  -',
+        normal: '^  ^', happy: '^  ^', excited: '*  *', sleepy: '^  ^',
         notice: '0  0', thinkA: '-  -', thinkB: '~  ~', thinkC: '.  .',
         focus: '@  @', confused: '@  @', surprised: 'O  O', love: '♥  ♥',
         eat: '>  <', yes: 'o  k', no: '>  <', dead: 'x  x'
@@ -554,14 +604,12 @@
       function drawFace(eyes) {
         const c = document.createElement('canvas'); c.width = c.height = 256;
         const x = c.getContext('2d'); x.clearRect(0, 0, 256, 256);
-        const pair = (eyes || 'o  o').match(/\S+/g) || ['o', 'o'];
-        // 정적 볼터치 — 감정이 아니라 순수 데코(항상 동일). 빼고 싶으면 이 두 줄 삭제.
-        x.fillStyle = 'rgba(255,150,182,0.30)';
-        x.beginPath(); x.ellipse(70, 160, 18, 12, 0, 0, Math.PI * 2); x.fill();
-        x.beginPath(); x.ellipse(186, 160, 18, 12, 0, 0, Math.PI * 2); x.fill();
+        const pair = (eyes || '^  ^').match(/\S+/g) || ['^', '^'];
         // 눈 — 크고 진하게. 모든 감정을 눈으로만 표현(입 없음).
-        x.fillStyle = '#241a47';
-        x.font = '900 108px "DejaVu Sans Mono", monospace';
+        x.shadowColor = 'rgba(255, 170, 235, 0.78)';
+        x.shadowBlur = 14;
+        x.fillStyle = '#fff2ff';
+        x.font = '900 112px "DejaVu Sans Mono", monospace';
         x.textAlign = 'center'; x.textBaseline = 'middle';
         x.fillText(pair[0] || 'o', 88, 118);
         x.fillText(pair[1] || pair[0] || 'o', 168, 118);
@@ -857,6 +905,14 @@
       }
 
       function update(time) {
+        bodyUniforms.uTime.value = time;
+        interior.rotation.y = Math.sin(time * 0.42) * 0.035;
+        sparkles.forEach(sp => {
+          const pulse = 0.82 + Math.sin(time * 1.35 + sp.userData.phase) * 0.18;
+          sp.scale.setScalar(sp.userData.baseScale * pulse);
+          sp.rotation.y += 0.012;
+          sp.rotation.x += 0.009;
+        });
         const dt = Math.min(0.05, Math.max(0.001, time - lastUpdate)); lastUpdate = time;
         let dy = 0, sy = 1, sxz = 1;
         // 젤리 출렁임 스프링: 임펄스(nudge) 후 몇 번 출렁이다 정착 = 2차 모션(생명감)
@@ -911,8 +967,9 @@
       }
 
       function tint(c) {
-        bodyUniforms.uColor.value.copy(c);
-        bodyUniforms.uRim.value.copy(c).lerp(new THREE.Color('#ffffff'), 0.82);
+        bodyUniforms.uTopColor.value.copy(BASE_TOP).lerp(c, 0.16);
+        bodyUniforms.uBottomColor.value.copy(BASE_BOTTOM).lerp(c, 0.14);
+        bodyUniforms.uRimColor.value.copy(BASE_RIM).lerp(c, 0.06);
         applyBodyLight();
       }
 
