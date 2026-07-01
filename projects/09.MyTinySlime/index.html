@@ -367,6 +367,8 @@
         learnFx: () => asset('learn01.wav', () => beep(720, .14, 'sine', .05, 1.5), .5),
         jumpFx: () => asset('slime_jump.mp3', () => beep(520, .12, 'sine', .06, 1.7), .45),
         surprisedFx: () => asset('surprised.wav', () => beep(760, .16, 'triangle', .05, 1.25), .5),
+        yesFx: () => asset('yes.wav', () => { beep(620, .10, 'sine', .05); setTimeout(() => beep(820, .11, 'sine', .05), 105); }, .5),
+        noFx: () => asset('no.wav', () => { beep(260, .11, 'triangle', .05); setTimeout(() => beep(210, .13, 'triangle', .05), 110); }, .5),
         sleepyFx: () => asset('sleepy.wav', () => beep(220, .24, 'sine', .04, .7), .45),
       };
     })();
@@ -448,44 +450,75 @@
       pos.needsUpdate = true;
       bodyGeo.computeVertexNormals();
 
-      // pivot 하나가 위치/스쿼시를 들고, 코어·스킨·림 3겹이 함께 출렁인다
+      // pivot 하나가 위치/스쿼시를 들고, 단일 셰이더 바디가 자연스러운 젤리 두께감을 만든다
       const bodyPivot = new THREE.Group();
       bodyPivot.position.y = R * 0.56;
       group.add(bodyPivot);
 
-      // (1) 코어 — 스킨 너머로 비치는 안쪽 발광 덩어리 (속이 비침)
-      const coreMat = new THREE.MeshStandardMaterial({
-        color: PURPLE.clone().lerp(new THREE.Color('#ffffff'), 0.10),
-        emissive: new THREE.Color('#7a63d8'), emissiveIntensity: 0.55,
-        roughness: 0.5, metalness: 0, transparent: true, opacity: 0.92, depthWrite: true,
-      });
-      coreMat.toneMapped = false;
-      const core = new THREE.Mesh(bodyGeo, coreMat);
-      core.scale.setScalar(0.80); core.renderOrder = 1;
-      bodyPivot.add(core);
+      const bodyUniforms = {
+        uColor: { value: PURPLE.clone() },
+        uRim: { value: new THREE.Color('#fff8ff') },
+        uGlow: { value: 0 },
+        uOpacity: { value: 0.70 },
+      };
+      const mat = new THREE.ShaderMaterial({
+        uniforms: bodyUniforms,
+        vertexShader: `
+          varying vec3 vViewPos;
+          varying vec3 vViewNormal;
+          varying float vBodyY;
+          void main() {
+            vBodyY = position.y;
+            vViewNormal = normalize(normalMatrix * normal);
+            vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+            vViewPos = mvPosition.xyz;
+            gl_Position = projectionMatrix * mvPosition;
+          }
+        `,
+        fragmentShader: `
+          varying vec3 vViewPos;
+          varying vec3 vViewNormal;
+          varying float vBodyY;
+          uniform vec3 uColor;
+          uniform vec3 uRim;
+          uniform float uGlow;
+          uniform float uOpacity;
+          void main() {
+            vec3 N = normalize(vViewNormal);
+            vec3 V = normalize(-vViewPos);
+            float facing = clamp(abs(dot(N, V)), 0.0, 1.0);
+            float thickness = smoothstep(0.02, 1.0, pow(facing, 0.85));
+            float edge = 1.0 - thickness;
+            float height = smoothstep(-0.56, 0.78, vBodyY);
 
-      // (2) 스킨 — 반투명 젤리 표면, 속이 비치게 낮은 불투명도
-      const mat = new THREE.MeshStandardMaterial({
-        color: PURPLE.clone(),
-        emissive: new THREE.Color('#5a47a8'), emissiveIntensity: 0.20,
-        roughness: 0.12, metalness: 0,
-        transparent: true, opacity: 0.56, depthWrite: false, side: THREE.FrontSide,
+            vec3 base = uColor;
+            vec3 col = mix(base * 0.70, base * 1.04, thickness);
+            col = mix(col, uRim, height * 0.08);
+
+            float rimSheen = pow(edge, 2.4);
+            col += uRim * rimSheen * (0.20 + uGlow * 0.16);
+
+            vec3 L = normalize(vec3(0.35, 0.9, 0.3));
+            float wrap = dot(N, L) * 0.5 + 0.5;
+            col *= 0.78 + wrap * 0.34;
+            col += base * uGlow * 0.14;
+
+            float lowerDensity = 1.0 - smoothstep(0.05, 0.65, height);
+            float alpha = mix(0.18, 0.66, thickness) + lowerDensity * 0.07;
+            alpha = clamp(alpha * (uOpacity + uGlow * 0.10), 0.12, 0.78);
+
+            gl_FragColor = vec4(col, alpha);
+          }
+        `,
+        transparent: true,
+        depthWrite: false,
+        side: THREE.FrontSide,
+        blending: THREE.NormalBlending,
       });
       mat.toneMapped = false;
       const mesh = new THREE.Mesh(bodyGeo, mat);
       mesh.renderOrder = 2;
       bodyPivot.add(mesh);
-
-      // (3) 프레넬 림광 — 반전 헐(BackSide) 가산합성, 실루엣에 빛이 몰린다
-      const rimMat = new THREE.MeshBasicMaterial({
-        color: new THREE.Color('#cdbcff'),
-        transparent: true, opacity: 0.5, side: THREE.BackSide,
-        blending: THREE.AdditiveBlending, depthWrite: false,
-      });
-      rimMat.toneMapped = false;
-      const rim = new THREE.Mesh(bodyGeo, rimMat);
-      rim.scale.setScalar(1.07); rim.renderOrder = 3;
-      bodyPivot.add(rim);
 
       let glow = 0, breath = 1, voiceLevel = 0, voiceTarget = 0, voiceFace = false;
       // 젤리 출렁임 스프링(2차 모션/정착) — 이벤트 때 nudge로 튕기고 감쇠하며 멈춤
@@ -494,9 +527,8 @@
       function nudge(amt) { wob += amt; }
       // 존재감: 평소엔 거의 자가발광 0(방 빛을 받게), 기쁜 순간에만 살짝. 목소리는 빛이 아니라 '움직임'으로 반응.
       function applyBodyLight() {
-        coreMat.emissiveIntensity = 0.05 + glow * 0.32;
-        rimMat.opacity = 0.28 + glow * 0.26;   // 림광 낮춤(과하면 네온/홀로그램)
-        mat.emissiveIntensity = 0.0;
+        bodyUniforms.uGlow.value = glow;
+        bodyUniforms.uOpacity.value = 0.70 + glow * 0.04;
       }
       function setGlow(v) { glow = v; applyBodyLight(); }
       function setVoiceLevel(v) { voiceTarget = Math.max(0, Math.min(1, v || 0)); }
@@ -515,7 +547,9 @@
       // --- face: ASCII 텍스트 스프라이트 (always billboard) ---
       const faces = {
         normal: 'o  o', happy: '^  ^', excited: '*  *', sleepy: '-  -',
-        confused: '@  @', surprised: 'O  O', love: '♥  ♥', eat: '>  <', dead: 'x  x'
+        notice: '0  0', thinkA: '-  -', thinkB: '~  ~', thinkC: '.  .',
+        focus: '@  @', confused: '@  @', surprised: 'O  O', love: '♥  ♥',
+        eat: '>  <', yes: 'o  k', no: '>  <', dead: 'x  x'
       };
       function drawFace(eyes) {
         const c = document.createElement('canvas'); c.width = c.height = 256;
@@ -541,7 +575,9 @@
       let currentFace = 'normal';
 
       function setFace(name) {
-        currentFace = faces[name] ? name : 'normal';
+        const next = faces[name] ? name : 'normal';
+        if (currentFace === next) return;
+        currentFace = next;
         const e = faces[currentFace] || faces.normal;
         faceMat.map.dispose(); faceMat.map = drawFace(e); faceMat.needsUpdate = true;
       }
@@ -621,15 +657,87 @@
         add(9999, () => ({ sy: 0.55, sxz: 1.32 }));
       }
       function wake() { breath = 1; actions.length = 0; setFace('normal'); }
-      function lookAt(worldPos) { const dx = worldPos.x - group.position.x; lookTarget = Math.max(-0.5, Math.min(0.5, dx * 4)); setFace('confused'); }
-      function trackHand(worldPos, distance) {
+      function orientTo(worldPos, hold = 0.65) {
+        if (!worldPos) return;
         const dx = worldPos.x - group.position.x;
         const dz = worldPos.z - group.position.z;
-        lookTarget = Math.max(-0.42, Math.min(0.42, dx * 5));
-        leanTarget = Math.max(-0.22, Math.min(0.22, dz * 4));
+        lookTarget = Math.max(-0.5, Math.min(0.5, dx * 4.6));
+        leanTarget = Math.max(-0.22, Math.min(0.22, dz * 3.4));
         faceDriftTarget = Math.max(-1, Math.min(1, dx / (R * 3.0)));
-        interestUntil = performance.now() / 1000 + 0.65;
+        interestUntil = performance.now() / 1000 + hold;
+      }
+      function randomThinkFace() {
+        return ['thinkA', 'thinkB', 'thinkC'][Math.floor(Math.random() * 3)];
+      }
+      function lookAt(worldPos) { orientTo(worldPos, 0.9); setFace('focus'); }
+      function trackHand(worldPos, distance) {
+        orientTo(worldPos, 0.65);
         if (distance < R * 3.2 && currentFace === 'normal') setFace('happy');
+      }
+
+      function notice(worldPos) {
+        orientTo(worldPos, 0.9);
+        setFace('notice'); setGlow(.38); nudge(0.045); SFX.surprisedFx();
+        add(0.18, p => {
+          const m = Math.sin(Math.PI * p);
+          return { sy: 1 + 0.09 * m, sxz: 1 - 0.04 * m };
+        });
+        later(230, () => { if (currentFace === 'notice') setFace(randomThinkFace()); setGlow(.22); });
+      }
+
+      function ponder(worldPos) {
+        orientTo(worldPos, 0.9);
+        setFace(randomThinkFace()); setGlow(.24);
+        add(0.52 + Math.random() * 0.28, p => {
+          const m = Math.sin(Math.PI * p * 2);
+          return { sy: 1 + 0.026 * m, sxz: 1 - 0.014 * m };
+        });
+      }
+
+      function focusOn(worldPos) {
+        orientTo(worldPos, 0.95);
+        setFace('focus'); setGlow(.24);
+      }
+
+      function expectSnack(worldPos) {
+        orientTo(worldPos, 0.95);
+        setFace('excited'); setGlow(.62);
+      }
+
+      function brakeFrom(worldPos) {
+        orientTo(worldPos, 1.1);
+        SFX.surprisedFx(); setFace('notice'); setGlow(.55); nudge(-0.10);
+        popEmotes(['!'], '#ffd45e');
+        add(0.34, p => {
+          const m = Math.sin(Math.PI * p);
+          return { sy: 1 - 0.22 * m, sxz: 1 + 0.14 * m, dy: -R * 0.015 * m };
+        });
+        later(220, () => { if (currentFace === 'notice') setFace(randomThinkFace()); });
+      }
+
+      function scurryStep() {
+        nudge(0.025);
+        add(0.30, p => {
+          const m = Math.sin(Math.PI * p);
+          return { dy: R * 0.11 * m, sy: 1 + 0.035 * m, sxz: 1 - 0.018 * m };
+        });
+      }
+
+      function answerYes(worldPos) {
+        orientTo(worldPos, 0.9);
+        SFX.yesFx(); setFace('yes'); setGlow(.62);
+        [0, 130].forEach(d => later(d, () => add(0.20, p => {
+          const m = Math.sin(Math.PI * p);
+          return { dy: R * 0.05 * m, sy: 1 + 0.035 * m, sxz: 1 - 0.018 * m };
+        })));
+      }
+
+      function answerNo(worldPos) {
+        orientTo(worldPos, 0.9);
+        SFX.noFx(); setFace('no'); setGlow(.35);
+        const side = Math.random() > 0.5 ? 1 : -1;
+        [0, 110, 220].forEach((d, i) => later(d, () => { lookTarget = side * (i % 2 ? -0.34 : 0.34); }));
+        later(520, () => setGlow(0));
       }
 
       function rememberName(name) {
@@ -659,17 +767,17 @@
 
       function listen() {
         if (State.sleeping) return;
-        setFace('confused'); setGlow(.35);
+        setFace('notice'); setGlow(.35);
         add(0.42, p => {
           const m = Math.sin(Math.PI * p);
           return { sy: 1 + 0.06 * m, sxz: 1 - 0.03 * m };
         });
-        later(700, () => { if (currentFace === 'confused') setFace('normal'); setGlow(0); });
+        later(700, () => { if (currentFace === 'notice') setFace('normal'); setGlow(0); });
       }
 
       function think() {
         if (State.sleeping) return;
-        setFace('confused'); setGlow(.45); saySlime('...');
+        setFace(randomThinkFace()); setGlow(.45); saySlime('...');
         add(0.75, p => {
           const m = Math.sin(Math.PI * p * 2);
           return { sy: 1 + 0.035 * m, sxz: 1 - 0.018 * m };
@@ -803,13 +911,16 @@
       }
 
       function tint(c) {
-        mat.color.copy(c);
-        coreMat.color.copy(c).lerp(new THREE.Color('#ffffff'), 0.10);
-        rimMat.color.copy(c).lerp(new THREE.Color('#ffffff'), 0.25);
+        bodyUniforms.uColor.value.copy(c);
+        bodyUniforms.uRim.value.copy(c).lerp(new THREE.Color('#ffffff'), 0.82);
         applyBodyLight();
       }
 
-      return { group, mesh, setFace, bounce, boing, happy, eat, sleep, wake, lookAt, trackHand, hopTo, update, tint, faces, rememberName, praise, cuddle, listen, think, heard, pokeFrom, feedFrom, setVoiceLevel };
+      return {
+        group, mesh, setFace, bounce, boing, happy, eat, sleep, wake, lookAt, trackHand, hopTo, update, tint, faces,
+        rememberName, praise, cuddle, listen, think, heard, pokeFrom, feedFrom, setVoiceLevel,
+        orientTo, notice, ponder, focusOn, expectSnack, brakeFrom, scurryStep, answerYes, answerNo
+      };
     })();
     scene.add(Slime.group);
 
@@ -942,7 +1053,7 @@
         subtitleUntil = performance.now() / 1000 + 3.4;
       }
       function anchorTo(pos) {
-        const xrCam = renderer.xr.getCamera ? renderer.xr.getCamera(camera) : camera;
+        const xrCam = renderer.xr.isPresenting && renderer.xr.getCamera ? renderer.xr.getCamera(camera) : camera;
         xrCam.updateMatrixWorld?.();
         xrCam.getWorldPosition(camPos);
         toward.copy(camPos).sub(pos); toward.y = 0;
@@ -1053,6 +1164,7 @@
       // 이름은 "명명 맥락"이 있을 때만 (이름/불러/이라고/call you) — 본문에 박힌 이름 오인 방지
       if (/이름|불러|이라고|라고\s*부|name|call\s*you/.test(s)) return { intent: 'setName', name: extractName(t) };
       if (/밥자리|먹이자리|여기가|food\s*spot|here.*food|here.*eat/.test(s)) return { intent: 'setFoodLocation' };
+      if (/\bgo\b|\bokay\b|\bok\b|continue|가도\s*돼|이제\s*가|가자|먹어도\s*돼/.test(s)) return { intent: 'go' };
       if (/배고|먹|밥|hungry|eat|feed|food/.test(s)) return { intent: 'feed' };
       if (/잘했|착하|최고|good|nice|great|예쁘|기특/.test(s)) return { intent: 'praise' };
       if (/자자|잘자|sleep|코자|졸/.test(s)) return { intent: 'sleep' };
@@ -1081,6 +1193,271 @@
       camera.getWorldPosition(p); camera.getWorldDirection(d);
       return p.add(d.multiplyScalar(0.22));
     }
+
+    const FoodDemo = (() => {
+      const MOVE_SPEED = 0.115;
+      const BLOCK_RADIUS = R * 2.85;
+      const tmp = new THREE.Vector3();
+      const tmp2 = new THREE.Vector3();
+      const blockPoint = new THREE.Vector3();
+      let food = null;
+      let target = null;
+      let mode = 'idle';
+      let token = 0;
+      let lastUpdate = 0;
+      let lastStepAt = -10;
+      let lastBlockAt = -10;
+
+      function now() { return performance.now() / 1000; }
+
+      function defaultTarget() {
+        const dest = State.memory.foodLocation
+          ? State.memory.foodLocation.clone()
+          : Slime.group.position.clone().add(new THREE.Vector3(0.26, 0, 0.02));
+        dest.y = Slime.group.position.y;
+        return dest;
+      }
+
+      function ownerLookPoint() {
+        const p = new THREE.Vector3();
+        camera.getWorldPosition(p);
+        p.y = Slime.group.position.y + R;
+        return p;
+      }
+
+      function disposeFood() {
+        if (!food) return;
+        scene.remove(food);
+        food.geometry.dispose();
+        food.material.dispose();
+        food = null;
+      }
+
+      function makeFood() {
+        const mesh = new THREE.Mesh(
+          new THREE.IcosahedronGeometry(R * 0.34, 1),
+          new THREE.MeshStandardMaterial({
+            color: 0xffd45e,
+            emissive: 0x8a5a10,
+            emissiveIntensity: 0.4,
+            roughness: 0.5
+          })
+        );
+        mesh.renderOrder = 5;
+        return mesh;
+      }
+
+      function spawnFoodMesh(origin, dest, onDone) {
+        const start = origin ? origin.clone() : dest.clone().add(new THREE.Vector3(0, R * 4.2, 0));
+        if (start.distanceTo(dest) > 0.62) start.copy(dest).add(new THREE.Vector3(0, R * 4.2, 0));
+        start.y = Math.max(start.y, dest.y + R * 1.2);
+        food.position.copy(start);
+        scene.add(food);
+        const t0 = performance.now();
+        const dur = 720;
+        const my = token;
+        const tick = () => {
+          if (my !== token || !food) return;
+          const p = Math.min(1, (performance.now() - t0) / dur);
+          const e = p < .5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2;
+          food.position.lerpVectors(start, dest, e);
+          food.position.y += Math.sin(Math.PI * p) * R * 1.6;
+          food.rotation.x += 0.18;
+          food.rotation.y += 0.22;
+          if (p < 1) requestAnimationFrame(tick);
+          else {
+            food.position.copy(dest);
+            if (onDone) onDone();
+          }
+        };
+        tick();
+      }
+
+      function beginMove(my) {
+        if (my !== token || !food || !target) return;
+        mode = 'moving';
+        lastUpdate = 0;
+        lastStepAt = -10;
+        Slime.expectSnack(target);
+        UI.toast('Found snack!');
+      }
+
+      function start(origin) {
+        if (!State.spawned) return;
+        if (State.sleeping) { State.sleeping = false; Slime.wake(); }
+        token++;
+        mode = 'spawning';
+        lastUpdate = 0;
+        lastBlockAt = -10;
+        disposeFood();
+        target = defaultTarget();
+        State.memory.foodLocation = target.clone();
+        food = makeFood();
+        UI.toast('Snack spawned');
+        Slime.notice(target);
+        spawnFoodMesh(origin, target, () => {
+          const my = token;
+          if (mode !== 'spawning') return;
+          Slime.notice(target);
+          setTimeout(() => { if (my === token && mode === 'spawning') Slime.ponder(target); }, 160);
+          setTimeout(() => beginMove(my), 520 + Math.random() * 220);
+        });
+      }
+
+      function isBlocking(point) {
+        if (!point || !target || !food) return false;
+        const a = Slime.group.position;
+        const b = target;
+        const vx = b.x - a.x;
+        const vz = b.z - a.z;
+        const lenSq = vx * vx + vz * vz;
+        if (lenSq < R * R * 1.4) return false;
+        const wx = point.x - a.x;
+        const wz = point.z - a.z;
+        const t = (wx * vx + wz * vz) / lenSq;
+        if (t < 0.16 || t > 0.95) return false;
+        const cx = a.x + vx * t;
+        const cz = a.z + vz * t;
+        const dx = point.x - cx;
+        const dz = point.z - cz;
+        const yOk = point.y > a.y - R * 0.7 && point.y < a.y + R * 5.2;
+        return yOk && dx * dx + dz * dz < BLOCK_RADIUS * BLOCK_RADIUS;
+      }
+
+      function block(point) {
+        if (mode !== 'moving') return;
+        token++;
+        mode = 'blocked';
+        lastUpdate = 0;
+        lastBlockAt = now();
+        blockPoint.copy(point);
+        Slime.brakeFrom(point);
+        UI.toast('!');
+        const my = token;
+        setTimeout(() => {
+          if (my !== token || mode !== 'blocked') return;
+          Slime.focusOn(ownerLookPoint());
+          UI.toast('...');
+        }, 320);
+      }
+
+      function observeHand(point) {
+        if (!point || !food || !target || mode === 'idle' || mode === 'eating') return;
+        if (!isBlocking(point)) return;
+        lastBlockAt = now();
+        blockPoint.copy(point);
+        if (mode === 'moving') block(point);
+        else if (mode === 'waitingGo') {
+          mode = 'blocked';
+          Slime.focusOn(ownerLookPoint());
+          UI.toast('Still blocked');
+        } else if (mode === 'blocked') {
+          Slime.focusOn(ownerLookPoint());
+        }
+      }
+
+      function resumeFromGo() {
+        if (!food || !target || (mode !== 'blocked' && mode !== 'waitingGo')) {
+          Slime.answerNo(ownerLookPoint());
+          UI.toast('?');
+          return false;
+        }
+        if (now() - lastBlockAt < 0.52) {
+          Slime.answerNo(blockPoint);
+          UI.toast('Hand first');
+          return true;
+        }
+        const my = ++token;
+        mode = 'resuming';
+        Slime.answerYes(target);
+        UI.toast('OK');
+        setTimeout(() => { if (my === token && mode === 'resuming') Slime.notice(target); }, 180);
+        setTimeout(() => beginMove(my), 460 + Math.random() * 160);
+        return true;
+      }
+
+      function consumeFood() {
+        if (!food || mode === 'eating') return;
+        mode = 'eating';
+        const my = ++token;
+        const start = food.position.clone();
+        const dest = Slime.group.position.clone().add(new THREE.Vector3(0, R * 0.62, 0));
+        Slime.expectSnack(food.position);
+        const t0 = performance.now();
+        const dur = 520;
+        const tick = () => {
+          if (my !== token || !food) return;
+          const p = Math.min(1, (performance.now() - t0) / dur);
+          const e = p < .5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2;
+          food.position.lerpVectors(start, dest, e);
+          food.scale.setScalar(1 - e * 0.55);
+          food.rotation.x += 0.24;
+          food.rotation.y += 0.16;
+          if (p < 1) requestAnimationFrame(tick);
+          else {
+            disposeFood();
+            Slime.eat();
+            UI.toast('Yum!');
+            State.hunger = Math.max(0, State.hunger - 42);
+            State.affection = Math.min(100, State.affection + 5);
+            UI.render();
+            setTimeout(() => { if (my === token) mode = 'idle'; }, 1350);
+          }
+        };
+        tick();
+      }
+
+      function forceBlock() {
+        if (mode !== 'moving' || !target) return false;
+        tmp.copy(Slime.group.position).lerp(target, 0.52);
+        tmp.y = Slime.group.position.y + R * 1.5;
+        block(tmp);
+        return true;
+      }
+
+      function handControlActive() {
+        return mode !== 'idle';
+      }
+
+      function update(time) {
+        if (mode === 'blocked') {
+          Slime.focusOn(ownerLookPoint());
+          if (now() - lastBlockAt > 0.56) {
+            mode = 'waitingGo';
+            Slime.notice(target);
+            setTimeout(() => { if (mode === 'waitingGo') { Slime.focusOn(ownerLookPoint()); UI.toast('Say "go"'); } }, 240);
+          }
+          return;
+        }
+        if (mode === 'waitingGo') {
+          Slime.focusOn(ownerLookPoint());
+          return;
+        }
+        if (mode !== 'moving' || !target || !food) return;
+        const dt = Math.min(0.05, Math.max(0.001, lastUpdate ? time - lastUpdate : 0.016));
+        lastUpdate = time;
+        tmp.copy(target).sub(Slime.group.position);
+        tmp.y = 0;
+        const dist = tmp.length();
+        if (dist < R * 1.25) {
+          consumeFood();
+          return;
+        }
+        tmp.normalize();
+        Slime.group.position.addScaledVector(tmp, Math.min(dist, MOVE_SPEED * dt));
+        Slime.group.position.y = target.y;
+        Slime.orientTo(target, 0.35);
+        if (time - lastStepAt > 0.33) {
+          lastStepAt = time;
+          Slime.scurryStep();
+          tmp2.copy(Slime.group.position).sub(target);
+          if (tmp2.length() > R * 3.0) SFX.jumpFx();
+        }
+      }
+
+      return { start, update, observeHand, resumeFromGo, forceBlock, handControlActive };
+    })();
+
     function dispatch(parsed) {
       const it = parsed.intent;
       if (State.sleeping && it !== 'idle') { State.sleeping = false; Slime.wake(); }
@@ -1107,20 +1484,11 @@
           setTimeout(() => Slime.setFace('normal'), 1400); break;
         }
         case 'feed': {
-          const dest = State.memory.foodLocation;
-          if (dest) {
-            Slime.hopTo(dest, 'confused', () => {
-              Slime.feedFrom(feedSourcePoint(), () => {
-                State.hunger = Math.max(0, State.hunger - 42); State.affection = Math.min(100, State.affection + 5);
-                UI.render();
-              });
-            });
-          } else {
-            Slime.feedFrom(feedSourcePoint(), () => {
-              State.hunger = Math.max(0, State.hunger - 42); State.affection = Math.min(100, State.affection + 5);
-              UI.render();
-            });
-          }
+          FoodDemo.start(feedSourcePoint());
+          break;
+        }
+        case 'go': {
+          FoodDemo.resumeFromGo();
           break;
         }
         case 'praise': {
@@ -1160,8 +1528,11 @@
     async function say(text) {
       UI.subtitle(text);
       Slime.heard();
-      setTimeout(() => Slime.think(), 160);
+      let waiting = true;
+      const thinkTimer = setTimeout(() => { if (waiting) Slime.think(); }, 160);
       const parsed = await parseIntent(text);
+      waiting = false;
+      clearTimeout(thinkTimer);
       UI.latency(parsed.latencyMs || 120);
       dispatch(parsed);
     }
@@ -1224,6 +1595,7 @@
         if (!frame || !State.spawned || !localSpace) return;
         const session = renderer.xr.getSession?.() || frame.session;
         if (!session?.inputSources) return;
+        const demoHandMode = FoodDemo.handControlActive();
 
         const dt = Math.max(0.001, Math.min(0.08, lastFrameTime ? time - lastFrameTime : 0.016));
         lastFrameTime = time;
@@ -1256,14 +1628,14 @@
             const d = p.distanceTo(center);
             if (d < nearestD) { nearestD = d; nearest.copy(p); }
 
-            if (TOUCH_JOINTS.has(name) && d < R * 2.15 && speed > 0.16) {
+            if (!demoHandMode && TOUCH_JOINTS.has(name) && d < R * 2.15 && speed > 0.16) {
               triggerPoke(time, p);
               continue;
             }
 
             const overTop = p.y > center.y - R * 0.08 && p.y < center.y + R * 2.25;
             const closeToHead = p.distanceTo(top) < R * 2.65;
-            if ((TOUCH_JOINTS.has(name) || name === 'wrist') && overTop && closeToHead && speed < 0.72) {
+            if (!demoHandMode && (TOUCH_JOINTS.has(name) || name === 'wrist') && overTop && closeToHead && speed < 0.72) {
               petCandidate = true;
             }
           }
@@ -1271,14 +1643,17 @@
         }
 
         if (!sawHand) { petScore = Math.max(0, petScore - dt * 2); return; }
-        if (nearestD < Infinity) { lastHandPoint.copy(nearest); lastHandAt = time; }
+        if (nearestD < Infinity) {
+          lastHandPoint.copy(nearest); lastHandAt = time;
+          FoodDemo.observeHand(nearest);
+        }
 
         if (petCandidate) petScore += dt;
         else petScore = Math.max(0, petScore - dt * 1.7);
 
-        if (petScore > 0.38 && time - lastPokeAt > 0.45) triggerPet(time);
+        if (!FoodDemo.handControlActive() && petScore > 0.38 && time - lastPokeAt > 0.45) triggerPet(time);
 
-        if (nearestD < R * 5.8 && time - lastNoticeAt > 0.10 && time - lastPokeAt > 0.75 && time - lastPetAt > 0.75) {
+        if (!FoodDemo.handControlActive() && nearestD < R * 5.8 && time - lastNoticeAt > 0.10 && time - lastPokeAt > 0.75 && time - lastPetAt > 0.75) {
           Slime.trackHand(nearest, nearestD);
           lastNoticeAt = time;
         }
@@ -1496,6 +1871,19 @@
     // 키보드 (데스크톱 테스트/촬영 편의)
     addEventListener('keydown', e => {
       if (e.key === 'v') toggleListening();
+      if (!State.spawned) return;
+      if (e.code === 'Space') {
+        e.preventDefault();
+        dispatch({ intent: 'feed', latencyMs: 0 });
+      }
+      if (e.key === 'b') {
+        e.preventDefault();
+        if (!FoodDemo.forceBlock()) UI.toast('Block during snack run');
+      }
+      if (e.key === 'g') {
+        e.preventDefault();
+        say('go');
+      }
     });
 
     // ============================================================
@@ -1540,6 +1928,7 @@
         } else { reticle.visible = false; }
       }
       HandInteraction.update(frame, time);
+      FoodDemo.update(performance.now() / 1000);
       Slime.setVoiceLevel(MicLevel.sample());   // 매 프레임 마이크 음량 → 즉각 반응
       Slime.update(time);
       XRHUD.update();

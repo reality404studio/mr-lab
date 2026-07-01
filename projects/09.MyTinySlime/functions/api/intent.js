@@ -20,13 +20,14 @@ Read ONE short utterance from the owner and return the slime's intent. The user 
 (e.g. "너 좀 배고파 보인다" = looks hungry = feed; "이리 와 자식아" = come here = come).
 
 Return STRICT minified JSON, no prose, with this shape:
-{"intent":"<one of: setName,setFood,setFoodLocation,feed,praise,sleep,come,pet,idle>","name":"<name if naming>","food":"<food if given>"}
+{"intent":"<one of: setName,setFood,setFoodLocation,feed,go,praise,sleep,come,pet,idle>","name":"<name if naming>","food":"<food if given>"}
 
 Rules:
 - Naming ("너 이름은 콩이야","I'll call you Bean") -> intent=setName, name=the given name only.
 - Pointing/teaching where food is ("여기가 네 밥자리야","this is your food spot") -> intent=setFoodLocation.
 - Telling a favorite food ("넌 푸딩을 좋아해") -> intent=setFood, food=the food.
 - Any sign of hunger / "eat" / "you look hungry" -> intent=feed.
+- A short release cue after blocking ("go","okay","가자","가도 돼","먹어도 돼") -> intent=go.
 - Praise ("잘했어","착하다","good job") -> intent=praise.
 - Sleep ("이제 자자","잘 자") -> intent=sleep.
 - Calling it closer ("이리 와","come here") -> intent=come.
