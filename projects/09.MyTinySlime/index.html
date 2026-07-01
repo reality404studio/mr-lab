@@ -363,6 +363,7 @@
         boing: () => { beep(280, .08, 'sine', .07, 1.9); setTimeout(() => beep(760, .16, 'triangle', .05, 1.25), 70); },
         spawn: () => beep(420, .22, 'sine', .06, 1.8),
         eatFx: () => asset('eat.ogg', () => { beep(300, .09, 'triangle', .06); setTimeout(() => beep(360, .09, 'triangle', .06), 100); }),
+        biteFx: () => asset('eat.ogg', () => { beep(420, .055, 'triangle', .05, 1.25); setTimeout(() => beep(620, .07, 'sine', .04, .75), 58); }, .38),
         happyFx: () => asset('happy.wav', () => { [660, 830, 990].forEach((f, i) => setTimeout(() => beep(f, .12, 'sine', .05), i * 90)); }, .45),
         learnFx: () => asset('learn01.wav', () => beep(720, .14, 'sine', .05, 1.5), .5),
         jumpFx: () => asset('slime_jump.mp3', () => beep(520, .12, 'sine', .06, 1.7), .45),
@@ -895,6 +896,23 @@
         if (onDone) setTimeout(onDone, dur * 1000);
       }
 
+      function pounceTo(target, onDone) {
+        const start = group.position.clone();
+        const dest = target.clone();
+        dest.y = start.y;
+        const dur = 0.58;
+        setFace('eat'); setGlow(.62); orientTo(dest, 0.9); nudge(0.08);
+        add(dur, p => {
+          const e = ease(p);
+          group.position.x = start.x + (dest.x - start.x) * e;
+          group.position.z = start.z + (dest.z - start.z) * e;
+          lookTarget = Math.max(-0.4, Math.min(0.4, (dest.x - group.position.x) * 6));
+          const m = Math.sin(Math.PI * p);
+          return { dy: R * 0.22 * m, sy: 1 + 0.11 * m, sxz: 1 - 0.055 * m };
+        });
+        later(dur * 1000 + 90, () => { setGlow(0); if (onDone) onDone(); });
+      }
+
       function update(time) {
         bodyUniforms.uTime.value = time;
         const dt = Math.min(0.05, Math.max(0.001, time - lastUpdate)); lastUpdate = time;
@@ -960,7 +978,7 @@
       return {
         group, mesh, setFace, bounce, boing, happy, eat, sleep, wake, lookAt, trackHand, hopTo, update, tint, faces,
         rememberName, praise, cuddle, listen, think, heard, pokeFrom, feedFrom, setVoiceLevel,
-        orientTo, notice, ponder, focusOn, expectSnack, brakeFrom, scurryStep, answerYes, answerNo
+        orientTo, notice, ponder, focusOn, expectSnack, brakeFrom, scurryStep, answerYes, answerNo, pounceTo
       };
     })();
     scene.add(Slime.group);
@@ -1236,11 +1254,14 @@
     }
 
     const FoodDemo = (() => {
-      const MOVE_SPEED = 0.115;
+      const MOVE_SPEED = 0.18;
       const BLOCK_RADIUS = R * 2.85;
       const tmp = new THREE.Vector3();
       const tmp2 = new THREE.Vector3();
       const blockPoint = new THREE.Vector3();
+      const spawnFrom = new THREE.Vector3();
+      const spawnTo = new THREE.Vector3();
+      const eatTo = new THREE.Vector3();
       let food = null;
       let target = null;
       let mode = 'idle';
@@ -1248,6 +1269,10 @@
       let lastUpdate = 0;
       let lastStepAt = -10;
       let lastBlockAt = -10;
+      let phaseStart = 0;
+      let phaseDuration = 0;
+      let phaseDone = null;
+      let bitePlayed = false;
 
       function now() { return performance.now() / 1000; }
 
@@ -1281,7 +1306,10 @@
             color: 0xffd45e,
             emissive: 0x8a5a10,
             emissiveIntensity: 0.4,
-            roughness: 0.5
+            roughness: 0.5,
+            transparent: true,
+            opacity: 1,
+            depthWrite: false
           })
         );
         mesh.renderOrder = 5;
@@ -1292,26 +1320,15 @@
         const start = origin ? origin.clone() : dest.clone().add(new THREE.Vector3(0, R * 4.2, 0));
         if (start.distanceTo(dest) > 0.62) start.copy(dest).add(new THREE.Vector3(0, R * 4.2, 0));
         start.y = Math.max(start.y, dest.y + R * 1.2);
-        food.position.copy(start);
+        spawnFrom.copy(start);
+        spawnTo.copy(dest);
+        food.position.copy(spawnFrom);
+        food.scale.setScalar(1);
+        food.material.opacity = 1;
         scene.add(food);
-        const t0 = performance.now();
-        const dur = 720;
-        const my = token;
-        const tick = () => {
-          if (my !== token || !food) return;
-          const p = Math.min(1, (performance.now() - t0) / dur);
-          const e = p < .5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2;
-          food.position.lerpVectors(start, dest, e);
-          food.position.y += Math.sin(Math.PI * p) * R * 1.6;
-          food.rotation.x += 0.18;
-          food.rotation.y += 0.22;
-          if (p < 1) requestAnimationFrame(tick);
-          else {
-            food.position.copy(dest);
-            if (onDone) onDone();
-          }
-        };
-        tick();
+        phaseStart = now();
+        phaseDuration = 0.72;
+        phaseDone = onDone;
       }
 
       function beginMove(my) {
@@ -1340,8 +1357,8 @@
           const my = token;
           if (mode !== 'spawning') return;
           Slime.notice(target);
-          setTimeout(() => { if (my === token && mode === 'spawning') Slime.ponder(target); }, 160);
-          setTimeout(() => beginMove(my), 520 + Math.random() * 220);
+          setTimeout(() => { if (my === token && mode === 'spawning') Slime.ponder(target); }, 110);
+          setTimeout(() => beginMove(my), 230 + Math.random() * 90);
         });
       }
 
@@ -1420,32 +1437,16 @@
       function consumeFood() {
         if (!food || mode === 'eating') return;
         mode = 'eating';
-        const my = ++token;
-        const start = food.position.clone();
-        const dest = Slime.group.position.clone().add(new THREE.Vector3(0, R * 0.62, 0));
+        token++;
+        eatTo.copy(food.position);
+        eatTo.y = Slime.group.position.y;
+        phaseStart = now();
+        phaseDuration = 0.82;
+        bitePlayed = false;
+        food.material.opacity = 1;
         Slime.expectSnack(food.position);
-        const t0 = performance.now();
-        const dur = 520;
-        const tick = () => {
-          if (my !== token || !food) return;
-          const p = Math.min(1, (performance.now() - t0) / dur);
-          const e = p < .5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2;
-          food.position.lerpVectors(start, dest, e);
-          food.scale.setScalar(1 - e * 0.55);
-          food.rotation.x += 0.24;
-          food.rotation.y += 0.16;
-          if (p < 1) requestAnimationFrame(tick);
-          else {
-            disposeFood();
-            Slime.eat();
-            UI.toast('Yum!');
-            State.hunger = Math.max(0, State.hunger - 42);
-            State.affection = Math.min(100, State.affection + 5);
-            UI.render();
-            setTimeout(() => { if (my === token) mode = 'idle'; }, 1350);
-          }
-        };
-        tick();
+        Slime.pounceTo(eatTo);
+        SFX.jumpFx();
       }
 
       function forceBlock() {
@@ -1461,6 +1462,45 @@
       }
 
       function update(time) {
+        if (mode === 'spawning') {
+          if (!food) return;
+          const p = Math.min(1, (time - phaseStart) / phaseDuration);
+          const e = p < .5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2;
+          food.position.lerpVectors(spawnFrom, spawnTo, e);
+          food.position.y += Math.sin(Math.PI * p) * R * 1.6;
+          food.rotation.x += 0.18;
+          food.rotation.y += 0.22;
+          if (p >= 1) {
+            food.position.copy(spawnTo);
+            const done = phaseDone;
+            phaseDone = null;
+            if (done) done();
+          }
+          return;
+        }
+        if (mode === 'eating') {
+          if (!food) return;
+          const p = Math.min(1, (time - phaseStart) / phaseDuration);
+          const e = p < .5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2;
+          if (!bitePlayed && p > 0.34) {
+            bitePlayed = true;
+            SFX.biteFx();
+          }
+          food.material.opacity = Math.max(0, 1 - e);
+          food.scale.setScalar(Math.max(0.05, 1 - e * 0.88));
+          food.rotation.x += 0.16;
+          food.rotation.y += 0.11;
+          if (p >= 1) {
+            disposeFood();
+            Slime.eat();
+            UI.toast('Yum!');
+            State.hunger = Math.max(0, State.hunger - 42);
+            State.affection = Math.min(100, State.affection + 5);
+            UI.render();
+            setTimeout(() => { if (mode === 'eating') mode = 'idle'; }, 1150);
+          }
+          return;
+        }
         if (mode === 'blocked') {
           Slime.focusOn(ownerLookPoint());
           if (now() - lastBlockAt > 0.56) {
