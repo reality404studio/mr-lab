@@ -425,7 +425,7 @@
       // --- chubby dome slime: 넓은 평바닥 + 아래가 무거운 통통 몸 + 둥근 봉우리 ---
       //  계란을 깨는 핵심 = 상하 비대칭. 바닥이 가장 넓고 위로 갈수록 둥글게 수렴.
       //  튜닝 손잡이 둘: WIDTH(통통함, 클수록 빵빵)  /  HEIGHT(키, 작을수록 납작).
-      const WIDTH = 0.34, HEIGHT = 0.74;
+      const WIDTH = 0.27, HEIGHT = 0.88;
       const bodyGeo = new THREE.SphereGeometry(1, 64, 48);
       const pos = bodyGeo.attributes.position;
       const smooth = (a, b, x) => {
@@ -437,14 +437,15 @@
         let x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
         const y01 = Math.max(0, Math.min(1, (y + 1) * 0.5));   // 0 바닥 → 1 위
 
-        // 세로: 바닥을 평평하게 눌러앉히고(책상 접지) 키를 낮춰 통통하게
+        // 세로: 바닥은 눌려 붙고, 중앙 윗부분은 살짝 솟게 해서 위에서 봐도 돔으로 읽히게 한다.
         const baseFlat = smooth(0.0, 0.20, y01);
-        y = mix(-0.56, y * HEIGHT - 0.03, baseFlat);
+        const crownLift = smooth(0.44, 1.0, y01) * 0.075;
+        y = mix(-0.58, y * HEIGHT - 0.01 + crownLift, baseFlat);
 
         // 가로: 아래로 갈수록 두꺼운 단조 프로파일 + 꼭대기만 둥글게 수렴
         const lower = 1 - smooth(0.0, 0.85, y01);   // 1(바닥) → 0(위)
         const taperTop = smooth(0.80, 1.0, y01);    // 맨 위만 살짝 좁힘(둥근 돔)
-        const girth = 0.95 + WIDTH * lower - 0.06 * taperTop;
+        const girth = 0.95 + WIDTH * lower - 0.10 * taperTop;
         pos.setXYZ(i, x * girth, y, z * girth);
       }
       pos.needsUpdate = true;
@@ -452,7 +453,7 @@
 
       // pivot 하나가 위치/스쿼시를 들고, 단일 셰이더 바디가 자연스러운 젤리 두께감을 만든다
       const bodyPivot = new THREE.Group();
-      bodyPivot.position.y = R * 0.56;
+      bodyPivot.position.y = R * 0.58;
       group.add(bodyPivot);
 
       const BASE_TOP = new THREE.Color('#a88cff');
@@ -500,28 +501,25 @@
             vec3 N = normalize(vViewNormal);
             vec3 V = normalize(-vViewPos);
             float facing = clamp(abs(dot(N, V)), 0.0, 1.0);
-            float height = smoothstep(-0.56, 0.78, vBodyY);
-            float thickness = smoothstep(0.02, 1.0, pow(facing, 0.72));
-            float fresnel = pow(1.0 - facing, 2.35);
+            float height = smoothstep(-0.58, 0.94, vBodyY);
+            float thickness = smoothstep(0.02, 1.0, pow(facing, 0.74));
+            float fresnel = pow(1.0 - facing, 1.85);
+            float crown = smoothstep(0.48, 0.94, vBodyY);
 
             vec3 gradient = mix(uBottomColor, uTopColor, height);
             vec3 col = gradient * (0.82 + thickness * 0.34);
 
             vec3 L = normalize(vec3(-0.44, 0.78, 0.46));
-            vec3 H = normalize(L + V);
-            float spec = pow(max(dot(N, H), 0.0), 78.0);
-            vec3 L2 = normalize(vec3(0.36, 0.42, 0.84));
-            vec3 H2 = normalize(L2 + V);
-            float clearcoat = pow(max(dot(N, H2), 0.0), 170.0);
             float wrap = max(dot(N, L), 0.0);
+            float topGloss = pow(max(dot(N, normalize(vec3(0.0, 1.0, 0.28))), 0.0), 42.0) * crown;
 
-            col += uRimColor * (fresnel * 0.24 + spec * 0.92 + clearcoat * 0.72);
+            col += uRimColor * (fresnel * 0.40 + topGloss * 0.68);
             col += vec3(1.0, 0.62, 0.90) * wrap * 0.08;
             col += gradient * uGlow * 0.12;
 
             float lowerDensity = 1.0 - smoothstep(0.05, 0.65, height);
-            float alpha = mix(0.26, 0.58, thickness) + lowerDensity * 0.04 + fresnel * 0.05 + spec * 0.08;
-            alpha = clamp(alpha * (uOpacity + uGlow * 0.05), 0.20, 0.74);
+            float alpha = mix(0.28, 0.60, thickness) + lowerDensity * 0.04 + fresnel * 0.12 + topGloss * 0.04;
+            alpha = clamp(alpha * (uOpacity + uGlow * 0.05), 0.22, 0.78);
 
             gl_FragColor = vec4(col, alpha);
           }
@@ -536,39 +534,19 @@
       mesh.renderOrder = 2;
       bodyPivot.add(mesh);
 
-      const interior = new THREE.Group();
-      bodyPivot.add(interior);
-      const bubbleGeo = new THREE.SphereGeometry(1, 8, 6);
-      const bubbleMat = new THREE.MeshBasicMaterial({
-        color: 0xffeffb, transparent: true, opacity: 0.16, depthWrite: false
+      const rimMat = new THREE.MeshBasicMaterial({
+        color: 0xffe6ff,
+        transparent: true,
+        opacity: 0.18,
+        side: THREE.BackSide,
+        depthWrite: false,
+        blending: THREE.NormalBlending,
       });
-      bubbleMat.toneMapped = false;
-      [
-        [-0.32, -0.10, 0.20, 0.034], [0.25, 0.12, 0.16, 0.026],
-        [0.08, -0.28, 0.30, 0.022], [-0.08, 0.28, 0.10, 0.018],
-        [0.42, -0.16, -0.06, 0.020], [-0.44, 0.08, -0.08, 0.017],
-        [0.02, 0.02, 0.36, 0.014],
-      ].forEach(([x, y, z, s]) => {
-        const b = new THREE.Mesh(bubbleGeo, bubbleMat);
-        b.position.set(x, y, z); b.scale.setScalar(s); b.renderOrder = 1;
-        interior.add(b);
-      });
-      const sparkleGeo = new THREE.OctahedronGeometry(1, 0);
-      const sparkleMat = new THREE.MeshBasicMaterial({
-        color: 0xffd8ff, transparent: true, opacity: 0.34,
-        blending: THREE.AdditiveBlending, depthWrite: false
-      });
-      sparkleMat.toneMapped = false;
-      const sparkles = [];
-      [
-        [-0.20, 0.18, 0.34, 0.030, 0.0], [0.18, -0.02, 0.28, 0.024, 1.7],
-        [0.34, 0.20, 0.02, 0.020, 3.2], [-0.36, -0.18, 0.12, 0.018, 4.1],
-      ].forEach(([x, y, z, s, phase]) => {
-        const sp = new THREE.Mesh(sparkleGeo, sparkleMat);
-        sp.position.set(x, y, z); sp.scale.setScalar(s); sp.renderOrder = 1;
-        sp.userData.baseScale = s; sp.userData.phase = phase;
-        sparkles.push(sp); interior.add(sp);
-      });
+      rimMat.toneMapped = false;
+      const rimShell = new THREE.Mesh(bodyGeo, rimMat);
+      rimShell.scale.setScalar(1.018);
+      rimShell.renderOrder = 1;
+      bodyPivot.add(rimShell);
 
       let glow = 0, breath = 1, voiceLevel = 0, voiceTarget = 0, voiceFace = false;
       // 젤리 출렁임 스프링(2차 모션/정착) — 이벤트 때 nudge로 튕기고 감쇠하며 멈춤
@@ -606,13 +584,26 @@
         const x = c.getContext('2d'); x.clearRect(0, 0, 256, 256);
         const pair = (eyes || '^  ^').match(/\S+/g) || ['^', '^'];
         // 눈 — 크고 진하게. 모든 감정을 눈으로만 표현(입 없음).
-        x.shadowColor = 'rgba(255, 170, 235, 0.78)';
-        x.shadowBlur = 14;
-        x.fillStyle = '#fff2ff';
-        x.font = '900 112px "DejaVu Sans Mono", monospace';
+        x.shadowBlur = 0;
         x.textAlign = 'center'; x.textBaseline = 'middle';
-        x.fillText(pair[0] || 'o', 88, 118);
-        x.fillText(pair[1] || pair[0] || 'o', 168, 118);
+        if (pair[0] === '^' && (pair[1] || pair[0]) === '^') {
+          x.strokeStyle = '#fff2ff';
+          x.lineWidth = 14;
+          x.lineCap = 'round';
+          x.lineJoin = 'round';
+          [[88, 112], [168, 112]].forEach(([cx, cy]) => {
+            x.beginPath();
+            x.moveTo(cx - 22, cy + 12);
+            x.lineTo(cx, cy - 10);
+            x.lineTo(cx + 22, cy + 12);
+            x.stroke();
+          });
+        } else {
+          x.fillStyle = '#fff2ff';
+          x.font = '900 112px "DejaVu Sans Mono", monospace';
+          x.fillText(pair[0] || 'o', 88, 118);
+          x.fillText(pair[1] || pair[0] || 'o', 168, 118);
+        }
         const t = new THREE.CanvasTexture(c); t.needsUpdate = true; return t;
       }
       const faceMat = new THREE.SpriteMaterial({ map: drawFace(faces.normal), transparent: true, depthTest: false, depthWrite: false });
@@ -906,13 +897,6 @@
 
       function update(time) {
         bodyUniforms.uTime.value = time;
-        interior.rotation.y = Math.sin(time * 0.42) * 0.035;
-        sparkles.forEach(sp => {
-          const pulse = 0.82 + Math.sin(time * 1.35 + sp.userData.phase) * 0.18;
-          sp.scale.setScalar(sp.userData.baseScale * pulse);
-          sp.rotation.y += 0.012;
-          sp.rotation.x += 0.009;
-        });
         const dt = Math.min(0.05, Math.max(0.001, time - lastUpdate)); lastUpdate = time;
         let dy = 0, sy = 1, sxz = 1;
         // 젤리 출렁임 스프링: 임펄스(nudge) 후 몇 번 출렁이다 정착 = 2차 모션(생명감)
@@ -933,7 +917,7 @@
         const scaleY = R * sy * (1 + b);
         const scaleXZ = R * sxz * (1 - b * 0.45);
         bodyPivot.scale.set(scaleXZ, scaleY, scaleXZ);
-        bodyPivot.position.y = 0.56 * scaleY + dy;          // 바닥 planted(둥둥 안 뜸) + 점프 lift만
+        bodyPivot.position.y = 0.58 * scaleY + dy;          // 바닥 planted(둥둥 안 뜸) + 점프 lift만
         look += (lookTarget - look) * 0.15; if (Math.abs(lookTarget) < 0.01) lookTarget *= 0;
         lean += (leanTarget - lean) * 0.12;
         faceDrift += (faceDriftTarget - faceDrift) * 0.16;
