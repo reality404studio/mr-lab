@@ -332,8 +332,9 @@
     camera.position.set(0, 0.26, 0.64);
     camera.lookAt(0, R, 0);
 
-    scene.add(new THREE.AmbientLight(0xffffff, .78));
-    const key = new THREE.DirectionalLight(0xffffff, .42); key.position.set(1, 3, 2); scene.add(key);
+    // 존재감: 강한 방향광은 방 조명과 어긋나 '스튜디오 렌더'처럼 뜬다 → 거의 앰비언트로 평탄화.
+    scene.add(new THREE.AmbientLight(0xffffff, .92));
+    const key = new THREE.DirectionalLight(0xffffff, .20); key.position.set(0.6, 2.2, 1.4); scene.add(key);
 
     // ---------- tiny WebAudio SFX (cute blips, no assets) ----------
     const SFX = (() => {
@@ -468,7 +469,7 @@
         color: PURPLE.clone(),
         emissive: new THREE.Color('#5a47a8'), emissiveIntensity: 0.20,
         roughness: 0.12, metalness: 0,
-        transparent: true, opacity: 0.46, depthWrite: false, side: THREE.FrontSide,
+        transparent: true, opacity: 0.56, depthWrite: false, side: THREE.FrontSide,
       });
       mat.toneMapped = false;
       const mesh = new THREE.Mesh(bodyGeo, mat);
@@ -487,10 +488,15 @@
       bodyPivot.add(rim);
 
       let glow = 0, breath = 1, voiceLevel = 0, voiceTarget = 0, voiceFace = false;
+      // 젤리 출렁임 스프링(2차 모션/정착) — 이벤트 때 nudge로 튕기고 감쇠하며 멈춤
+      let wob = 0, wobV = 0, lastUpdate = performance.now() / 1000;
+      const WOB_K = 420, WOB_D = 6.5;
+      function nudge(amt) { wob += amt; }
+      // 존재감: 평소엔 거의 자가발광 0(방 빛을 받게), 기쁜 순간에만 살짝. 목소리는 빛이 아니라 '움직임'으로 반응.
       function applyBodyLight() {
-        coreMat.emissiveIntensity = 0.45 + glow * 0.50 + voiceLevel * 0.80;  // 목소리 = 안쪽이 환해짐
-        rimMat.opacity = 0.42 + glow * 0.35 + voiceLevel * 0.40;
-        mat.emissiveIntensity = 0.18 + glow * 0.22;
+        coreMat.emissiveIntensity = 0.05 + glow * 0.32;
+        rimMat.opacity = 0.28 + glow * 0.26;   // 림광 낮춤(과하면 네온/홀로그램)
+        mat.emissiveIntensity = 0.0;
       }
       function setGlow(v) { glow = v; applyBodyLight(); }
       function setVoiceLevel(v) { voiceTarget = Math.max(0, Math.min(1, v || 0)); }
@@ -499,7 +505,7 @@
       const shTex = (() => {
         const c = document.createElement('canvas'); c.width = c.height = 128;
         const g = c.getContext('2d'), rad = g.createRadialGradient(64, 64, 4, 64, 64, 60);
-        rad.addColorStop(0, 'rgba(20,10,40,.55)'); rad.addColorStop(1, 'rgba(20,10,40,0)');
+        rad.addColorStop(0, 'rgba(12,7,26,.66)'); rad.addColorStop(0.5, 'rgba(12,7,26,.34)'); rad.addColorStop(1, 'rgba(12,7,26,0)');
         g.fillStyle = rad; g.fillRect(0, 0, 128, 128); return new THREE.CanvasTexture(c);
       })();
       const shadow = new THREE.Mesh(new THREE.PlaneGeometry(R * 3.05, R * 2.7),
@@ -592,9 +598,9 @@
       }
 
       // public-ish animation API
-      function bounce(h = 0.06) { SFX.pop(); add(0.5, p => jump(p, h)); }
+      function bounce(h = 0.06) { SFX.pop(); nudge(0.07); add(0.5, p => jump(p, h)); }
       function boing() {
-        SFX.boing(); setFace('surprised'); setGlow(.7);
+        SFX.boing(); setFace('surprised'); setGlow(.7); nudge(0.14);
         add(0.58, p => { const j = jump(p, 0.18); const wob = Math.sin(p * Math.PI * 4); return { dy: j.dy, sy: j.sy + 0.16 * wob, sxz: 1 - 0.10 * wob }; });
         setTimeout(() => { setGlow(0); setFace('normal'); }, 900);
       }
@@ -604,7 +610,7 @@
         setTimeout(() => { setGlow(0); setFace('normal'); }, 1600);
       }
       function eat() {
-        SFX.nom(); setFace('eat');
+        SFX.nom(); setFace('eat'); nudge(0.09);
         add(1.0, p => { const s = 1 - 0.34 * Math.abs(Math.sin(p * Math.PI * 2)); return { sy: s, sxz: 1 + (1 - s) * 0.7 }; });
         setTimeout(() => { setFace('excited'); setGlow(1); }, 1000);
         setTimeout(() => { setFace('normal'); setGlow(0); }, 2000);
@@ -743,20 +749,27 @@
       }
 
       function update(time) {
+        const dt = Math.min(0.05, Math.max(0.001, time - lastUpdate)); lastUpdate = time;
         let dy = 0, sy = 1, sxz = 1;
-        dy += Math.sin(time * 1.6) * 0.004 * motionScale;   // idle bob
-        const b = Math.sin(time * 1.6) * 0.055 * breath;
+        // 젤리 출렁임 스프링: 임펄스(nudge) 후 몇 번 출렁이다 정착 = 2차 모션(생명감)
+        wobV += (-WOB_K * wob - WOB_D * wobV) * dt;
+        wob += wobV * dt;
+        sy *= 1 + wob; sxz *= 1 - wob * 0.5;
+        // 살짝 불규칙한 호흡 — 완벽한 사인은 기계적이라 두 주파수를 합성
+        const b = (Math.sin(time * 1.55) * 0.6 + Math.sin(time * 0.93 + 1.3) * 0.4) * 0.05 * breath;
         for (let i = actions.length - 1; i >= 0; i--) {
           const a = actions[i]; const p = (time - a.t0) / a.dur;
           if (p >= 1 && a.dur < 999) { actions.splice(i, 1); continue; }
           const r = a.fn(Math.min(p, 1)) || {}; dy += r.dy || 0; sy *= (r.sy != null ? r.sy : 1); sxz *= (r.sxz != null ? r.sxz : 1);
         }
         voiceLevel += (voiceTarget - voiceLevel) * 0.22;   // 실시간 음량 추종
-        dy += voiceLevel * R * 0.16;                        // 소리 나면 살짝 솟구침
+        dy += voiceLevel * R * 0.14;                        // 소리 나면 살짝 솟구침(작게)
         sy *= 1 + voiceLevel * 0.12;                        // 위로 늘어남(귀 쫑긋)
         sxz *= 1 - voiceLevel * 0.05;
-        bodyPivot.position.y = R * 0.56 + dy;
-        bodyPivot.scale.set(R * sxz * (1 - b * 0.45), R * sy * (1 + b), R * sxz * (1 - b * 0.45));
+        const scaleY = R * sy * (1 + b);
+        const scaleXZ = R * sxz * (1 - b * 0.45);
+        bodyPivot.scale.set(scaleXZ, scaleY, scaleXZ);
+        bodyPivot.position.y = 0.56 * scaleY + dy;          // 바닥 planted(둥둥 안 뜸) + 점프 lift만
         look += (lookTarget - look) * 0.15; if (Math.abs(lookTarget) < 0.01) lookTarget *= 0;
         lean += (leanTarget - lean) * 0.12;
         faceDrift += (faceDriftTarget - faceDrift) * 0.16;
@@ -764,12 +777,11 @@
         bodyPivot.rotation.z = -look * 0.5;
         bodyPivot.rotation.x = Math.sin(time * 0.9) * 0.025 * breath + lean - voiceLevel * 0.10;  // 목소리 쪽으로 기웃
         faceSpr.position.set(bodyPivot.position.x + faceDrift * R * 0.12, bodyPivot.position.y + faceOffsetY, bodyPivot.position.z + Math.abs(faceDrift) * R * 0.03);
-        applyBodyLight();
         shadow.scale.setScalar(1 + (1 - sy) * 0.6);          // 눌릴수록 그림자 확장
         const m = shadow.material; m.opacity = 0.9 * Math.max(0, 1 - dy * 6);
         // 목소리 들리면 눈 동그래짐(주목). hysteresis로 경계 떨림 방지.
         if (!State.sleeping) {
-          if (!voiceFace && voiceLevel > 0.22 && currentFace === 'normal') { voiceFace = true; setFace('surprised'); }
+          if (!voiceFace && voiceLevel > 0.22 && currentFace === 'normal') { voiceFace = true; setFace('surprised'); nudge(0.04); }
           else if (voiceFace && voiceLevel < 0.09) { voiceFace = false; if (currentFace === 'surprised') setFace('normal'); }
         }
         if (actions.length === 0 && currentFace === 'normal' && time > nextBlinkAt) {
