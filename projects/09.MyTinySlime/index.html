@@ -1301,12 +1301,14 @@
 
       function makeFood() {
         const mesh = new THREE.Mesh(
-          new THREE.IcosahedronGeometry(R * 0.34, 1),
+          new THREE.IcosahedronGeometry(R * 0.18, 0),
           new THREE.MeshStandardMaterial({
             color: 0xffd45e,
             emissive: 0x8a5a10,
-            emissiveIntensity: 0.4,
-            roughness: 0.5,
+            emissiveIntensity: 0.35,
+            roughness: 0.45,
+            metalness: 0,
+            flatShading: true,
             transparent: true,
             opacity: 1,
             depthWrite: false
