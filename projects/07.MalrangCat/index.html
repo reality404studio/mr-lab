@@ -424,6 +424,41 @@
     const catMeshBack = new THREE.Mesh(catGeoB, catMat);
     catMesh.add(catMeshBack);       // 자식 → catMesh 변형/가시성/핀치이동 따라감
 
+    const CAT_COUNT = 7;
+    const CAT_REVEAL_TOUCHES = [0, 3, 9, 16, 25, 36, 50];
+    const CAT_SPACING = CAT_W * 0.56;
+    const CAT_NOTE_PLAN = [
+      { name: '솔', semitoneFromSol:  0 },
+      { name: '파', semitoneFromSol: -2 },
+      { name: '미', semitoneFromSol: -3 },
+      { name: '레', semitoneFromSol: -5 },
+      { name: '도', semitoneFromSol: -7 },
+      { name: '라', semitoneFromSol:  2 },
+      { name: '시', semitoneFromSol:  4 },
+    ];
+    const CAT_NOTE_RATES = CAT_NOTE_PLAN.map(note => Math.pow(2, note.semitoneFromSol / 12));
+
+    const catMeshes = [catMesh];
+    for (let i = 1; i < CAT_COUNT; i++) {
+      const front = new THREE.Mesh(catGeo, catMat);
+      const back = new THREE.Mesh(catGeoB, catMat);
+      front.add(back);
+      front.visible = false;
+      front.userData.spawnScale = 1;
+      scene.add(front);
+      catMeshes.push(front);
+    }
+
+    const catLayoutCenter = new THREE.Vector3();
+    const catLayoutRight = new THREE.Vector3(1, 0, 0);
+    const catLayoutQuat = new THREE.Quaternion();
+    const _catLayoutTarget = new THREE.Vector3();
+    const _catTouchLocal = new THREE.Vector3();
+    const grabMesh = [catMesh, catMesh];
+    const palmMesh = [catMesh, catMesh];
+    let touchCount = 0;
+    let visibleCatCount = 1;
+
     // ─────────────────────────────────────────────────────────────
     // AUDIO — 터치 시 랜덤 야옹 + 쓰다듬는 동안 골골(purr). 공간 오디오로 고양이에서 남.
     //   AudioContext는 제스처(버튼 클릭/마우스다운) 때 resume — 자동재생 정책 회피.
@@ -432,9 +467,9 @@
     camera.add(listener);                 // XR에서 camera matrixWorld가 머리 추적 → 리스너도 추적
     const audioLoader = new THREE.AudioLoader();
 
-    const MEOW_FILES   = ['cat-meow-1.wav', 'cat-meow2.wav', 'cat-meow3.wav'];
-    const meowBuffers  = new Array(MEOW_FILES.length).fill(null);
-    MEOW_FILES.forEach((f, i) => audioLoader.load(f, b => { meowBuffers[i] = b; }));
+    const MEOW_FILE = 'cat-meow3.wav';
+    let meowBuffer = null;
+    audioLoader.load(MEOW_FILE, b => { meowBuffer = b; });
 
     const meowVoice = new THREE.PositionalAudio(listener);
     meowVoice.setRefDistance(0.6);
@@ -458,16 +493,91 @@
       if (ctx && ctx.state === 'suspended') ctx.resume();
     }
 
-    function playMeow(nowS) {
+    function playMeow(nowS, sourceMesh = catMesh) {
       if (nowS - lastMeowAt < 0.45) return;          // 연타 방지
-      const ready = meowBuffers.filter(Boolean);
-      if (!ready.length) return;
-      const buf = ready[(Math.random() * ready.length) | 0];
+      if (!meowBuffer) return;
+      const catIndex = Math.max(0, catMeshes.indexOf(sourceMesh));
       if (meowVoice.isPlaying) meowVoice.stop();
-      meowVoice.setBuffer(buf);
-      meowVoice.setPlaybackRate(0.94 + Math.random() * 0.12); // 살짝 음정 변주
+      sourceMesh.add(meowVoice);
+      meowVoice.setBuffer(meowBuffer);
+      meowVoice.setPlaybackRate(CAT_NOTE_RATES[catIndex] || 1);
       meowVoice.play();
       lastMeowAt = nowS;
+    }
+
+    function layoutCats(instant = false) {
+      for (let i = 0; i < visibleCatCount; i++) {
+        const offset = (i - (visibleCatCount - 1) * 0.5) * CAT_SPACING;
+        const mesh = catMeshes[i];
+        _catLayoutTarget.copy(catLayoutCenter).addScaledVector(catLayoutRight, offset);
+        mesh.userData.layoutTarget = mesh.userData.layoutTarget || new THREE.Vector3();
+        mesh.userData.layoutQuat = mesh.userData.layoutQuat || new THREE.Quaternion();
+        mesh.userData.layoutTarget.copy(_catLayoutTarget);
+        mesh.userData.layoutQuat.copy(catLayoutQuat);
+        if (instant) {
+          mesh.position.copy(_catLayoutTarget);
+          mesh.quaternion.copy(catLayoutQuat);
+          mesh.scale.setScalar(1);
+          mesh.userData.spawnScale = 1;
+        }
+      }
+    }
+
+    function revealCatsForTouchCount() {
+      let changed = false;
+      for (let i = 1; i < CAT_COUNT; i++) {
+        if (touchCount < CAT_REVEAL_TOUCHES[i] || catMeshes[i].visible) continue;
+        const prev = catMeshes[i - 1];
+        const mesh = catMeshes[i];
+        mesh.position.copy(prev.position).addScaledVector(catLayoutRight, CAT_SPACING);
+        mesh.quaternion.copy(catLayoutQuat);
+        mesh.scale.setScalar(0.001);
+        mesh.userData.spawnScale = 0.001;
+        mesh.visible = true;
+        visibleCatCount = Math.max(visibleCatCount, i + 1);
+        changed = true;
+      }
+      if (changed) layoutCats(false);
+    }
+
+    function registerCatTouch() {
+      touchCount += 1;
+      revealCatsForTouchCount();
+      if (touchCount < CAT_REVEAL_TOUCHES[CAT_COUNT - 1]) {
+        const next = CAT_REVEAL_TOUCHES.find(v => v > touchCount);
+        hintEl.textContent = next ? `터치 ${touchCount} / ${next}` : '';
+      } else {
+        hintEl.textContent = '';
+      }
+    }
+
+    function updateCatLayoutMotion(contact) {
+      if (contact) return;
+      for (let i = 0; i < visibleCatCount; i++) {
+        const mesh = catMeshes[i];
+        if (!mesh.visible) continue;
+        if (mesh.userData.spawnScale < 1) {
+          mesh.userData.spawnScale += (1 - mesh.userData.spawnScale) * 0.14;
+          if (mesh.userData.spawnScale > 0.995) mesh.userData.spawnScale = 1;
+          mesh.scale.setScalar(mesh.userData.spawnScale);
+        }
+        if (mesh.userData.layoutTarget) mesh.position.lerp(mesh.userData.layoutTarget, 0.12);
+        if (mesh.userData.layoutQuat) mesh.quaternion.slerp(mesh.userData.layoutQuat, 0.12);
+      }
+    }
+
+    function resetCatLayout(basePos, baseQuat) {
+      catLayoutCenter.copy(basePos);
+      catLayoutQuat.copy(baseQuat);
+      catLayoutRight.set(1, 0, 0).applyQuaternion(baseQuat).normalize();
+      touchCount = 0;
+      visibleCatCount = 1;
+      for (let i = 0; i < CAT_COUNT; i++) {
+        catMeshes[i].visible = i === 0;
+        catMeshes[i].scale.setScalar(1);
+        catMeshes[i].userData.spawnScale = 1;
+      }
+      layoutCats(true);
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -612,6 +722,7 @@
         new THREE.Vector3(0, 0, 1),
         _headFwd.clone().negate()
       );
+      resetCatLayout(_spawn, catMesh.quaternion);
       catMesh.updateWorldMatrix(false, false);
       catMesh.visible = true;
       initPhysics();
@@ -623,6 +734,7 @@
       catMesh.position.set(0, 0, 0);
       meshHome.set(0, 0, 0);   // 원위치 저장
       catMesh.quaternion.identity();
+      resetCatLayout(catMesh.position, catMesh.quaternion);
       catMesh.updateWorldMatrix(false, false);
       catMesh.visible = true;
       document.getElementById('overlay').classList.add('hidden');
@@ -756,6 +868,58 @@
       }
     }
 
+    function findTouchMesh(worldPos, outLocal) {
+      let bestMesh = null;
+      let bestGap = Infinity;
+      for (let i = 0; i < visibleCatCount; i++) {
+        const mesh = catMeshes[i];
+        if (!mesh.visible) continue;
+        _invMat.copy(mesh.matrixWorld).invert();
+        outLocal.copy(worldPos).applyMatrix4(_invMat);
+        const surfZ = surfaceZAtLocal(outLocal);
+        const gap = outLocal.z - surfZ;
+        if (surfZ < 0 || gap > TOUCH_GAP || gap < -PRESS_MAX) continue;
+        const absGap = Math.abs(gap);
+        if (absGap < bestGap) {
+          bestGap = absGap;
+          bestMesh = mesh;
+          _catTouchLocal.copy(outLocal);
+        }
+      }
+      if (!bestMesh) return null;
+      outLocal.copy(_catTouchLocal);
+      _invMat.copy(bestMesh.matrixWorld).invert();
+      return bestMesh;
+    }
+
+    function findPalmMesh(handIndex, outLocal) {
+      let bestMesh = null;
+      let bestGap = Infinity;
+      for (let i = 0; i < visibleCatCount; i++) {
+        const mesh = catMeshes[i];
+        if (!mesh.visible) continue;
+        _dir.copy(mesh.position).sub(palmPos[handIndex]);
+        if (_dir.lengthSq() < 1e-8) continue;
+        _dir.normalize();
+        _palmC.copy(palmPos[handIndex]).addScaledVector(_dir, T.push.offset);
+        _invMat.copy(mesh.matrixWorld).invert();
+        outLocal.copy(_palmC).applyMatrix4(_invMat);
+        const surfZ = surfaceZAtLocal(outLocal);
+        const gapZ = outLocal.z - surfZ;
+        if (surfZ < 0 || gapZ >= PALM_GAP || gapZ <= -PRESS_MAX) continue;
+        const absGap = Math.abs(gapZ);
+        if (absGap < bestGap) {
+          bestGap = absGap;
+          bestMesh = mesh;
+          _catTouchLocal.copy(outLocal);
+        }
+      }
+      if (!bestMesh) return null;
+      outLocal.copy(_catTouchLocal);
+      _invMat.copy(bestMesh.matrixWorld).invert();
+      return bestMesh;
+    }
+
     // ─────────────────────────────────────────────────────────────
     // GRAB UPDATE — 손별 잡기 획득/해제
     // ─────────────────────────────────────────────────────────────
@@ -771,8 +935,18 @@
           continue;
         }
 
-        // 손끝 → 로컬 공간 변환
-        fingerLocalPos[h].copy(fingers[h].pos).applyMatrix4(_invMat);
+        // 손끝 → 실제로 닿은 고양이의 로컬 공간으로 변환
+        if (!grabActive[h]) {
+          const meshForHand = findTouchMesh(fingers[h].pos, fingerLocalPos[h]);
+          if (!meshForHand) {
+            fingerLocalPos[h].set(9999, 9999, 9999);
+            continue;
+          }
+          grabMesh[h] = meshForHand;
+        } else {
+          _invMat.copy(grabMesh[h].matrixWorld).invert();
+          fingerLocalPos[h].copy(fingers[h].pos).applyMatrix4(_invMat);
+        }
 
         // ── 표면 간격 게이트 (획득 시): 손끝이 그 XY의 실제 풍선 표면(balloonZ)에
         //    거의 닿았을 때만 인터랙션 시작. 평면 z 슬랩이 아니라 표면 간격 기반이라
@@ -782,7 +956,6 @@
           const gap   = fingerLocalPos[h].z - surfZ;          // +면 표면 앞 허공, -면 관통
           if (surfZ < 0 || gap > TOUCH_GAP || gap < -PRESS_MAX) {
             fingerLocalPos[h].set(9999, 9999, 9999);
-            fingers[h].has = false;
             continue;
           }
         } else {
@@ -791,7 +964,6 @@
           if (fingerLocalPos[h].z < -PRESS_MAX || fingerLocalPos[h].z > TOUCH_Z + 0.4) {
             grabActive[h] = false; grabWeight[h].fill(0);
             fingerLocalPos[h].set(9999, 9999, 9999);
-            fingers[h].has = false;
             continue;
           }
         }
@@ -886,19 +1058,12 @@
         palmStick[h] = false;
         if (!palmHas[h]) continue;
 
-        // 손바닥 중심(조인트 기준)은 피부보다 안쪽 → 고양이 쪽으로 offset 보정
-        _dir.copy(catMesh.position).sub(palmPos[h]);
-        if (_dir.lengthSq() < 1e-8) continue;
-        _dir.normalize();
-        _palmC.copy(palmPos[h]).addScaledVector(_dir, T.push.offset);
-
-        // 접촉점 → cat-local, 윤곽 안 + 표면 근처(z)일 때만 접촉
-        palmLocalPt[h].copy(_palmC).applyMatrix4(_invMat);
-        const lp   = palmLocalPt[h];
-        const surfZ = surfaceZAtLocal(lp);     // 그 XY의 실제 표면 높이 (윤곽 밖 -1)
-        const gapZ  = lp.z - surfZ;            // 표면 간격 (평면 z 슬랩 대신)
-        // 윤곽 안 + 표면에 거의 닿았을 때만 클링 → 가장자리 허공 클링 제거
-        if (surfZ >= 0 && gapZ < PALM_GAP && gapZ > -PRESS_MAX) palmStick[h] = true;
+        // 접촉점 → 실제로 닿은 고양이의 로컬 공간, 윤곽 안 + 표면 근처(z)일 때만 접촉
+        const meshForPalm = findPalmMesh(h, palmLocalPt[h]);
+        if (meshForPalm) {
+          palmMesh[h] = meshForPalm;
+          palmStick[h] = true;
+        }
       }
     }
 
@@ -1178,6 +1343,7 @@
       //   holdActive = pinching && grabActive 라 허공·단순접촉으론 절대 안 움직인다.
       //   (제거된 입력: palmStick/단순 grab 몸통이동 + meshVel 글라이드 — "겉도는 느낌"의 원인)
       spinning = false;
+      const bodyMesh = (holdActive[0] && grabMesh[0]) || (holdActive[1] && grabMesh[1]) || catMesh;
       const twoHand = holdActive[0] && holdActive[1] && fingers[0].has && fingers[1].has;
 
       if (twoHand) {
@@ -1190,9 +1356,9 @@
 
         // ── 중점 이동(translation): 두 손이 같은 방향으로 움직이면 따라 이동
         _cenNow.addVectors(_hA, _hB).multiplyScalar(0.5);
-        catMesh.position.x += _cenNow.x - (a0x + b0x) * 0.5;
-        catMesh.position.y += _cenNow.y - (a0y + b0y) * 0.5;
-        catMesh.position.z += _cenNow.z - (a0z + b0z) * 0.5;
+        bodyMesh.position.x += _cenNow.x - (a0x + b0x) * 0.5;
+        bodyMesh.position.y += _cenNow.y - (a0y + b0y) * 0.5;
+        bodyMesh.position.z += _cenNow.z - (a0z + b0z) * 0.5;
 
         // ── XZ(수평) 평면 두 손 벡터 각도 변화 → Y축 회전 (위아래 떨림 무시)
         let dAng = Math.atan2(_hB.z - _hA.z, _hB.x - _hA.x) -
@@ -1209,13 +1375,13 @@
           // atan2(z,x) 각도를 +dAng 따라가려면 월드 +Y축으로 θ=-dAng 회전
           const th = -dAng, cs = Math.cos(th), sn = Math.sin(th);
           // 중점 피벗 기준 position 회전 (월드 +Y)
-          const px = catMesh.position.x - _cenNow.x;
-          const pz = catMesh.position.z - _cenNow.z;
-          catMesh.position.x = _cenNow.x + px * cs + pz * sn;
-          catMesh.position.z = _cenNow.z - px * sn + pz * cs;
+          const px = bodyMesh.position.x - _cenNow.x;
+          const pz = bodyMesh.position.z - _cenNow.z;
+          bodyMesh.position.x = _cenNow.x + px * cs + pz * sn;
+          bodyMesh.position.z = _cenNow.z - px * sn + pz * cs;
           // 본체 방향 회전
           _qSpin.setFromAxisAngle(_yAxis, th);
-          catMesh.quaternion.premultiply(_qSpin);
+          bodyMesh.quaternion.premultiply(_qSpin);
         }
         return;
       }
@@ -1223,7 +1389,7 @@
       // ── 한 손 핀치-홀드: 집어 든 손만 저항감 있게 위치 추종
       for (let h = 0; h < 2; h++) {
         if (!holdActive[h] || !fingers[h].has) continue;
-        catMesh.position.addScaledVector(fingerVel[h], T.hold.stick);
+        (grabMesh[h] || catMesh).position.addScaledVector(fingerVel[h], T.hold.stick);
       }
     }
 
@@ -1233,7 +1399,7 @@
     function updateCat() {
       if (!MOUSEMODE) readFingers();
 
-      catMesh.updateWorldMatrix(false, false);
+      for (let i = 0; i < visibleCatCount; i++) catMeshes[i].updateWorldMatrix(false, false);
       updateGrab();
       updatePalm();        // ← 손바닥 접촉 판정 (simStep cling + 이동에 사용)
       simStep();           // 앞면(손 힘의 주인)
@@ -1256,8 +1422,18 @@
       const contact = grabActive[0] || grabActive[1] || palmStick[0] || palmStick[1] ||
                       holdActive[0] || holdActive[1];
       const nowS = performance.now() * 0.001;
-      if (contact && !contactPrev) playMeow(nowS);   // 닿는 순간 한 번
+      if (contact && !contactPrev) {
+        const soundMesh =
+          (grabActive[0] && grabMesh[0]) ||
+          (grabActive[1] && grabMesh[1]) ||
+          (palmStick[0] && palmMesh[0]) ||
+          (palmStick[1] && palmMesh[1]) ||
+          catMesh;
+        registerCatTouch();
+        playMeow(nowS, soundMesh);   // 닿는 순간 한 번
+      }
       contactPrev = contact;
+      updateCatLayoutMotion(contact);
 
       if (purrBuffer) {
         const target = contact ? 0.5 : 0;            // 쓰다듬는 동안만 골골
@@ -1271,6 +1447,7 @@
       if (DEBUG) {
         dbgEl.textContent =
           `mode: ${MOUSEMODE ? 'mouse' : 'XR'}  spin:${spinning ? '🔄' : '○'}\n` +
+          `cats: ${visibleCatCount}/${CAT_COUNT} touches:${touchCount}\n` +
           `L: ${fingers[0].has ? '✓' : '✗'} grab:${grabActive[0] ? '●' : '○'} hold:${holdActive[0] ? '✊' : '○'} palm:${palmStick[0] ? '✋' : '○'}\n` +
           `R: ${fingers[1].has ? '✓' : '✗'} grab:${grabActive[1] ? '●' : '○'} hold:${holdActive[1] ? '✊' : '○'} palm:${palmStick[1] ? '✋' : '○'}`;
       }
@@ -1336,8 +1513,8 @@
         fingerSpeed[0] = 0;
         // 잡기 해제 시 현재 속도를 버텍스에 전달
         if (grabActive[0]) {
-          catMesh.updateWorldMatrix(false, false);
-          _invMat.copy(catMesh.matrixWorld).invert();
+          (grabMesh[0] || catMesh).updateWorldMatrix(false, false);
+          _invMat.copy((grabMesh[0] || catMesh).matrixWorld).invert();
           const e   = _invMat.elements;
           const wx  = fingerVel[0].x, wy = fingerVel[0].y, wz = fingerVel[0].z;
           const lvx = e[0]*wx + e[4]*wy + e[8]*wz;
