@@ -490,10 +490,13 @@
     let meowBuffer = null;
     audioLoader.load(MEOW_FILE, b => { meowBuffer = b; });
 
-    const meowVoice = new THREE.PositionalAudio(listener);
-    meowVoice.setRefDistance(0.6);
-    meowVoice.setRolloffFactor(0.6);      // 완만한 거리 감쇠 (멀어도 들리게)
-    catMesh.add(meowVoice);
+    const meowVoices = catMeshes.map(mesh => {
+      const voice = new THREE.PositionalAudio(listener);
+      voice.setRefDistance(0.6);
+      voice.setRolloffFactor(0.6);      // 완만한 거리 감쇠 (멀어도 들리게)
+      mesh.add(voice);
+      return voice;
+    });
 
     const purrVoice = new THREE.PositionalAudio(listener);
     purrVoice.setRefDistance(0.6);
@@ -504,7 +507,7 @@
     let purrBuffer = null;
     audioLoader.load('purring.wav', b => { purrBuffer = b; });
 
-    let lastMeowAt  = -1e9;               // 야옹 쿨다운용
+    const lastMeowAt = new Array(CAT_COUNT).fill(-1e9); // 고양이별 야옹 쿨다운
     let contactPrev = false;              // 접촉 상승엣지 감지용
 
     function resumeAudio() {
@@ -513,15 +516,15 @@
     }
 
     function playMeow(nowS, sourceMesh = catMesh) {
-      if (nowS - lastMeowAt < 0.45) return;          // 연타 방지
-      if (!meowBuffer) return;
       const catIndex = Math.max(0, catMeshes.indexOf(sourceMesh));
-      if (meowVoice.isPlaying) meowVoice.stop();
-      sourceMesh.add(meowVoice);
-      meowVoice.setBuffer(meowBuffer);
-      meowVoice.setPlaybackRate(CAT_NOTE_RATES[catIndex] || 1);
-      meowVoice.play();
-      lastMeowAt = nowS;
+      if (nowS - lastMeowAt[catIndex] < 0.45) return; // 같은 고양이만 연타 방지
+      if (!meowBuffer) return;
+      const voice = meowVoices[catIndex] || meowVoices[0];
+      if (voice.isPlaying) voice.stop();
+      voice.setBuffer(meowBuffer);
+      voice.setPlaybackRate(CAT_NOTE_RATES[catIndex] || 1);
+      voice.play();
+      lastMeowAt[catIndex] = nowS;
       registerCatTouch();
     }
 
