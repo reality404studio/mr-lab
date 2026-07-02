@@ -622,6 +622,17 @@
     let rlD1 = new Float32Array(VCOUNT); // i ↔ i+COLS+1 (down-right)
     let rlD2 = new Float32Array(VCOUNT); // i ↔ i+COLS-1 (down-left)
 
+    // Per-cat state aliases. These are rebound by activateCatState(), so they
+    // must exist before the initial cat state activation runs.
+    let fingerLocalPos = [new THREE.Vector3(), new THREE.Vector3()];
+    let palmStick    = [false, false];
+    let palmLocalPt  = [new THREE.Vector3(), new THREE.Vector3()];
+    let holdActive = [false, false];
+    let grabActive  = [false, false];
+    let grabWeight  = [new Float32Array(VCOUNT), new Float32Array(VCOUNT)];
+    let grabCenterL = [new THREE.Vector3(), new THREE.Vector3()];
+    let regrabCool  = [0, 0];
+
     function computeRestLengths() {
       for (let r = 0; r <= SEG; r++) for (let c = 0; c <= SEG; c++) {
         const i = r * COLS + c, i3 = i * 3;
@@ -707,7 +718,6 @@
     const fingerPrev     = [new THREE.Vector3(), new THREE.Vector3()];
     const fingerVel      = [new THREE.Vector3(), new THREE.Vector3()];
     const fingerSpeed    = [0, 0];
-    let fingerLocalPos = [new THREE.Vector3(), new THREE.Vector3()];
     const fingerCanGrab  = [false, false]; // XR = true 항상; 마우스 = 클릭 시만
 
     // ── PALM STATE — 손바닥으로 슥슥 밀어 고양이 이동 + 손에 감기는 cling
@@ -715,15 +725,12 @@
     const palmPrev     = [new THREE.Vector3(), new THREE.Vector3()];
     const palmVel      = [new THREE.Vector3(), new THREE.Vector3()];
     const palmHas      = [false, false];
-    let palmStick    = [false, false];                                     // 이번 프레임 접촉?
-    let palmLocalPt  = [new THREE.Vector3(), new THREE.Vector3()];         // 접촉점(cat-local)
     const _palmC       = new THREE.Vector3(); // 보정된 접촉점(world)
     const _dir         = new THREE.Vector3(); // 손바닥→고양이 방향
     const _w           = new THREE.Vector3(); // 임시 (wrist)
 
     // ── PINCH-HOLD STATE — 핀치로 집어 고양이 전체를 들고 옮김
     const pinching   = [false, false];  // 엄지-검지 모음 상태
-    let holdActive = [false, false];    // 고양이를 집어 든 상태(이동 추종)
     const _thumb     = new THREE.Vector3();
 
     // 마우스 모드: hover 글로우용 (physics와 분리)
@@ -733,12 +740,8 @@
     // ─────────────────────────────────────────────────────────────
     // GRAB STATE
     // ─────────────────────────────────────────────────────────────
-    let grabActive  = [false, false];
     // grabWeight[h][i] = 0~1 (단순 블리안 대신 거리 가중치)
     // 가운데 = 1, 반경 끝 = 0 → 점토 주룉 늘어나는 느낌
-    let grabWeight  = [new Float32Array(VCOUNT), new Float32Array(VCOUNT)];
-    let grabCenterL = [new THREE.Vector3(), new THREE.Vector3()];
-    let regrabCool  = [0, 0];
 
     // ─────────────────────────────────────────────────────────────
     // MESH RIGID BODY — 메시 전체 이동 (cat이 손으로 밀리도록)
