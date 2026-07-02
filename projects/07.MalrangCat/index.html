@@ -283,7 +283,7 @@
     // ─────────────────────────────────────────────────────────────
     // CAT MESH — PlaneGeometry + ShaderMaterial
     // ─────────────────────────────────────────────────────────────
-    const catGeo = new THREE.PlaneGeometry(T.cat.width, T.cat.height, SEG, SEG);
+    let catGeo = new THREE.PlaneGeometry(T.cat.width, T.cat.height, SEG, SEG);
 
     // ── 알파 마스크 + 풍선 돔
     // alphaMask[i]=0 → 투명(고양이 윤곽 밖), 물리 정지
@@ -363,8 +363,11 @@
         balloonZ[i] = Math.sin(t * Math.PI * 0.5) * BULGE;
       }
 
-      applyBalloon();
       balloonBuilt = true;
+      for (const state of catStates) {
+        activateCatState(state);
+        applyBalloon();
+      }
     }
 
     // 풍선 높이를 지오메트리 + rest 위치에 적용
@@ -392,7 +395,7 @@
     const catTex = new THREE.TextureLoader().load('cheesecat.png');
     catTex.colorSpace = THREE.SRGBColorSpace;
 
-    const catMat = new THREE.ShaderMaterial({
+    let catMat = new THREE.ShaderMaterial({
       vertexShader:   catVert,
       fragmentShader: catFrag,
       transparent: true,
@@ -407,14 +410,14 @@
       },
     });
 
-    const catMesh = new THREE.Mesh(catGeo, catMat);
+    let catMesh = new THREE.Mesh(catGeo, catMat);
     catMesh.visible = false;
     scene.add(catMesh);
 
     // ── 뒷면 껍데기: 독립 지오메트리(거울 공유 X)
     // 앞면 버퍼를 공유하지 않고 자기 물리를 가짐 → 앞을 만져도 뒤는 따로 거동.
     // 두께 스프링이 앞↔뒤를 묶어 닫힌 볼륨 유지(rim에선 rest≈0 → 봉합, 안 비침).
-    const catGeoB = catGeo.clone();
+    let catGeoB = catGeo.clone();
     // 윈딩 반전 → 법선이 -Z(바깥쪽) 향하도록 (뒷면 라이팅 정상화)
     if (catGeoB.index) {
       const idx = catGeoB.index.array;
@@ -423,6 +426,9 @@
     }
     const catMeshBack = new THREE.Mesh(catGeoB, catMat);
     catMesh.add(catMeshBack);       // 자식 → catMesh 변형/가시성/핀치이동 따라감
+    catMesh.userData.catGeo = catGeo;
+    catMesh.userData.catGeoB = catGeoB;
+    catMesh.userData.catMat = catMat;
 
     const CAT_COUNT = 7;
     const CAT_REVEAL_TOUCHES = [0, 3, 9, 16, 25, 36, 50];
@@ -440,14 +446,27 @@
 
     const catMeshes = [catMesh];
     for (let i = 1; i < CAT_COUNT; i++) {
-      const front = new THREE.Mesh(catGeo, catMat);
-      const back = new THREE.Mesh(catGeoB, catMat);
+      const frontGeo = new THREE.PlaneGeometry(T.cat.width, T.cat.height, SEG, SEG);
+      const backGeo = frontGeo.clone();
+      if (backGeo.index) {
+        const idx = backGeo.index.array;
+        for (let t = 0; t < idx.length; t += 3) { const tmp = idx[t]; idx[t] = idx[t+2]; idx[t+2] = tmp; }
+        backGeo.index.needsUpdate = true;
+      }
+      const mat = catMat.clone();
+      const front = new THREE.Mesh(frontGeo, mat);
+      const back = new THREE.Mesh(backGeo, mat);
       front.add(back);
       front.visible = false;
       front.userData.spawnScale = 1;
+      front.userData.catGeo = frontGeo;
+      front.userData.catGeoB = backGeo;
+      front.userData.catMat = mat;
       scene.add(front);
       catMeshes.push(front);
     }
+    let catStates = [];
+    let activeCatState = null;
 
     const catLayoutCenter = new THREE.Vector3();
     const catLayoutRight = new THREE.Vector3(1, 0, 0);
@@ -584,24 +603,24 @@
     // ─────────────────────────────────────────────────────────────
     // PHYSICS BUFFERS (로컬 메시 공간)
     // ─────────────────────────────────────────────────────────────
-    const posArr  = catGeo.attributes.position.array;  // 앞면 지오메트리 버퍼 직접 참조
-    const restArr = new Float32Array(VCOUNT * 3);       // 초기(rest) 위치
-    const velArr  = new Float32Array(VCOUNT * 3);       // 버텍스 속도
-    const prevArr = new Float32Array(VCOUNT * 3);       // 직전 프레임 스냅샷 (Jacobi 적분용)
+    let posArr  = catGeo.attributes.position.array;  // 앞면 지오메트리 버퍼 직접 참조
+    let restArr = new Float32Array(VCOUNT * 3);       // 초기(rest) 위치
+    let velArr  = new Float32Array(VCOUNT * 3);       // 버텍스 속도
+    let prevArr = new Float32Array(VCOUNT * 3);       // 직전 프레임 스냅샷 (Jacobi 적분용)
 
     // 뒷면 레이어 (독립 시뮬, 두께 스프링으로 앞면 따라 볼륨 유지)
-    const posArrB  = catGeoB.attributes.position.array; // 뒷면 지오메트리 버퍼
-    const restArrB = new Float32Array(VCOUNT * 3);
-    const velArrB  = new Float32Array(VCOUNT * 3);
-    const prevArrB = new Float32Array(VCOUNT * 3);
+    let posArrB  = catGeoB.attributes.position.array; // 뒷면 지오메트리 버퍼
+    let restArrB = new Float32Array(VCOUNT * 3);
+    let velArrB  = new Float32Array(VCOUNT * 3);
+    let prevArrB = new Float32Array(VCOUNT * 3);
 
     // ── 스프링 rest 길이 (풍선 돔 포함 실제 거리)
     // 평면 hStep/vStep을 쓰면 돔 경사가 영구 긴장 → 손 안 대도 자가운동.
     // rest 위치(돔 포함)의 실제 이웃 거리로 잡아야 돔이 진짜 평형이 됨.
-    const rlH  = new Float32Array(VCOUNT); // i ↔ i+1      (col < SEG)
-    const rlV  = new Float32Array(VCOUNT); // i ↔ i+COLS   (row < SEG)
-    const rlD1 = new Float32Array(VCOUNT); // i ↔ i+COLS+1 (down-right)
-    const rlD2 = new Float32Array(VCOUNT); // i ↔ i+COLS-1 (down-left)
+    let rlH  = new Float32Array(VCOUNT); // i ↔ i+1      (col < SEG)
+    let rlV  = new Float32Array(VCOUNT); // i ↔ i+COLS   (row < SEG)
+    let rlD1 = new Float32Array(VCOUNT); // i ↔ i+COLS+1 (down-right)
+    let rlD2 = new Float32Array(VCOUNT); // i ↔ i+COLS-1 (down-left)
 
     function computeRestLengths() {
       for (let r = 0; r <= SEG; r++) for (let c = 0; c <= SEG; c++) {
@@ -614,6 +633,70 @@
       }
     }
 
+    function makeCatState(mesh) {
+      const geo = mesh.userData.catGeo;
+      const geoB = mesh.userData.catGeoB;
+      return {
+        mesh,
+        geo,
+        geoB,
+        mat: mesh.userData.catMat,
+        posArr: geo.attributes.position.array,
+        restArr: new Float32Array(VCOUNT * 3),
+        velArr: new Float32Array(VCOUNT * 3),
+        prevArr: new Float32Array(VCOUNT * 3),
+        posArrB: geoB.attributes.position.array,
+        restArrB: new Float32Array(VCOUNT * 3),
+        velArrB: new Float32Array(VCOUNT * 3),
+        prevArrB: new Float32Array(VCOUNT * 3),
+        rlH: new Float32Array(VCOUNT),
+        rlV: new Float32Array(VCOUNT),
+        rlD1: new Float32Array(VCOUNT),
+        rlD2: new Float32Array(VCOUNT),
+        fingerLocalPos: [new THREE.Vector3(), new THREE.Vector3()],
+        palmStick: [false, false],
+        palmLocalPt: [new THREE.Vector3(), new THREE.Vector3()],
+        holdActive: [false, false],
+        grabActive: [false, false],
+        grabWeight: [new Float32Array(VCOUNT), new Float32Array(VCOUNT)],
+        grabCenterL: [new THREE.Vector3(), new THREE.Vector3()],
+        regrabCool: [0, 0],
+        contactPrev: false,
+        spinning: false,
+      };
+    }
+
+    function activateCatState(state) {
+      activeCatState = state;
+      catMesh = state.mesh;
+      catGeo = state.geo;
+      catGeoB = state.geoB;
+      catMat = state.mat;
+      posArr = state.posArr;
+      restArr = state.restArr;
+      velArr = state.velArr;
+      prevArr = state.prevArr;
+      posArrB = state.posArrB;
+      restArrB = state.restArrB;
+      velArrB = state.velArrB;
+      prevArrB = state.prevArrB;
+      rlH = state.rlH;
+      rlV = state.rlV;
+      rlD1 = state.rlD1;
+      rlD2 = state.rlD2;
+      fingerLocalPos = state.fingerLocalPos;
+      palmStick = state.palmStick;
+      palmLocalPt = state.palmLocalPt;
+      holdActive = state.holdActive;
+      grabActive = state.grabActive;
+      grabWeight = state.grabWeight;
+      grabCenterL = state.grabCenterL;
+      regrabCool = state.regrabCool;
+    }
+
+    catStates = catMeshes.map(makeCatState);
+    activateCatState(catStates[0]);
+
     // ─────────────────────────────────────────────────────────────
     // FINGER STATE
     // ─────────────────────────────────────────────────────────────
@@ -624,7 +707,7 @@
     const fingerPrev     = [new THREE.Vector3(), new THREE.Vector3()];
     const fingerVel      = [new THREE.Vector3(), new THREE.Vector3()];
     const fingerSpeed    = [0, 0];
-    const fingerLocalPos = [new THREE.Vector3(), new THREE.Vector3()];
+    let fingerLocalPos = [new THREE.Vector3(), new THREE.Vector3()];
     const fingerCanGrab  = [false, false]; // XR = true 항상; 마우스 = 클릭 시만
 
     // ── PALM STATE — 손바닥으로 슥슥 밀어 고양이 이동 + 손에 감기는 cling
@@ -632,15 +715,15 @@
     const palmPrev     = [new THREE.Vector3(), new THREE.Vector3()];
     const palmVel      = [new THREE.Vector3(), new THREE.Vector3()];
     const palmHas      = [false, false];
-    const palmStick    = [false, false];                                   // 이번 프레임 접촉?
-    const palmLocalPt  = [new THREE.Vector3(), new THREE.Vector3()];       // 접촉점(cat-local)
+    let palmStick    = [false, false];                                     // 이번 프레임 접촉?
+    let palmLocalPt  = [new THREE.Vector3(), new THREE.Vector3()];         // 접촉점(cat-local)
     const _palmC       = new THREE.Vector3(); // 보정된 접촉점(world)
     const _dir         = new THREE.Vector3(); // 손바닥→고양이 방향
     const _w           = new THREE.Vector3(); // 임시 (wrist)
 
     // ── PINCH-HOLD STATE — 핀치로 집어 고양이 전체를 들고 옮김
     const pinching   = [false, false];  // 엄지-검지 모음 상태
-    const holdActive = [false, false];  // 고양이를 집어 든 상태(이동 추종)
+    let holdActive = [false, false];    // 고양이를 집어 든 상태(이동 추종)
     const _thumb     = new THREE.Vector3();
 
     // 마우스 모드: hover 글로우용 (physics와 분리)
@@ -650,12 +733,12 @@
     // ─────────────────────────────────────────────────────────────
     // GRAB STATE
     // ─────────────────────────────────────────────────────────────
-    const grabActive  = [false, false];
+    let grabActive  = [false, false];
     // grabWeight[h][i] = 0~1 (단순 블리안 대신 거리 가중치)
     // 가운데 = 1, 반경 끝 = 0 → 점토 주룉 늘어나는 느낌
-    const grabWeight  = [new Float32Array(VCOUNT), new Float32Array(VCOUNT)];
-    const grabCenterL = [new THREE.Vector3(), new THREE.Vector3()];
-    const regrabCool  = [0, 0];
+    let grabWeight  = [new Float32Array(VCOUNT), new Float32Array(VCOUNT)];
+    let grabCenterL = [new THREE.Vector3(), new THREE.Vector3()];
+    let regrabCool  = [0, 0];
 
     // ─────────────────────────────────────────────────────────────
     // MESH RIGID BODY — 메시 전체 이동 (cat이 손으로 밀리도록)
@@ -684,7 +767,7 @@
     // ─────────────────────────────────────────────────────────────
     // INIT PHYSICS — rest 위치 복사, 속도 초기화
     // ─────────────────────────────────────────────────────────────
-    function initPhysics() {
+    function initActiveCatPhysics() {
       if (balloonBuilt) applyBalloon();
       restArr.set(posArr);
       restArrB.set(posArrB);
@@ -694,18 +777,29 @@
       grabActive[0] = grabActive[1] = false;
       grabWeight[0].fill(0); grabWeight[1].fill(0);
       regrabCool[0] = regrabCool[1] = 0;
+      palmStick[0] = palmStick[1] = false;
+      holdActive[0] = holdActive[1] = false;
+    }
+
+    function initPhysics() {
+      for (const state of catStates) {
+        activateCatState(state);
+        initActiveCatPhysics();
+        state.contactPrev = false;
+        state.spinning = false;
+      }
       fingerCanGrab[0] = fingerCanGrab[1] = false;
       palmHas[0] = palmHas[1] = false;
-      palmStick[0] = palmStick[1] = false;
       pinching[0] = pinching[1] = false;
-      holdActive[0] = holdActive[1] = false;
       meshVel.set(0, 0, 0);
+      activateCatState(catStates[0]);
     }
 
     // ─────────────────────────────────────────────────────────────
     // PLACEMENT (XR) — 세션 첫 프레임에 눈높이 정면 배치
     // ─────────────────────────────────────────────────────────────
     function placeCat() {
+      activateCatState(catStates[0]);
       const xrCam = renderer.xr.getCamera();
       xrCam.getWorldPosition(_headPos);
       xrCam.getWorldDirection(_headFwd);
@@ -732,6 +826,7 @@
 
     // PLACEMENT (mouse) — 원점에 고양이, 카메라는 앞쪽
     function placeCatMouse() {
+      activateCatState(catStates[0]);
       catMesh.position.set(0, 0, 0);
       meshHome.set(0, 0, 0);   // 원위치 저장
       catMesh.quaternion.identity();
@@ -893,6 +988,15 @@
       return bestMesh;
     }
 
+    function touchMeshAt(mesh, worldPos, outLocal) {
+      if (!mesh.visible) return false;
+      _invMat.copy(mesh.matrixWorld).invert();
+      outLocal.copy(worldPos).applyMatrix4(_invMat);
+      const surfZ = surfaceZAtLocal(outLocal);
+      const gap = outLocal.z - surfZ;
+      return surfZ >= 0 && gap <= TOUCH_GAP && gap >= -PRESS_MAX;
+    }
+
     function findPalmMesh(handIndex, outLocal) {
       let bestMesh = null;
       let bestGap = Infinity;
@@ -921,6 +1025,19 @@
       return bestMesh;
     }
 
+    function palmMeshAt(mesh, handIndex, outLocal) {
+      if (!mesh.visible) return false;
+      _dir.copy(mesh.position).sub(palmPos[handIndex]);
+      if (_dir.lengthSq() < 1e-8) return false;
+      _dir.normalize();
+      _palmC.copy(palmPos[handIndex]).addScaledVector(_dir, T.push.offset);
+      _invMat.copy(mesh.matrixWorld).invert();
+      outLocal.copy(_palmC).applyMatrix4(_invMat);
+      const surfZ = surfaceZAtLocal(outLocal);
+      const gapZ = outLocal.z - surfZ;
+      return surfZ >= 0 && gapZ < PALM_GAP && gapZ > -PRESS_MAX;
+    }
+
     // ─────────────────────────────────────────────────────────────
     // GRAB UPDATE — 손별 잡기 획득/해제
     // ─────────────────────────────────────────────────────────────
@@ -938,14 +1055,13 @@
 
         // 손끝 → 실제로 닿은 고양이의 로컬 공간으로 변환
         if (!grabActive[h]) {
-          const meshForHand = findTouchMesh(fingers[h].pos, fingerLocalPos[h]);
-          if (!meshForHand) {
+          if (!touchMeshAt(catMesh, fingers[h].pos, fingerLocalPos[h])) {
             fingerLocalPos[h].set(9999, 9999, 9999);
             continue;
           }
-          grabMesh[h] = meshForHand;
+          grabMesh[h] = catMesh;
         } else {
-          _invMat.copy(grabMesh[h].matrixWorld).invert();
+          _invMat.copy(catMesh.matrixWorld).invert();
           fingerLocalPos[h].copy(fingers[h].pos).applyMatrix4(_invMat);
         }
 
@@ -1060,9 +1176,8 @@
         if (!palmHas[h]) continue;
 
         // 접촉점 → 실제로 닿은 고양이의 로컬 공간, 윤곽 안 + 표면 근처(z)일 때만 접촉
-        const meshForPalm = findPalmMesh(h, palmLocalPt[h]);
-        if (meshForPalm) {
-          palmMesh[h] = meshForPalm;
+        if (palmMeshAt(catMesh, h, palmLocalPt[h])) {
+          palmMesh[h] = catMesh;
           palmStick[h] = true;
         }
       }
@@ -1343,12 +1458,12 @@
       //   · 양손 핀치-홀드   → 두 손 중점 기준 Y축 회전 + 중점 이동 (현실 물건 비틀듯)
       //   holdActive = pinching && grabActive 라 허공·단순접촉으론 절대 안 움직인다.
       //   (제거된 입력: palmStick/단순 grab 몸통이동 + meshVel 글라이드 — "겉도는 느낌"의 원인)
-      spinning = false;
+      if (activeCatState) activeCatState.spinning = false;
       const bodyMesh = (holdActive[0] && grabMesh[0]) || (holdActive[1] && grabMesh[1]) || catMesh;
       const twoHand = holdActive[0] && holdActive[1] && fingers[0].has && fingers[1].has;
 
       if (twoHand) {
-        spinning = true;
+        if (activeCatState) activeCatState.spinning = true;
         _hA.copy(fingers[0].pos);   // A 현재
         _hB.copy(fingers[1].pos);   // B 현재
         // 직전 손끝 = 현재 - 이번 프레임 변위(fingerVel)
@@ -1400,43 +1515,55 @@
     function updateCat() {
       if (!MOUSEMODE) readFingers();
 
-      for (let i = 0; i < visibleCatCount; i++) catMeshes[i].updateWorldMatrix(false, false);
-      updateGrab();
-      updatePalm();        // ← 손바닥 접촉 판정 (simStep cling + 이동에 사용)
-      simStep();           // 앞면(손 힘의 주인)
-      simStepBack();       // 뒷면(독립 팔로워 + 두께 볼륨)
-      updateMeshRigid();   // ← 고양이 전체 이동 물리
-
-      // 셰이더 손끝 글로우 업데이트
-      if (MOUSEMODE) {
-        catMat.uniforms.uFingers.value[0].copy(shaderPos[0]);
-        catMat.uniforms.uFingerCount.value = shaderCount;
-      } else {
-        let fc = 0;
-        for (let h = 0; h < 2; h++) {
-          if (fingers[h].has) catMat.uniforms.uFingers.value[fc++].copy(fingers[h].pos);
-        }
-        catMat.uniforms.uFingerCount.value = fc;
-      }
-
-      // ── 사운드: 접촉 시작 엣지 → 랜덤 야옹 / 지속 접촉 → 골골(purr) 페이드
-      const contact = grabActive[0] || grabActive[1] || palmStick[0] || palmStick[1] ||
-                      holdActive[0] || holdActive[1];
+      spinning = false;
+      let anyContact = false;
+      let purrMesh = null;
+      let dbgState = catStates[0];
       const nowS = performance.now() * 0.001;
-      if (contact && !contactPrev) {
-        const soundMesh =
-          (grabActive[0] && grabMesh[0]) ||
-          (grabActive[1] && grabMesh[1]) ||
-          (palmStick[0] && palmMesh[0]) ||
-          (palmStick[1] && palmMesh[1]) ||
-          catMesh;
-        playMeow(nowS, soundMesh);   // 닿는 순간 한 번
+
+      for (let i = 0; i < visibleCatCount; i++) {
+        const state = catStates[i];
+        activateCatState(state);
+
+        catMesh.updateWorldMatrix(false, false);
+        updateGrab();
+        updatePalm();        // ← 손바닥 접촉 판정 (simStep cling + 이동에 사용)
+        simStep();           // 앞면(손 힘의 주인)
+        simStepBack();       // 뒷면(독립 팔로워 + 두께 볼륨)
+        updateMeshRigid();   // ← 고양이 전체 이동 물리
+
+        // 셰이더 손끝 글로우 업데이트
+        if (MOUSEMODE) {
+          catMat.uniforms.uFingers.value[0].copy(shaderPos[0]);
+          catMat.uniforms.uFingerCount.value = shaderCount;
+        } else {
+          let fc = 0;
+          for (let h = 0; h < 2; h++) {
+            if (fingers[h].has) catMat.uniforms.uFingers.value[fc++].copy(fingers[h].pos);
+          }
+          catMat.uniforms.uFingerCount.value = fc;
+        }
+
+        // ── 사운드: 접촉 시작 엣지 → 랜덤 야옹 / 지속 접촉 → 골골(purr) 페이드
+        const contact = grabActive[0] || grabActive[1] || palmStick[0] || palmStick[1] ||
+                        holdActive[0] || holdActive[1];
+        if (contact) {
+          anyContact = true;
+          purrMesh = purrMesh || catMesh;
+          dbgState = state;
+        }
+        if (state.spinning) spinning = true;
+        if (contact && !state.contactPrev) {
+          playMeow(nowS, catMesh);   // 닿는 순간 한 번
+        }
+        state.contactPrev = contact;
       }
-      contactPrev = contact;
-      updateCatLayoutMotion(contact);
+
+      updateCatLayoutMotion(anyContact);
 
       if (purrBuffer) {
-        const target = contact ? 0.5 : 0;            // 쓰다듬는 동안만 골골
+        const target = anyContact ? 0.5 : 0;            // 쓰다듬는 동안만 골골
+        if (purrMesh) purrMesh.add(purrVoice);
         if (target > 0 && !purrVoice.isPlaying) { purrVoice.setBuffer(purrBuffer); purrVoice.play(); }
         const v  = purrVoice.getVolume();
         const nv = v + (target - v) * 0.05;          // 부드러운 페이드 인/아웃
@@ -1445,11 +1572,40 @@
       }
 
       if (DEBUG) {
+        activateCatState(dbgState);
         dbgEl.textContent =
           `mode: ${MOUSEMODE ? 'mouse' : 'XR'}  spin:${spinning ? '🔄' : '○'}\n` +
           `cats: ${visibleCatCount}/${CAT_COUNT} touches:${touchCount}\n` +
           `L: ${fingers[0].has ? '✓' : '✗'} grab:${grabActive[0] ? '●' : '○'} hold:${holdActive[0] ? '✊' : '○'} palm:${palmStick[0] ? '✋' : '○'}\n` +
           `R: ${fingers[1].has ? '✓' : '✗'} grab:${grabActive[1] ? '●' : '○'} hold:${holdActive[1] ? '✊' : '○'} palm:${palmStick[1] ? '✋' : '○'}`;
+      }
+    }
+
+    function releaseGrabForActiveCat(handIndex, throwFactor = 0.42) {
+      if (!grabActive[handIndex]) return;
+      catMesh.updateWorldMatrix(false, false);
+      _invMat.copy(catMesh.matrixWorld).invert();
+      const e   = _invMat.elements;
+      const wx  = fingerVel[handIndex].x, wy = fingerVel[handIndex].y, wz = fingerVel[handIndex].z;
+      const lvx = e[0]*wx + e[4]*wy + e[8]*wz;
+      const lvy = e[1]*wx + e[5]*wy + e[9]*wz;
+      const lvz = e[2]*wx + e[6]*wy + e[10]*wz;
+      for (let i = 0; i < VCOUNT; i++) {
+        const w = grabWeight[handIndex][i];
+        if (w < 0.001) continue;
+        velArr[i*3]   += lvx * throwFactor * w;
+        velArr[i*3+1] += lvy * throwFactor * w;
+        velArr[i*3+2] += lvz * throwFactor * w;
+      }
+      grabActive[handIndex] = false;
+      grabWeight[handIndex].fill(0);
+      regrabCool[handIndex] = T.grab.regrabDelay;
+    }
+
+    function forEachCatState(fn) {
+      for (const state of catStates) {
+        activateCatState(state);
+        fn(state);
       }
     }
 
@@ -1511,32 +1667,16 @@
         fingers[0].has = false;
         fingerCanGrab[0] = false;
         fingerSpeed[0] = 0;
-        // 잡기 해제 시 현재 속도를 버텍스에 전달
-        if (grabActive[0]) {
-          (grabMesh[0] || catMesh).updateWorldMatrix(false, false);
-          _invMat.copy((grabMesh[0] || catMesh).matrixWorld).invert();
-          const e   = _invMat.elements;
-          const wx  = fingerVel[0].x, wy = fingerVel[0].y, wz = fingerVel[0].z;
-          const lvx = e[0]*wx + e[4]*wy + e[8]*wz;
-          const lvy = e[1]*wx + e[5]*wy + e[9]*wz;
-          const lvz = e[2]*wx + e[6]*wy + e[10]*wz;
-          for (let i = 0; i < VCOUNT; i++) {
-            const w = grabWeight[0][i];
-            if (w < 0.001) continue;
-            velArr[i*3]   += lvx * 0.42 * w;
-            velArr[i*3+1] += lvy * 0.42 * w;
-            velArr[i*3+2] += lvz * 0.42 * w;
-          }
-          grabActive[0] = false;
-          grabWeight[0].fill(0);
-          regrabCool[0] = T.grab.regrabDelay;
-        }
+        // 잡기 해제 시 현재 속도를 해당 고양이 버텍스에 전달
+        forEachCatState(() => releaseGrabForActiveCat(0, 0.42));
       });
 
       window.addEventListener('mouseleave', () => {
         shaderCount = 0;
         fingers[0].has = false;
-        if (grabActive[0]) { grabActive[0] = false; grabWeight[0].fill(0); }
+        forEachCatState(() => {
+          if (grabActive[0]) { grabActive[0] = false; grabWeight[0].fill(0); }
+        });
       });
 
       // 터치 지원
@@ -1575,7 +1715,9 @@
         fingers[0].has = false;
         fingerCanGrab[0] = false;
         shaderCount = 0;
-        if (grabActive[0]) { grabActive[0] = false; grabWeight[0].fill(0); }
+        forEachCatState(() => {
+          if (grabActive[0]) { grabActive[0] = false; grabWeight[0].fill(0); }
+        });
       });
     }
 
