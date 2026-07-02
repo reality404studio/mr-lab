@@ -503,6 +503,7 @@
       meowVoice.setPlaybackRate(CAT_NOTE_RATES[catIndex] || 1);
       meowVoice.play();
       lastMeowAt = nowS;
+      registerCatTouch();
     }
 
     function layoutCats(instant = false) {
@@ -1429,7 +1430,6 @@
           (palmStick[0] && palmMesh[0]) ||
           (palmStick[1] && palmMesh[1]) ||
           catMesh;
-        registerCatTouch();
         playMeow(nowS, soundMesh);   // 닿는 순간 한 번
       }
       contactPrev = contact;
