@@ -149,23 +149,40 @@
       position: absolute;
       left: 50%;
       bottom: 108px;
-      transform: translateX(-50%);
-      background: rgba(226, 255, 238, .82);
-      border: 1px solid rgba(125, 224, 160, .55);
+      transform: translateX(-50%) translateY(10px) scale(.94);
+      transform-origin: 50% 100%;
+      background: rgba(12, 10, 18, .76);
+      border: 1px solid rgba(255, 216, 184, .34);
       border-radius: 12px;
       padding: 11px 20px;
       font-size: 18px;
       letter-spacing: .5px;
-      color: #26354a;
+      color: #f6edf9;
       max-width: 84vw;
       text-align: center;
       opacity: 0;
-      transition: opacity .2s;
-      backdrop-filter: blur(3px);
+      transition: opacity .18s ease, transform .18s ease;
+      backdrop-filter: blur(5px);
+      box-shadow: 0 10px 30px rgba(0, 0, 0, .26);
+    }
+
+    #subtitle::after {
+      content: "";
+      position: absolute;
+      left: 50%;
+      bottom: -8px;
+      width: 14px;
+      height: 14px;
+      background: rgba(12, 10, 18, .76);
+      border-right: 1px solid rgba(255, 216, 184, .34);
+      border-bottom: 1px solid rgba(255, 216, 184, .34);
+      transform: translateX(-50%) rotate(45deg);
+      backdrop-filter: blur(5px);
     }
 
     #subtitle.show {
-      opacity: 1
+      opacity: 1;
+      transform: translateX(-50%) translateY(0) scale(1)
     }
 
     #subtitle b {
@@ -1146,11 +1163,12 @@
     //  카메라 기준 가장자리 배치: 정보는 보이되 슬라임/손 상호작용 영역은 비운다.
     // ============================================================
     const XRHUD = (() => {
-      const camPos = new THREE.Vector3(), camQuat = new THREE.Quaternion(), world = new THREE.Vector3();
+      const camPos = new THREE.Vector3(), world = new THREE.Vector3(), lookPoint = new THREE.Vector3();
       const anchor = new THREE.Vector3(), right = new THREE.Vector3(1, 0, 0), up = new THREE.Vector3(0, 1, 0), toward = new THREE.Vector3(0, 0, 1);
       const nodes = [];
       const bar = (n, full, empty) => full.repeat(n) + empty.repeat(5 - n);
       let toastUntil = 0, subtitleUntil = 0;
+      let toastStart = 0, subtitleStart = 0, subtitleText = '', subtitleDrawn = '';
       let anchored = false;
 
       function roundRect(ctx, x, y, w, h, r) {
@@ -1166,35 +1184,40 @@
         ctx.fillStyle = bg; ctx.fill();
         ctx.strokeStyle = stroke; ctx.lineWidth = 2; ctx.stroke();
       }
-      function fillBubble(ctx, w, h, fill = 'rgba(255,250,255,.88)') {
+      function fillBubble(ctx, w, h, fill = 'rgba(12,10,18,.78)', stroke = 'rgba(255,216,184,.34)') {
         ctx.clearRect(0, 0, w, h);
-        roundRect(ctx, 22, 14, w - 44, h - 34, 26);
+        roundRect(ctx, 22, 14, w - 44, h - 38, 26);
         ctx.fillStyle = fill;
         ctx.fill();
+        ctx.strokeStyle = stroke;
+        ctx.lineWidth = 2;
+        ctx.stroke();
         ctx.beginPath();
-        ctx.moveTo(w * 0.47, h - 22);
-        ctx.lineTo(w * 0.53, h - 22);
-        ctx.lineTo(w * 0.50, h - 7);
+        ctx.moveTo(w * 0.47, h - 28);
+        ctx.lineTo(w * 0.53, h - 28);
+        ctx.lineTo(w * 0.50, h - 8);
         ctx.closePath();
+        ctx.fillStyle = fill;
         ctx.fill();
+        ctx.stroke();
       }
       function makeNode(width, height, canvasW, canvasH, offset) {
         const canvas = document.createElement('canvas'); canvas.width = canvasW; canvas.height = canvasH;
         const ctx = canvas.getContext('2d');
         const texture = new THREE.CanvasTexture(canvas);
         texture.minFilter = THREE.LinearFilter; texture.magFilter = THREE.LinearFilter;
-        const material = new THREE.MeshBasicMaterial({ map: texture, transparent: true, depthTest: false, depthWrite: false });
+        const material = new THREE.MeshBasicMaterial({ map: texture, transparent: true, opacity: 0, depthTest: false, depthWrite: false });
         material.toneMapped = false;
         const mesh = new THREE.Mesh(new THREE.PlaneGeometry(width, height), material);
         mesh.renderOrder = 10000; mesh.visible = false;
         scene.add(mesh);
-        const node = { mesh, canvas, ctx, texture, offset: new THREE.Vector3(offset[0], offset[1], offset[2]) };
+        const node = { mesh, canvas, ctx, texture, offset: new THREE.Vector3(offset[0], offset[1], offset[2]), baseScale: new THREE.Vector3(1, 1, 1) };
         nodes.push(node); return node;
       }
       const panel = makeNode(0.17, 0.087, 512, 256, [0.22, 0.02, -0.14]);
       const zap = makeNode(0.12, 0.039, 512, 160, [0.22, -0.047, -0.14]);
-      const toastNode = makeNode(0.18, 0.043, 768, 128, [0, 0.105, 0.01]);
-      const subtitleNode = makeNode(0.26, 0.052, 1024, 160, [0, 0.155, 0.012]);
+      const toastNode = makeNode(0.19, 0.046, 768, 128, [0, 0.108, 0.018]);
+      const subtitleNode = makeNode(0.27, 0.062, 1024, 180, [0, 0.135, 0.028]);
 
       function drawFit(ctx, text, x, y, maxWidth, size, color, align = 'center') {
         let s = size;
@@ -1229,16 +1252,23 @@
       }
       function toast(msg) {
         const ctx = toastNode.ctx, w = toastNode.canvas.width, h = toastNode.canvas.height;
-        fillBubble(ctx, w, h, 'rgba(246,238,255,.90)');
-        drawFit(ctx, msg, w / 2, h / 2 - 2, w - 92, 28, '#3a2f63');
+        fillBubble(ctx, w, h);
+        drawFit(ctx, msg, w / 2, h / 2 - 6, w - 92, 28, '#f6edf9');
         toastNode.texture.needsUpdate = true;
+        toastStart = performance.now() / 1000;
         toastUntil = performance.now() / 1000 + 2.2;
       }
-      function subtitle(text) {
+      function drawSubtitle(text) {
         const ctx = subtitleNode.ctx, w = subtitleNode.canvas.width, h = subtitleNode.canvas.height;
-        fillBubble(ctx, w, h, 'rgba(226,255,238,.90)');
-        drawFit(ctx, text, w / 2, h / 2 - 2, w - 96, 31, '#26354a');
+        fillBubble(ctx, w, h, 'rgba(12,10,18,.80)', 'rgba(255,216,184,.38)');
+        drawFit(ctx, text, w / 2, h / 2 - 7, w - 104, 31, '#f6edf9');
         subtitleNode.texture.needsUpdate = true;
+      }
+      function subtitle(text) {
+        subtitleText = text || '';
+        subtitleDrawn = '';
+        drawSubtitle('');
+        subtitleStart = performance.now() / 1000;
         subtitleUntil = performance.now() / 1000 + 3.4;
       }
       function anchorTo(pos) {
@@ -1262,10 +1292,22 @@
         panel.mesh.visible = zap.mesh.visible = false;
         toastNode.mesh.visible = visible && now < toastUntil;
         subtitleNode.mesh.visible = visible && now < subtitleUntil;
+        if (subtitleNode.mesh.visible) {
+          const count = Math.min(subtitleText.length, Math.floor((now - subtitleStart) * 24));
+          const next = subtitleText.slice(0, count);
+          if (next !== subtitleDrawn) { subtitleDrawn = next; drawSubtitle(subtitleDrawn); }
+        }
         if (!visible) return;
         const xrCam = renderer.xr.getCamera ? renderer.xr.getCamera(camera) : camera;
         xrCam.updateMatrixWorld?.();
-        xrCam.getWorldPosition(camPos); xrCam.getWorldQuaternion(camQuat);
+        xrCam.getWorldPosition(camPos);
+        if (State.spawned && Slime?.group?.visible) {
+          anchor.copy(Slime.group.position).addScaledVector(up, R * 1.58);
+        }
+        toward.copy(camPos).sub(anchor); toward.y = 0;
+        if (toward.lengthSq() < 0.0001) toward.set(0, 0, 1);
+        toward.normalize();
+        right.crossVectors(toward.clone().negate(), up).normalize();
         for (const n of nodes) {
           if (!n.mesh.visible) continue;
           world.copy(anchor)
@@ -1273,7 +1315,15 @@
             .addScaledVector(up, n.offset.y)
             .addScaledVector(toward, n.offset.z);
           n.mesh.position.copy(world);
-          n.mesh.quaternion.copy(camQuat);
+          lookPoint.set(camPos.x, n.mesh.position.y, camPos.z);
+          n.mesh.lookAt(lookPoint);
+          const start = n === subtitleNode ? subtitleStart : toastStart;
+          const end = n === subtitleNode ? subtitleUntil : toastUntil;
+          const fadeIn = Math.min(1, (now - start) / 0.16);
+          const fadeOut = Math.min(1, Math.max(0, (end - now) / 0.22));
+          const a = Math.min(fadeIn, fadeOut);
+          n.mesh.material.opacity = a;
+          n.mesh.scale.setScalar(0.88 + 0.12 * a);
         }
       }
       latency('—'); renderStatus();
@@ -1300,9 +1350,21 @@
         XRHUD.toast(msg);
         clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('show'), 2200);
       }
-      let subT;
+      let subT, subToken = 0;
       function subtitle(text) {
-        const s = $('subtitle'); s.innerHTML = '“' + text + '”'; s.classList.add('show');
+        const s = $('subtitle');
+        const token = ++subToken;
+        const msg = String(text || '');
+        const started = performance.now();
+        s.textContent = '';
+        s.classList.add('show');
+        const tick = () => {
+          if (token !== subToken) return;
+          const count = Math.min(msg.length, Math.floor((performance.now() - started) / 34));
+          s.textContent = '"' + msg.slice(0, count) + '"';
+          if (count < msg.length) requestAnimationFrame(tick);
+        };
+        tick();
         XRHUD.subtitle(text);
         clearTimeout(subT); subT = setTimeout(() => s.classList.remove('show'), 3400);
       }
