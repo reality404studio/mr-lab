@@ -457,25 +457,21 @@
       bodyPivot.position.y = R * 0.58;
       group.add(bodyPivot);
 
-      const BASE_TOP = new THREE.Color('#ffea94');
-      const BASE_UPPER = new THREE.Color('#f094ff');
-      const BASE_CORE = new THREE.Color('#d8b7ff');
-      const BASE_BOTTOM = new THREE.Color('#FFB8C8');
+      const BASE_TOP = new THREE.Color('#eb84b0');
+      const BASE_CORE = new THREE.Color('#fd98ff');
+      const BASE_BOTTOM = new THREE.Color('#d8647e');
       const BASE_RIM = new THREE.Color('#FFE8F0');
-      const LOOK_SHADE = 0.16;
-      const LOOK_FRESNEL_POWER = 2.8;
-      const LOOK_FRESNEL_STRENGTH = 0.64;
-      const LOOK_MATCAP_MIX = 0.10;
-      const LOOK_SWAY_AMPLITUDE = 0;
-      const LOOK_SWAY_FREQ = 0.7;
-      const LOOK_WOBBLE_AMPLITUDE = 0.08;
-      const LOOK_WOBBLE_FREQ = 2.0;
-      const LOOK_DITHER_FADE = 0;
-      const LOOK_GRADIENT_STOP_1 = 0.27;
-      const LOOK_GRADIENT_STOP_2 = 0.41;
+      const LOOK_SHADE = 0.25;
+      const LOOK_FRESNEL_POWER = 1.5;
+      const LOOK_FRESNEL_STRENGTH = 0.95;
+      const LOOK_MATCAP_MIX = 0.18;
+      const LOOK_SWAY_AMPLITUDE = 0.075;
+      const LOOK_SWAY_FREQ = 2.1;
+      const LOOK_WOBBLE_AMPLITUDE = 0.11;
+      const LOOK_WOBBLE_FREQ = 1.5;
+      const LOOK_DITHER_FADE = 0.11;
       const bodyUniforms = {
         uTopColor: { value: BASE_TOP.clone() },
-        uUpperColor: { value: BASE_UPPER.clone() },
         uCoreColor: { value: BASE_CORE.clone() },
         uBottomColor: { value: BASE_BOTTOM.clone() },
         uRimColor: { value: BASE_RIM.clone() },
@@ -488,8 +484,6 @@
         uWobbleAmplitude: { value: LOOK_WOBBLE_AMPLITUDE },
         uWobbleFreq: { value: LOOK_WOBBLE_FREQ },
         uDitherFade: { value: LOOK_DITHER_FADE },
-        uGradientStop1: { value: LOOK_GRADIENT_STOP_1 },
-        uGradientStop2: { value: LOOK_GRADIENT_STOP_2 },
         uGlow: { value: 0 },
         uOpacity: { value: 0.88 },
         uTime: { value: 0 },
@@ -529,7 +523,6 @@
           varying vec3 vLocalPos;
           varying float vBodyY;
           uniform vec3 uTopColor;
-          uniform vec3 uUpperColor;
           uniform vec3 uCoreColor;
           uniform vec3 uBottomColor;
           uniform vec3 uRimColor;
@@ -538,8 +531,6 @@
           uniform float uFresnelStrength;
           uniform float uMatcapMix;
           uniform float uDitherFade;
-          uniform float uGradientStop1;
-          uniform float uGradientStop2;
           uniform float uGlow;
           uniform float uOpacity;
           float grain(vec2 p) {
@@ -553,10 +544,10 @@
             float thickness = smoothstep(0.02, 1.0, pow(facing, 0.74));
             float fresnel = pow(1.0 - facing, uFresnelPower);
             float crown = smoothstep(0.48, 0.94, vBodyY);
+            float radial = clamp(length(vLocalPos.xz) / 1.18, 0.0, 1.0);
 
-            vec3 gradient = mix(uBottomColor, uCoreColor, smoothstep(0.0, uGradientStop1, height));
-            gradient = mix(gradient, uUpperColor, smoothstep(uGradientStop1, uGradientStop2, height));
-            gradient = mix(gradient, uTopColor, smoothstep(uGradientStop2, 1.0, height));
+            vec3 gradient = mix(uCoreColor, uBottomColor, smoothstep(0.0, 0.93, radial));
+            gradient = mix(gradient, uTopColor, smoothstep(0.79, 1.0, height) * 0.36);
             vec3 col = gradient * (1.0 - uShade + thickness * (uShade + 0.18));
 
             vec3 L = normalize(vec3(-0.44, 0.78, 0.46));
@@ -588,7 +579,7 @@
       const rimMat = new THREE.MeshBasicMaterial({
         color: 0xFFE8F0,
         transparent: true,
-        opacity: 0.10,
+        opacity: 0.14,
         side: THREE.BackSide,
         depthWrite: false,
         blending: THREE.NormalBlending,
@@ -991,7 +982,7 @@
         faceDrift += (faceDriftTarget - faceDrift) * 0.16;
         if (time > interestUntil) { leanTarget *= 0.88; faceDriftTarget *= 0.85; }
         bodyPivot.rotation.z = -look * 0.5;
-        bodyPivot.rotation.x = Math.sin(time * LOOK_SWAY_FREQ) * LOOK_SWAY_AMPLITUDE * 0.33 * breath + lean - voiceLevel * 0.10;  // 목소리 쪽으로 기웃
+        bodyPivot.rotation.x = Math.sin(time * 0.9) * 0.025 * breath + lean - voiceLevel * 0.10;  // 목소리 쪽으로 기웃
         faceSpr.position.set(bodyPivot.position.x + faceDrift * R * 0.12, bodyPivot.position.y + faceOffsetY, bodyPivot.position.z + Math.abs(faceDrift) * R * 0.03);
         shadow.scale.setScalar(1 + (1 - sy) * 0.6);          // 눌릴수록 그림자 확장
         const m = shadow.material; m.opacity = 0.9 * Math.max(0, 1 - dy * 6);
@@ -1020,7 +1011,6 @@
 
       function tint(c) {
         bodyUniforms.uTopColor.value.copy(BASE_TOP).lerp(c, 0.16);
-        bodyUniforms.uUpperColor.value.copy(BASE_UPPER).lerp(c, 0.13);
         bodyUniforms.uCoreColor.value.copy(BASE_CORE).lerp(c, 0.12);
         bodyUniforms.uBottomColor.value.copy(BASE_BOTTOM).lerp(c, 0.14);
         bodyUniforms.uRimColor.value.copy(BASE_RIM).lerp(c, 0.06);
