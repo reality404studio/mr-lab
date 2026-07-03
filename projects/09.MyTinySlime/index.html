@@ -323,6 +323,10 @@
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
     renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
     renderer.setSize(innerWidth, innerHeight);
+    renderer.outputEncoding = THREE.sRGBEncoding;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 0.82;
+    renderer.physicallyCorrectLights = true;
     renderer.xr.enabled = true;
     renderer.xr.setReferenceSpaceType('local');
     document.body.appendChild(renderer.domElement);
@@ -332,9 +336,41 @@
     camera.position.set(0, 0.26, 0.64);
     camera.lookAt(0, R, 0);
 
-    // 존재감: 강한 방향광은 방 조명과 어긋나 '스튜디오 렌더'처럼 뜬다 → 거의 앰비언트로 평탄화.
-    scene.add(new THREE.AmbientLight(0xffffff, .92));
-    const key = new THREE.DirectionalLight(0xffffff, .20); key.position.set(0.6, 2.2, 1.4); scene.add(key);
+    function createRoomEnvironmentPMREM() {
+      const envScene = new THREE.Scene();
+      envScene.background = new THREE.Color('#211813');
+      envScene.add(new THREE.Mesh(
+        new THREE.BoxGeometry(8, 8, 8),
+        new THREE.MeshBasicMaterial({ color: 0x211813, side: THREE.BackSide })
+      ));
+      const addPanel = (color, pos, rot, scale) => {
+        const panel = new THREE.Mesh(
+          new THREE.PlaneGeometry(1, 1),
+          new THREE.MeshBasicMaterial({ color, side: THREE.DoubleSide })
+        );
+        panel.position.set(pos[0], pos[1], pos[2]);
+        panel.rotation.set(rot[0], rot[1], rot[2]);
+        panel.scale.set(scale[0], scale[1], 1);
+        envScene.add(panel);
+      };
+      addPanel(0xffd2a3, [0.0, 3.2, -1.7], [-Math.PI / 2, 0, 0], [2.4, 1.1]);
+      addPanel(0x4a3127, [0.0, -3.0, 0.0], [-Math.PI / 2, 0, 0], [7.5, 7.5]);
+      addPanel(0x6b4738, [-3.6, 0.0, 0.0], [0, Math.PI / 2, 0], [2.4, 5.0]);
+      addPanel(0x2f3f50, [3.6, 0.4, -1.3], [0, -Math.PI / 2, 0], [1.2, 2.0]);
+      const pmrem = new THREE.PMREMGenerator(renderer);
+      const texture = pmrem.fromScene(envScene, 0.035, 0.1, 20).texture;
+      pmrem.dispose();
+      return texture;
+    }
+    scene.environment = createRoomEnvironmentPMREM();
+
+    const ROOM_AMBIENT = new THREE.Color('#ffd9b8');
+    const ROOM_KEY = new THREE.Color('#ffe4c2');
+    const ROOM_LIGHT_DIR = new THREE.Vector3(-0.35, 0.72, 0.42).normalize();
+    scene.add(new THREE.AmbientLight(ROOM_AMBIENT, .46));
+    const key = new THREE.DirectionalLight(ROOM_KEY, .34);
+    key.position.copy(ROOM_LIGHT_DIR).multiplyScalar(2.6);
+    scene.add(key);
 
     // ---------- tiny WebAudio SFX (cute blips, no assets) ----------
     const SFX = (() => {
@@ -460,7 +496,10 @@
       const BASE_TOP = new THREE.Color('#eb84b0');
       const BASE_CORE = new THREE.Color('#fd98ff');
       const BASE_BOTTOM = new THREE.Color('#d8647e');
-      const BASE_RIM = new THREE.Color('#FFE8F0');
+      const BASE_RIM = new THREE.Color('#ffe0d2');
+      const BASE_SSS = new THREE.Color('#ffb6a8');
+      const ENV_WARM = new THREE.Color('#ffd1a4');
+      const ENV_COOL = new THREE.Color('#7f8da4');
       const LOOK_SHADE = 0.25;
       const LOOK_FRESNEL_POWER = 1.5;
       const LOOK_FRESNEL_STRENGTH = 0.95;
@@ -475,6 +514,12 @@
         uCoreColor: { value: BASE_CORE.clone() },
         uBottomColor: { value: BASE_BOTTOM.clone() },
         uRimColor: { value: BASE_RIM.clone() },
+        uSSSColor: { value: BASE_SSS.clone() },
+        uEnvWarmColor: { value: ENV_WARM.clone() },
+        uEnvCoolColor: { value: ENV_COOL.clone() },
+        uAmbientColor: { value: ROOM_AMBIENT.clone() },
+        uKeyColor: { value: ROOM_KEY.clone() },
+        uLightDir: { value: ROOM_LIGHT_DIR.clone() },
         uShade: { value: LOOK_SHADE },
         uFresnelPower: { value: LOOK_FRESNEL_POWER },
         uFresnelStrength: { value: LOOK_FRESNEL_STRENGTH },
@@ -485,7 +530,7 @@
         uWobbleFreq: { value: LOOK_WOBBLE_FREQ },
         uDitherFade: { value: LOOK_DITHER_FADE },
         uGlow: { value: 0 },
-        uOpacity: { value: 0.88 },
+        uOpacity: { value: 0.95 },
         uTime: { value: 0 },
       };
       const mat = new THREE.ShaderMaterial({
@@ -498,6 +543,8 @@
           uniform float uWobbleFreq;
           varying vec3 vViewPos;
           varying vec3 vViewNormal;
+          varying vec3 vWorldPos;
+          varying vec3 vWorldNormal;
           varying vec3 vLocalPos;
           varying float vBodyY;
           void main() {
@@ -512,6 +559,9 @@
             displaced.x += sway * (0.35 + smoothstep(-0.20, 0.94, position.y));
             vLocalPos = displaced;
             vViewNormal = normalize(normalMatrix * normal);
+            vWorldNormal = normalize(mat3(modelMatrix) * normal);
+            vec4 worldPosition = modelMatrix * vec4(displaced, 1.0);
+            vWorldPos = worldPosition.xyz;
             vec4 mvPosition = modelViewMatrix * vec4(displaced, 1.0);
             vViewPos = mvPosition.xyz;
             gl_Position = projectionMatrix * mvPosition;
@@ -520,12 +570,20 @@
         fragmentShader: `
           varying vec3 vViewPos;
           varying vec3 vViewNormal;
+          varying vec3 vWorldPos;
+          varying vec3 vWorldNormal;
           varying vec3 vLocalPos;
           varying float vBodyY;
           uniform vec3 uTopColor;
           uniform vec3 uCoreColor;
           uniform vec3 uBottomColor;
           uniform vec3 uRimColor;
+          uniform vec3 uSSSColor;
+          uniform vec3 uEnvWarmColor;
+          uniform vec3 uEnvCoolColor;
+          uniform vec3 uAmbientColor;
+          uniform vec3 uKeyColor;
+          uniform vec3 uLightDir;
           uniform float uShade;
           uniform float uFresnelPower;
           uniform float uFresnelStrength;
@@ -537,31 +595,38 @@
             return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);
           }
           void main() {
-            vec3 N = normalize(vViewNormal);
-            vec3 V = normalize(-vViewPos);
+            vec3 N = normalize(vWorldNormal);
+            vec3 V = normalize(cameraPosition - vWorldPos);
             float facing = clamp(abs(dot(N, V)), 0.0, 1.0);
             float height = smoothstep(-0.58, 0.94, vBodyY);
             float thickness = smoothstep(0.02, 1.0, pow(facing, 0.74));
             float fresnel = pow(1.0 - facing, uFresnelPower);
             float crown = smoothstep(0.48, 0.94, vBodyY);
             float radial = clamp(length(vLocalPos.xz) / 1.18, 0.0, 1.0);
+            float lowerDensity = 1.0 - smoothstep(0.05, 0.65, height);
 
             vec3 gradient = mix(uCoreColor, uBottomColor, smoothstep(0.0, 0.93, radial));
             gradient = mix(gradient, uTopColor, smoothstep(0.79, 1.0, height) * 0.36);
-            vec3 col = gradient * (1.0 - uShade + thickness * (uShade + 0.18));
 
-            vec3 L = normalize(vec3(-0.44, 0.78, 0.46));
-            float wrap = max(dot(N, L), 0.0);
-            float topGloss = pow(max(dot(N, normalize(vec3(0.0, 1.0, 0.28))), 0.0), 42.0) * crown;
+            vec3 L = normalize(uLightDir);
+            float wrap = dot(N, L) * 0.5 + 0.5;
+            vec3 lighting = uAmbientColor * 0.50 + uKeyColor * (0.16 + wrap * 0.30);
+            vec3 col = gradient * lighting * (1.0 - uShade + thickness * (uShade + 0.20));
 
-            col += uRimColor * (fresnel * 0.42 * uFresnelStrength + topGloss * 0.62);
-            col += vec3(1.0, 0.62, 0.90) * wrap * (0.08 + uMatcapMix * 0.10);
+            vec3 H = normalize(L + V);
+            float topGloss = pow(max(dot(N, H), 0.0), 56.0) * crown;
+            vec3 Rv = reflect(-V, N);
+            vec3 envTint = mix(uEnvCoolColor, uEnvWarmColor, smoothstep(-0.15, 0.85, Rv.y));
+            float envSheen = fresnel * 0.16 + topGloss * 0.12 + uMatcapMix * 0.05;
+
+            col = mix(col, envTint, clamp(envSheen, 0.0, 0.22));
+            col += uRimColor * (fresnel * 0.30 * uFresnelStrength + topGloss * 0.38);
+            col += uSSSColor * ((1.0 - facing) * 0.10 + lowerDensity * 0.075 + wrap * 0.035);
             col += gradient * uGlow * 0.12;
 
-            float lowerDensity = 1.0 - smoothstep(0.05, 0.65, height);
             float alpha = mix(0.24, 0.58, thickness) + lowerDensity * 0.05 + fresnel * 0.10 * uFresnelStrength + topGloss * 0.035;
             alpha += (grain(gl_FragCoord.xy) - 0.5) * uDitherFade * 0.028;
-            alpha = clamp(alpha * (uOpacity + uGlow * 0.05), 0.20, 0.74);
+            alpha = clamp(alpha * (uOpacity + uGlow * 0.05), 0.28, 0.82);
 
             gl_FragColor = vec4(col, alpha);
           }
@@ -571,20 +636,20 @@
         side: THREE.FrontSide,
         blending: THREE.NormalBlending,
       });
-      mat.toneMapped = false;
+      mat.toneMapped = true;
       const mesh = new THREE.Mesh(bodyGeo, mat);
       mesh.renderOrder = 2;
       bodyPivot.add(mesh);
 
       const rimMat = new THREE.MeshBasicMaterial({
-        color: 0xFFE8F0,
+        color: 0xffe0d2,
         transparent: true,
         opacity: 0.14,
         side: THREE.BackSide,
         depthWrite: false,
         blending: THREE.NormalBlending,
       });
-      rimMat.toneMapped = false;
+      rimMat.toneMapped = true;
       const rimShell = new THREE.Mesh(bodyGeo, rimMat);
       rimShell.scale.setScalar(1.018);
       rimShell.renderOrder = 1;
@@ -598,7 +663,7 @@
       // 존재감: 평소엔 거의 자가발광 0(방 빛을 받게), 기쁜 순간에만 살짝. 목소리는 빛이 아니라 '움직임'으로 반응.
       function applyBodyLight() {
         bodyUniforms.uGlow.value = glow;
-        bodyUniforms.uOpacity.value = 0.88 + glow * 0.03;
+        bodyUniforms.uOpacity.value = 0.95 + glow * 0.03;
       }
       function setGlow(v) { glow = v; applyBodyLight(); }
       function setVoiceLevel(v) { voiceTarget = Math.max(0, Math.min(1, v || 0)); }
