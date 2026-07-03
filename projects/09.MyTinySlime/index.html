@@ -1415,7 +1415,7 @@
       // 이름은 "명명 맥락"이 있을 때만 (이름/불러/이라고/call you) — 본문에 박힌 이름 오인 방지
       if (/이름|불러|이라고|라고\s*부|name|call\s*you/.test(s)) return { intent: 'setName', name: extractName(t) };
       if (/밥자리|먹이자리|여기가|food\s*spot|here.*food|here.*eat/.test(s)) return { intent: 'setFoodLocation' };
-      if (/\bgo\b|\bokay\b|\bok\b|continue|가도\s*돼|이제\s*가|가자|먹어도\s*돼/.test(s)) return { intent: 'go' };
+      if (/\bgo\b|\bokay\b|\bok\b|continue|^가[!\.\s]*$|가도\s*돼|이제\s*가|가자|먹어도\s*돼/.test(s)) return { intent: 'go' };
       if (/배고|먹|밥|hungry|eat|feed|food/.test(s)) return { intent: 'feed' };
       if (/잘했|착하|최고|good|nice|great|예쁘|기특/.test(s)) return { intent: 'praise' };
       if (/자자|잘자|sleep|코자|졸/.test(s)) return { intent: 'sleep' };
@@ -1448,6 +1448,7 @@
     const FoodDemo = (() => {
       const MOVE_SPEED = 0.18;
       const BLOCK_RADIUS = R * 2.85;
+      const CLEAR_DELAY = 0.32;
       const tmp = new THREE.Vector3();
       const tmp2 = new THREE.Vector3();
       const blockPoint = new THREE.Vector3();
@@ -1461,6 +1462,8 @@
       let lastUpdate = 0;
       let lastStepAt = -10;
       let lastBlockAt = -10;
+      let pathClearSince = -10;
+      let lastStillBlockedToastAt = -10;
       let phaseStart = 0;
       let phaseDuration = 0;
       let phaseDone = null;
@@ -1530,6 +1533,7 @@
         mode = 'moving';
         lastUpdate = 0;
         lastStepAt = -10;
+        pathClearSince = now();
         Slime.expectSnack(target);
         UI.toast('Found snack!');
       }
@@ -1541,6 +1545,8 @@
         mode = 'spawning';
         lastUpdate = 0;
         lastBlockAt = -10;
+        pathClearSince = now();
+        lastStillBlockedToastAt = -10;
         disposeFood();
         target = defaultTarget();
         State.memory.foodLocation = target.clone();
@@ -1582,6 +1588,7 @@
         mode = 'blocked';
         lastUpdate = 0;
         lastBlockAt = now();
+        pathClearSince = -10;
         blockPoint.copy(point);
         Slime.brakeFrom(point);
         UI.toast('!');
@@ -1595,17 +1602,32 @@
 
       function observeHand(point) {
         if (!point || !food || !target || mode === 'idle' || mode === 'eating') return;
-        if (!isBlocking(point)) return;
+        const blocking = isBlocking(point);
+        if (!blocking) {
+          if (mode === 'blocked' || mode === 'waitingGo') {
+            if (pathClearSince < 0) pathClearSince = now();
+          }
+          return;
+        }
         lastBlockAt = now();
+        pathClearSince = -10;
         blockPoint.copy(point);
         if (mode === 'moving') block(point);
         else if (mode === 'waitingGo') {
           mode = 'blocked';
           Slime.focusOn(ownerLookPoint());
-          UI.toast('Still blocked');
+          if (now() - lastStillBlockedToastAt > 0.9) {
+            lastStillBlockedToastAt = now();
+            UI.toast('Still blocked');
+          }
         } else if (mode === 'blocked') {
           Slime.focusOn(ownerLookPoint());
         }
+      }
+
+      function clearBlocker() {
+        if (mode !== 'blocked' && mode !== 'waitingGo') return;
+        if (pathClearSince < 0) pathClearSince = now();
       }
 
       function resumeFromGo() {
@@ -1614,7 +1636,8 @@
           UI.toast('?');
           return false;
         }
-        if (now() - lastBlockAt < 0.52) {
+        const clearFor = pathClearSince > 0 ? now() - pathClearSince : 0;
+        if (clearFor < CLEAR_DELAY) {
           Slime.answerNo(blockPoint);
           UI.toast('Hand first');
           return true;
@@ -1697,7 +1720,8 @@
         }
         if (mode === 'blocked') {
           Slime.focusOn(ownerLookPoint());
-          if (now() - lastBlockAt > 0.56) {
+          if (pathClearSince < 0 && now() - lastBlockAt > 0.7) pathClearSince = now();
+          if (pathClearSince > 0 && now() - pathClearSince > CLEAR_DELAY) {
             mode = 'waitingGo';
             Slime.notice(target);
             setTimeout(() => { if (mode === 'waitingGo') { Slime.focusOn(ownerLookPoint()); UI.toast('Say "go"'); } }, 240);
@@ -1730,7 +1754,7 @@
         }
       }
 
-      return { start, update, observeHand, resumeFromGo, forceBlock, handControlActive };
+      return { start, update, observeHand, clearBlocker, resumeFromGo, forceBlock, handControlActive };
     })();
 
     function dispatch(parsed) {
@@ -1917,10 +1941,12 @@
           sourceIndex++;
         }
 
-        if (!sawHand) { petScore = Math.max(0, petScore - dt * 2); return; }
+        if (!sawHand) { FoodDemo.clearBlocker(); petScore = Math.max(0, petScore - dt * 2); return; }
         if (nearestD < Infinity) {
           lastHandPoint.copy(nearest); lastHandAt = time;
           FoodDemo.observeHand(nearest);
+        } else {
+          FoodDemo.clearBlocker();
         }
 
         if (petCandidate) petScore += dt;
