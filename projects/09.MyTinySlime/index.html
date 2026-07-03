@@ -2298,18 +2298,27 @@
     //  SPAWN / PLACEMENT
     // ============================================================
     let lastHitPoint = null;        // 최근 hit-test 지점 (foodLocation 캡처용)
+    let lastHitAt = -10;
     function spawnAt(pos) {
-      Slime.group.position.copy(pos);
+      if (!pos || !Number.isFinite(pos.x) || !Number.isFinite(pos.y) || !Number.isFinite(pos.z)) {
+        UI.toast('Find desk first');
+        return false;
+      }
+      const spawn = pos.clone();
+      Slime.group.position.copy(spawn);
+      Slime.group.traverse(obj => { obj.frustumCulled = false; });
       Slime.group.visible = true;
       Slime.setFace('normal');
       State.spawned = true;
+      Slime.group.updateMatrixWorld(true);
       SFX.spawn(); Slime.bounce(0.05);
       document.getElementById('dock').classList.remove('hide');
       reticle.visible = false;           // 책상 잡았으니 레티클 제거
-      State.deskY = pos.y;               // 책상 높이 기록 (XR UI 기준)
-      XRHUD.anchorTo(pos);
+      State.deskY = spawn.y;             // 책상 높이 기록 (XR UI 기준)
+      XRHUD.anchorTo(spawn);
       UI.toast('Slimei is here ♡');
       startListening();                  // 스폰 즉시 '항상 듣기' 시작 (탭 없이 자연어)
+      return true;
     }
 
     // ============================================================
@@ -2323,6 +2332,8 @@
         domOverlay: { root: document.getElementById('ui') }
       });
       arActive = true;
+      lastHitPoint = null;
+      lastHitAt = -10;
       document.body.classList.add('xr-active');
       document.getElementById('splash').classList.add('hide');
       await renderer.xr.setSession(session);
@@ -2331,10 +2342,14 @@
       hitTestSource = await session.requestHitTestSource({ space: viewer });
 
       session.addEventListener('select', () => {
-        if (!State.spawned) { if (reticle.visible) { const p = new THREE.Vector3().setFromMatrixPosition(reticle.matrix); spawnAt(p); } }
+        if (State.spawned) return;
+        const freshHit = lastHitPoint && performance.now() / 1000 - lastHitAt < 0.75;
+        if (freshHit) spawnAt(lastHitPoint);
+        else UI.toast('Find desk first');
       });
       session.addEventListener('end', () => {
         arActive = false; hitTestSource = null; HandInteraction.reset(); FingerPointFollower.reset();
+        lastHitPoint = null; lastHitAt = -10;
         XRHUD.clearAnchor();
         document.body.classList.remove('xr-active');
         document.getElementById('splash').classList.remove('hide');
@@ -2418,7 +2433,9 @@
           const pose = hits[0].getPose(localSpace);
           reticle.visible = !State.spawned;          // 스폰 전에만 표시, 책상 잡으면 사라짐
           reticle.matrix.fromArray(pose.transform.matrix);
-          lastHitPoint = new THREE.Vector3().setFromMatrixPosition(reticle.matrix);
+          if (!lastHitPoint) lastHitPoint = new THREE.Vector3();
+          lastHitPoint.setFromMatrixPosition(reticle.matrix);
+          lastHitAt = performance.now() / 1000;
         } else { reticle.visible = false; }
       }
       HandInteraction.update(frame, time);
